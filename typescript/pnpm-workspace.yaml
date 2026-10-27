@@ -49,7 +49,8 @@ overrides:
   ip-address: '>=10.7.2'
   js-yaml: '>=5.4.1'
   path-to-regexp: '>=8.4.0'
-  qs: '>=6.16.0'
+  # GHSA-6pq8-jhm2-2vcw: qs.stringify comma-format TypeError, patched in 6.16.1.
+  qs: '>=6.16.1'
   yaml: '>=2.8.3'
   # GHSA-27r3-jxmh-p828: compressed-body trailing-bytes denial of service,
   # patched in 2.4.0. Reaches us via mppx > express.

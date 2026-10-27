@@ -257,3 +257,36 @@ async def test_await_confirmation_forwards_the_history_flag():
     rpc = _rpc({"result": {"value": [{"err": None, "confirmationStatus": "finalized"}]}})
     await rpc.await_confirmation("sig", attempts=1, delay_seconds=0, search_transaction_history=True)
     assert rpc._client.last_body["params"][1] == {"searchTransactionHistory": True}  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_is_blockhash_valid_reads_the_boolean_and_rejects_garbage():
+    rpc = _rpc({"result": {"context": {"slot": 1}, "value": True}, "id": 1})
+    assert await rpc.is_blockhash_valid("hash") is True
+    assert rpc._client.last_body["method"] == "isBlockhashValid"  # type: ignore[attr-defined]
+    assert rpc._client.last_body["params"] == ["hash", {"commitment": "confirmed"}]  # type: ignore[attr-defined]
+    assert await _rpc({"result": {"value": False}, "id": 1}).is_blockhash_valid("hash") is False
+    with pytest.raises(_RpcError):
+        await _rpc({"result": {"value": "yes"}, "id": 1}).is_blockhash_valid("hash")
+
+
+@pytest.mark.asyncio
+async def test_get_account_info_with_context_shapes():
+    data = "AQID"
+    rpc = _rpc({"result": {"context": {"slot": 9}, "value": {"owner": "o", "data": [data, "base64"]}}})
+    assert await rpc.get_account_info_with_context("a", min_context_slot=5) == (9, (b"\x01\x02\x03", "o"))
+    assert rpc._client.last_body["params"][1]["minContextSlot"] == 5  # type: ignore[attr-defined]
+    rpc = _rpc({"result": {"context": {"slot": True}, "value": {"owner": "o", "data": data}}})
+    assert await rpc.get_account_info_with_context("a") == (None, (b"\x01\x02\x03", "o"))
+    assert "minContextSlot" not in rpc._client.last_body["params"][1]  # type: ignore[attr-defined]
+    for value in (None, {"owner": "", "data": data}, {"owner": "o", "data": 7}):
+        rpc = _rpc({"result": {"context": {"slot": 3}, "value": value}})
+        assert await rpc.get_account_info_with_context("a") == (3, None)
+    assert await _rpc({"result": None}).get_account_info_with_context("a") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_simulate_transaction_shapes():
+    sim = await _rpc({"result": {"value": {"err": None, "logs": ["ok"]}}}).simulate_transaction(b"\x00")
+    assert sim == {"err": None, "logs": ["ok"]}
+    assert await _rpc({"result": None}).simulate_transaction(b"\x00") == {}

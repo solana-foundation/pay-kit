@@ -1,7 +1,19 @@
 export * from '../constants.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
-export { type RpcLike, session, type SessionOpenContext, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
+export {
+    type AuthenticatedUse,
+    createSessionServer,
+    type OperatorCharge,
+    type RpcLike,
+    session,
+    type SessionOpenChallenge,
+    type SessionOpenContext,
+    type SessionServer,
+    type SubmitOpenRpc,
+    type VerifiedSessionOpen,
+    type VerifyOpenRpc,
+} from './Session.js';
 export {
     CHANNEL_STATE_SCHEMA_VERSION,
     type ChannelMutator,
@@ -10,10 +22,12 @@ export {
     createMemorySessionStore,
     type ListChannelsFilter,
     type PendingDelivery,
+    type ProcessedUse,
     type SessionStore,
 } from './session/store.js';
 export {
     buildReclaimInstruction,
+    deriveChannelAddress,
     encodeVoucherMessageBytes,
     OPEN_SLOT_WINDOW,
     PAYMENT_CHANNELS_PROGRAM_ID,
@@ -30,7 +44,12 @@ export {
 } from './session/voucher.js';
 export { buildAndSignWireTransaction } from './session/wire-tx.js';
 export { claimConsumedSignature, consumedSignatureKey } from './replay.js';
-export { subscription } from './Subscription.js';
+export {
+    type ActiveSubscription,
+    subscription,
+    verifyActiveSubscription,
+    type VerifyActiveSubscriptionParameters,
+} from './Subscription.js';
 export { assertReportedTransactionVersion, MISSING_TRANSACTION_VERSION_ERROR } from '../utils/transactions.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'
 export { Mppx, Expires, Store } from 'mppx/server';

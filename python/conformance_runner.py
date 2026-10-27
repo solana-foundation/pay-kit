@@ -34,6 +34,8 @@ from typing import Any
 from solana_keychain import MemorySigner
 from solders.keypair import Keypair
 
+import conformance_batch
+import conformance_subscription
 from solana_pay_kit._paycore.errors import InvalidChallengeError
 from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.solana import (
@@ -49,6 +51,7 @@ from solana_pay_kit.protocols.mpp.core import json as wire_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.intents.session import (
+    OpenPayload,
     SessionAction,
     SessionAuthentication,
     SessionRequest,
@@ -136,6 +139,8 @@ async def _build_transaction(vector: dict[str, Any]) -> str:
             external_id=request.external_id,
             compute_unit_limit=compute_unit_limit,
             compute_unit_price=compute_unit_price,
+            # The highest message version the vector's signer can sign.
+            max_transaction_version=inp.get("signerMaxTransactionVersion"),
         )
     finally:
         await rpc.aclose()
@@ -174,13 +179,16 @@ def _shape_from_transaction(transaction_b64: str) -> dict[str, Any]:
     from the System Program transfer (discriminator 2), memos from the Memo
     Program, and compute caps from the ComputeBudget program.
     """
-    from solders.transaction import Transaction, VersionedTransaction  # type: ignore[import-untyped]
+    from solders.transaction import Transaction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.txv1 import MessageV1, decode_transaction
 
     raw = base64.b64decode(transaction_b64)
-    # Versioned first: the legacy parser accepts a v0 wire and misreads it
-    # (the 0x80 prefix lands in the header), so it is only the fallback.
+    # Versioned first (legacy, v0 and v1): the legacy parser accepts a v0
+    # wire and misreads it (the 0x80 prefix lands in the header), so it is
+    # only the fallback.
     try:
-        message = VersionedTransaction.from_bytes(raw).message
+        message = decode_transaction(raw).message
     except Exception:
         message = Transaction.from_bytes(raw).message
 
@@ -234,6 +242,9 @@ def _shape_from_transaction(transaction_b64: str) -> dict[str, Any]:
                 )
             continue
 
+    if isinstance(message, MessageV1):
+        # Version 1 declares its compute budget in the message header.
+        compute_unit_limit = message.config.compute_unit_limit
     shape: dict[str, Any] = {
         "feePayer": keys[0],
         "forbiddenPrograms": [],
@@ -342,6 +353,52 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
         exact["canonicalJson"] = canonical.decode("utf-8")
         exact["base64Url"] = base64url_encode(canonical)
 
+    cw = inp.get("chargeWire")
+    if cw:
+        # The charge request through the PRODUCTION parsers (ChargeRequest,
+        # its methodDetails as MethodDetails), re-encoded, as sessionWire
+        # does. Mirrors the Rust and TS runners.
+        try:
+            charge = ChargeRequest.from_dict(cw.get("value"))
+            if charge.method_details is not None:
+                charge.method_details = MethodDetails.from_dict(charge.method_details).to_dict()
+            decoded_charge = charge.to_dict()
+        except Exception as exc:
+            raise ValueError(f"invalid payload: charge request: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded_charge)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
+
+    xw = inp.get("x402Wire")
+    if xw:
+        # One x402 accepts[] entry. The SDK keeps an offer as its JSON object,
+        # so the round trip is the client's strict read of
+        # extra.transactionVersions written back in place. Mirrors the Rust
+        # PaymentRequirements and TS PaymentRequirementsV2Schema round trips.
+        from solana_pay_kit._paycore.txv1 import parse_transaction_versions
+
+        try:
+            value = xw.get("value")
+            if not isinstance(value, dict):
+                raise ValueError("payment requirements must be an object")
+            decoded_offer = dict(value)
+            extra = decoded_offer.get("extra")
+            if extra is not None:
+                if not isinstance(extra, dict):
+                    raise ValueError("extra must be an object")
+                extra = dict(extra)
+                versions = parse_transaction_versions(
+                    extra.get("transactionVersions"), field_name="extra.transactionVersions"
+                )
+                if versions is not None:
+                    extra["transactionVersions"] = versions
+                decoded_offer["extra"] = extra
+        except Exception as exc:
+            raise ValueError(f"invalid payload: payment requirements: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded_offer)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
+
     return exact
 
 
@@ -434,15 +491,19 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
     signer = _local_signer(secret)
     rpc = _rpc(vector)
     try:
+        # The highest message version the vector's signer can sign; absent
+        # means the SDK default (version 1).
+        max_version = inp.get("signerMaxTransactionVersion")
         if inp.get("x402Version") == X402_VERSION_V1:
             # The legacy v1 producer has no `extensions` concept.
-            return await build_payment_header_legacy(signer, rpc, offer)
+            return await build_payment_header_legacy(signer, rpc, offer, max_transaction_version=max_version)
         return await build_payment_header(
             signer,
             rpc,
             offer,
             advertised_extensions=inp.get("x402AdvertisedExtensions"),
             payment_identifier_id=inp.get("x402PaymentIdentifierId"),
+            max_transaction_version=max_version,
         )
     finally:
         await rpc.aclose()
@@ -465,6 +526,10 @@ def _x402_route_offer(inp: dict[str, Any]) -> X402AcceptsEntry:
     # The route's extra.memo, which the verifier must enforce (§3.1).
     if inp.get("x402ServerMemo"):
         extra["memo"] = inp["x402ServerMemo"]
+    # The sponsor's accepted message versions, advertised on the route's
+    # offer (§1.5); absent accepts version 0 only.
+    if inp.get("x402ServerTransactionVersions") is not None:
+        extra["transactionVersions"] = inp["x402ServerTransactionVersions"]
     return {
         "scheme": EXACT_SCHEME,
         "network": _caip2_for_selection(inp["x402ServerNetwork"]),
@@ -520,6 +585,9 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
         shape = asyncio.run(_x402_verify(vector))
         return {"id": vector_id, "outcome": "accept", "x402EnvelopeShape": shape}
 
+    if mode == "canonical-bytes":
+        return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}
+
     # Any other mode for the x402 intent has no Python equivalent.
     raise ValueError(f"unsupported-mode: {mode}")
 
@@ -566,6 +634,348 @@ def _run_session_voucher_verify(vector: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# ── session server and client (draft-solana-session-00) ────────────────────
+#
+# Mirrors rust/crates/kit/examples/vector_runner/session.rs: the vector's
+# server configuration and stored channel are handed to the SDK's own
+# SessionServer and channel store, the credential is parsed with the SDK's
+# wire types, and the SDK's checks decide. Nothing here re-implements them.
+
+
+def _u64(value: Any, key: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"invalid {key}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {key}") from exc
+
+
+def _session_server(
+    server: dict[str, Any],
+    inp: dict[str, Any],
+    store: Any,
+) -> Any:
+    """The SDK SessionServer the vector's ``server`` block configures."""
+    from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer, Split
+
+    fee_payer_key = server.get("feePayer")
+    fee_payer_signer = None
+    if fee_payer_key is not None:
+        secret = inp.get("sessionServerFeePayerSecretKey")
+        if not secret:
+            raise ValueError("server.feePayer without its secret key")
+        fee_payer_signer = _local_signer(secret)
+        if str(fee_payer_signer.pubkey) != fee_payer_key:
+            raise ValueError("sessionServerFeePayerSecretKey is not server.feePayer")
+    operator_secret = inp.get("sessionServerOperatorSecretKey")
+    # Only what the vector sets; everything else stays the SDK's default.
+    optional: dict[str, Any] = {}
+    if server.get("gracePeriodSeconds") is not None:
+        optional["grace_period_seconds"] = _u64(server["gracePeriodSeconds"], "gracePeriodSeconds")
+    if server.get("idleTimeoutSeconds") is not None:
+        optional["idle_timeout_seconds"] = _u64(server["idleTimeoutSeconds"], "idleTimeoutSeconds")
+    if server.get("voucherSigner") is not None:
+        optional["voucher_signer"] = server["voucherSigner"]
+    config = SessionConfig(
+        operator=server["operator"],
+        recipient=server["recipient"],
+        amount=_u64(server["amount"], "amount") or 0,
+        currency=server["currency"],
+        decimals=int(server["decimals"]),
+        network=server["network"],
+        splits=[
+            Split(recipient=e["recipient"], bps=int(e["shareBps"])) for e in server.get("distributionSplits") or []
+        ],
+        token_program=server.get("tokenProgram"),
+        suggested_deposit=_u64(server.get("suggestedDeposit"), "suggestedDeposit"),
+        minimum_deposit=_u64(server.get("minimumDeposit"), "minimumDeposit"),
+        fee_payer=fee_payer_key is not None,
+        fee_payer_key=fee_payer_key,
+        fee_payer_signer=fee_payer_signer,
+        operator_signer=_local_signer(operator_secret) if operator_secret else None,
+        idle_timeout_options_seconds=server.get("idleTimeoutOptionsSeconds"),
+        transaction_versions=server.get("transactionVersions"),
+        **optional,
+    )
+    return SessionServer(config, store)
+
+
+def _stored_channel(channel: dict[str, Any]) -> Any:
+    """The server's per-channel record (``channel``) as the SDK store keeps it."""
+    from solana_pay_kit.protocols.mpp.server.session_store import ChannelState as StoredChannel
+    from solana_pay_kit.protocols.mpp.server.session_store import ProcessedUse
+
+    highest = channel.get("highestVoucher")
+    proof = channel.get("authentication")
+    return StoredChannel(
+        channel_id=channel["channelId"],
+        authorized_signer=channel["authorizedSigner"],
+        deposit=_u64(channel["escrowedAmount"], "escrowedAmount") or 0,
+        cumulative=_u64(channel["acceptedCumulative"], "acceptedCumulative") or 0,
+        sealed=channel["status"] == "closed",
+        open_slot=_u64(channel.get("openSlot"), "openSlot") or 0,
+        payer=channel["payer"],
+        rent_payer=channel["rentPayer"],
+        opening_challenge_id=channel.get("openingChallengeId") or "",
+        authentication=SessionAuthentication.from_dict(proof).to_dict() if proof else None,
+        voucher_signer=channel["voucherSigner"],
+        idle_timeout_seconds=_u64(channel.get("idleTimeoutSeconds"), "idleTimeoutSeconds"),
+        spent_amount=_u64(channel["spentAmount"], "spentAmount") or 0,
+        settled_on_chain=_u64(channel["settledOnChain"], "settledOnChain") or 0,
+        processed_uses=[
+            ProcessedUse(
+                challenge_id=entry["challengeId"],
+                idempotency_key=entry["idempotencyKey"],
+                cumulative=_u64(entry["cumulativeAmount"], "cumulativeAmount") or 0,
+                voucher_signature=entry["voucherSignature"],
+                amount=_u64(entry.get("amount"), "amount"),
+            )
+            for entry in channel.get("processedUses") or []
+        ],
+        highest_voucher_signature=highest.get("signature") if highest else None,
+        highest_voucher_expires_at=(int((highest.get("voucher") or {}).get("expiresAt") or 0) if highest else None),
+        close_requested_at=_u64(channel.get("closureStartedAt"), "closureStartedAt"),
+    )
+
+
+async def _session_server_verify(vector: dict[str, Any]) -> dict[str, Any]:
+    from solana_pay_kit.protocols.mpp.server import session_testkit
+    from solana_pay_kit.protocols.mpp.server.session import SessionOpenContext
+    from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+
+    vector_id = vector.get("id", "")
+    inp = vector["input"]
+    params = inp["sessionServerVerify"]
+    store = MemoryChannelStore()
+    if params.get("channel"):
+        state = _stored_channel(params["channel"])
+        await store.update_channel(state.channel_id, lambda _current: state)
+    server_json = params.get("server") or {}
+    server = _session_server(server_json, inp, store)
+    try:
+        action = SessionAction.from_dict(params["credential"])
+    except Exception as exc:
+        raise ValueError(f"invalid payload: session credential: {exc}") from exc
+    out: dict[str, Any] = {"id": vector_id, "outcome": "accept"}
+    if action.open is not None:
+        challenge = params.get("challenge") or {}
+        recent_slot = _u64(challenge.get("recentSlot"), "recentSlot")
+        if recent_slot is None:
+            raise ValueError("challenge.recentSlot missing")
+        context = SessionOpenContext(
+            challenge_id=challenge.get("id", ""),
+            expires="",
+            recent_blockhash=challenge.get("recentBlockhash", ""),
+            recent_slot=recent_slot,
+        )
+        await session_testkit.verify_open_pre_broadcast(server, action.open, context)
+    elif action.voucher is not None:
+        await server.verify_voucher(action.voucher, _u64(server_json.get("amount"), "amount"))
+    elif action.top_up is not None:
+        await session_testkit.verify_topup_pre_broadcast(server, action.top_up)
+    elif action.close is not None:
+        await server.process_close(action.close)
+    elif action.use is not None:
+        operator = _local_signer(inp["sessionServerOperatorSecretKey"])
+        challenge_id = (params.get("challenge") or {}).get("id", "")
+        idempotency_key = params.get("idempotencyKey", "")
+        metered = _u64(params.get("meteredAmount"), "meteredAmount")
+        if metered is None:
+            voucher = await server.process_use(action.use, challenge_id, idempotency_key)
+        else:
+            authenticated = await server.authenticate_use(action.use, challenge_id, idempotency_key)
+            voucher = (await server.charge_operator_request(authenticated, operator, metered)).voucher
+        stored = await store.get_channel(voucher.data.channel_id)
+        # Read back from the store: a voucher the SDK returns but does not
+        # persist fails here.
+        if (
+            stored is None
+            or stored.highest_voucher_signature != voucher.signature
+            or str(stored.cumulative) != voucher.data.cumulative_amount
+        ):
+            raise RuntimeError("the returned use voucher is not the persisted one")
+        out["sessionVoucher"] = {
+            "channelId": stored.channel_id,
+            "cumulativeAmount": str(stored.cumulative),
+            "spentAmount": str(stored.spent_amount),
+            "signer": voucher.signer,
+        }
+    else:
+        raise ValueError("invalid payload: session credential carries no action")
+    return out
+
+
+async def _session_open_verify(vector: dict[str, Any]) -> dict[str, Any]:
+    """``input.sessionOpenVerify``: the open parameters and transaction checks
+    against the challenged blockhash (Rust ``session_open::verify``)."""
+    from solana_pay_kit.protocols.mpp.server import session_testkit
+    from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+
+    inp = vector["input"]
+    params = inp["sessionOpenVerify"]
+    server = _session_server(params.get("server") or {}, inp, MemoryChannelStore())
+    try:
+        open_payload = OpenPayload.from_dict(params["open"])
+    except Exception as exc:
+        raise ValueError(f"invalid payload: open: {exc}") from exc
+    await session_testkit.verify_open_transaction_pre_broadcast(server, open_payload, params["challengedBlockhash"])
+    return {"id": vector.get("id", ""), "outcome": "accept"}
+
+
+async def _session_open_build(vector: dict[str, Any]) -> dict[str, Any]:
+    """``input.sessionOpenBuild``: the SDK client's open for the challenge,
+    over a blockhash the client checked against its own cluster."""
+    from solana_pay_kit.protocols.mpp.client.payment_channels import (
+        PaymentChannelOpenOptions,
+        PaymentChannelSessionOpenOptions,
+        create_payment_channel_session_opener,
+        verify_open_blockhash,
+    )
+
+    inp = vector["input"]
+    params = inp["sessionOpenBuild"]
+    try:
+        request = SessionRequest.from_dict(params["request"])
+    except Exception as exc:
+        raise InvalidChallengeError(f"invalid challenge: {exc}") from exc
+    payer = _local_signer(inp["signerSecretKey"])
+    session_signer = _local_signer(inp["sessionSignerSecretKey"])
+    rpc = _rpc(vector)
+    try:
+        blockhash = await verify_open_blockhash(rpc, request)
+    finally:
+        await rpc.aclose()
+    opened = await create_payment_channel_session_opener(
+        request,
+        payer,
+        session_signer,
+        recent_blockhash=blockhash,
+        options=PaymentChannelSessionOpenOptions(
+            open=PaymentChannelOpenOptions(
+                deposit=_u64(params.get("deposit"), "deposit"),
+                salt=_u64(params.get("salt"), "salt"),
+                max_transaction_version=inp.get("signerMaxTransactionVersion"),
+            )
+        ),
+    )
+    assert opened.action.open is not None
+    return {
+        "id": vector.get("id", ""),
+        "outcome": "accept",
+        "sessionCredential": json.dumps(opened.action.to_dict()),
+    }
+
+
+# The shared reject codes for the SDK's session server refusals (mirrors
+# ``code_for`` in rust/crates/kit/examples/vector_runner/session.rs, matched
+# on the Python SDK's messages). First match wins.
+_SESSION_REJECT_PATTERNS: list[tuple[str, str]] = [
+    (r"transaction version .*not accepted", "unsupported-version"),
+    (r"used for a different request", "invalid-challenge"),
+    (r"compute unit price .*(exceed|maximum)", "compute-price-over-cap"),
+    (r"compute unit limit .*(exceed|maximum)", "compute-limit-over-cap"),
+    (
+        r"must not contain computebudget|unsupported computebudget|computebudget instructions must",
+        "unexpected-instruction",
+    ),
+    (
+        r"invalid payload|unknown field|missing field|^decode |"
+        r"transaction signature verification failed|config must set",
+        "invalid-payload",
+    ),
+    (
+        r"client close requires a final voucher|client close must|operator close must|operator close requires",
+        "close-authorization",
+    ),
+    (
+        r"authentication|does not authenticate|only valid for (an )?operator-signed|only valid for a client-signed",
+        "authentication-invalid",
+    ),
+    (r"fee payer does not match|fee payer must be", "fee-payer-mismatch"),
+    (
+        r"does not match (the )?derived channel pda|action channelid .*does not match|"
+        r"close voucher channelid .*does not match|do not match the stored channel|"
+        r"open channel pda .* != derived|channelid .* != transaction channel",
+        "channel-id-mismatch",
+    ),
+    (
+        r"unexpected instruction|does not contain the expected open instruction|top-up instruction not found|"
+        r"exactly one open instruction|no payment-channels open instruction",
+        "unexpected-instruction",
+    ),
+    (
+        r"below minimumdeposit|deposit must be greater than zero|additionalamount must be|"
+        r"does not match additionalamount|insufficient authorized voucher availability|"
+        r"charge amount must be positive|amount_below_price",
+        "amount-mismatch",
+    ),
+    (
+        r"open transaction|open instruction|payment-channel open|opensl|idletimeoutseconds|authorizedsigner|"
+        r"privileges|open payee|open mint|open renpayer|open rentpayer|open tokenprogram|transaction deposit|"
+        r"transaction salt|transaction grace period|transaction open slot|payment-channel payer",
+        "open-binding-mismatch",
+    ),
+    (
+        r"signature verification failed|signer does not match|invalid voucher signature|invalid_signature",
+        "voucher-signature",
+    ),
+    (r"must exceed watermark|already accepted|non_monotonic|replay", "cumulative-amount-mismatch"),
+    (r"exceeds deposit|insufficient channel availability|exceeds_deposit", "cumulative-exceeds-deposit"),
+    (r"voucher has expired|\bexpired\b", "voucher-expired"),
+    (r"settlement window|expires_before_settlement", "voucher-expires-before-settlement"),
+    (r"close is pending|close already requested|closing", "channel-closing"),
+    (r"already sealed|closed or close|sealed", "close-state"),
+    (r"not found", "channel-state"),
+    (r"address lookup tables|byte limit|session transaction|invalid|decode|signature", "invalid-payload"),
+]
+
+# Client refusals of an out-of-spec challenge (mirrors ``build_code_for``).
+_SESSION_BUILD_REJECT = (
+    r"challenge|network|program|tokenprogram|feepayerkey|operator|spl token|graceperiod|decimals|invalid"
+)
+
+
+def _session_reject(vector: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    import re
+
+    message = str(exc)
+    result: dict[str, Any] = {"id": vector.get("id", ""), "outcome": "reject", "error": message}
+    if vector.get("mode") == "build-transaction":
+        # No advertised version the signer can build; first, since the
+        # message also names the challenge's field.
+        if re.search(r"advertises no transaction version|signs up to version", message, re.IGNORECASE):
+            result["rejectCode"] = "unsupported-version"
+        elif re.search(_SESSION_BUILD_REJECT, message, re.IGNORECASE):
+            result["rejectCode"] = "invalid-challenge"
+        return result
+    for pattern, code in _SESSION_REJECT_PATTERNS:
+        if re.search(pattern, message, re.IGNORECASE):
+            result["rejectCode"] = code
+            break
+    return result
+
+
+def _run_session(vector: dict[str, Any]) -> dict[str, Any] | None:
+    """The session server and client vectors, or ``None`` for the others."""
+    inp = vector.get("input") or {}
+    mode = vector.get("mode")
+    if mode == "verify-transaction" and inp.get("sessionServerVerify"):
+        run = _session_server_verify
+    elif mode == "verify-transaction" and inp.get("sessionOpenVerify"):
+        run = _session_open_verify
+    elif mode == "build-transaction" and inp.get("sessionOpenBuild"):
+        run = _session_open_build
+    else:
+        return None
+    try:
+        return asyncio.run(run(vector))
+    except Exception as exc:  # noqa: BLE001
+        return _session_reject(vector, exc)
+
+
 def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
@@ -573,17 +983,24 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     if vector.get("intent") == "x402-exact":
         return _run_x402(vector)
 
-    if vector.get("intent") == "session" and mode == "verify-transaction":
-        if not (vector.get("input") or {}).get("sessionVoucherVerify"):
-            return {"id": vector_id, "outcome": "unsupported-mode", "error": "unsupported-mode: session verify input"}
-        return _run_session_voucher_verify(vector)
+    if vector.get("intent") == "subscription":
+        return conformance_subscription.run(vector)
 
-    if vector.get("intent") == "session" and mode == "build-transaction":
-        return {
-            "id": vector_id,
-            "outcome": "unsupported-mode",
-            "error": "unsupported-mode: no session client open builder path (input.sessionOpenBuild)",
-        }
+    if vector.get("intent") == conformance_batch.INTENT:
+        return conformance_batch.run(vector)
+
+    if vector.get("intent") == "x402-upto":
+        import conformance_x402_upto
+
+        return conformance_x402_upto.run(vector)
+
+    if vector.get("intent") == "session" and mode in ("verify-transaction", "build-transaction"):
+        session_result = _run_session(vector)
+        if session_result is not None:
+            return session_result
+        if mode == "verify-transaction" and (vector.get("input") or {}).get("sessionVoucherVerify"):
+            return _run_session_voucher_verify(vector)
+        return {"id": vector_id, "outcome": "unsupported-mode", "error": f"unsupported-mode: session {mode} input"}
 
     if mode == "canonical-bytes":
         return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}
@@ -614,11 +1031,39 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
 # this category so a guard that fires for the wrong reason is flagged rather
 # than passing on outcome alone. Decimals mismatch is enforced through the
 # transfer match key, so it honestly surfaces as `no-matching-transfer`.
+# Transaction versions (SIMD-0385): a message version the server does not
+# accept, or a client whose signer builds no advertised version (x402 §1.5
+# ``unsupported_transaction_version``). Checked before everything else,
+# including the client's invalid-challenge type: the messages also contain
+# generic words. Mirrors the head of harness/src/conformance/reject.ts.
+_VERSION_PATTERN = (
+    r"transaction version .*not accepted|unsupported_transaction_version|signs up to version"
+    r"|advertises no transaction version"
+)
+
 _REJECT_PATTERNS: list[tuple[str, str]] = [
+    (_VERSION_PATTERN, "unsupported-version"),
+    (r"signature slots do not match|invalid client transaction signature", "invalid-payload"),
+    (r"^(?!.*invalid_exact_svm).*must not contain computebudget instructions", "unexpected-instruction"),
+    (r"must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables", "invalid-payload"),
+    # Sponsors bound the priority fee as limit x price (RULINGS S6), and the
+    # exact verifier's per-factor caps.
+    (r"compute_price_instruction_too_high|priority fee .* exceeds the sponsored maximum", "compute-price-over-cap"),
+    (r"compute_limit_instruction_too_high", "compute-limit-over-cap"),
     # Charge verification policy and client challenge checks (mirrors the
     # block at the top of harness/src/conformance/reject.ts).
     # RULINGS SIG1: a client signature that does not verify over the
     # message, or a signature list short of the required signers.
+    # Transaction versions (SIMD-0385): a version the server does not
+    # accept, or no advertised version the signer can build; then the
+    # version-1 envelope rules. First: the messages contain generic words.
+    (
+        r"transaction version .*not accepted|unsupported_transaction_version|signs up to version"
+        r"|advertises no transaction version",
+        "unsupported-version",
+    ),
+    (r"^(?!.*invalid_exact_svm).*must not contain computebudget instructions", "unexpected-instruction"),
+    (r"must set computeunitlimit|loaded accounts data size limit|-byte limit|address lookup tables", "invalid-payload"),
     (r"signature verification failed", "invalid-payload"),
     (r"fee payer (token account )?cannot fund", "fee-payer-is-funds-source"),
     (r"primary amount is zero after splits|split amounts exceed", "splits-exceed-amount"),
@@ -633,8 +1078,11 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
     # requirements (the SDK's offer match). Before the amount pattern.
     (r"charge_request_mismatch|accepted payment requirement does not match", "accepted-mismatch"),
     # x402 exact SVM verifier reasons.
-    (r"fee_payer_transferring_funds|fee_payer_in_instruction_accounts", "fee-payer-not-authority"),
-    (r"unknown_(fourth|fifth|sixth|optional)_instruction|instructions_length", "unexpected-instruction"),
+    (
+        r"fee_payer_transferring_funds|fee_payer_(in|included_in)_instruction_accounts",
+        "fee-payer-not-authority",
+    ),
+    (r"unknown_(fourth|fifth|sixth|seventh|optional)_instruction|instructions_length", "unexpected-instruction"),
     (r"no_transfer_instruction|recipient_mismatch|mint_mismatch", "no-matching-transfer"),
     (r"_amount_mismatch", "amount-mismatch"),
     (r"no memo instruction found|memo_mismatch|memo_count", "invalid-payload"),
@@ -666,6 +1114,8 @@ _REJECT_PATTERNS: list[tuple[str, str]] = [
 def _classify_reject(exc: Exception) -> str | None:
     import re
 
+    if re.search(_VERSION_PATTERN, str(exc), re.IGNORECASE):
+        return "unsupported-version"
     # A client refusing a challenge that violates the method spec (decimals
     # missing for a mint, a token program that cannot be read from the mint).
     if isinstance(exc, InvalidChallengeError):
@@ -694,7 +1144,7 @@ def _result_for(vector: dict[str, Any]) -> dict[str, Any]:
 
 # Intents this runner implements; pkc checks them against
 # harness/expectations/python.toml.
-_INTENTS = ["charge", "x402-exact", "session"]
+_INTENTS = ["charge", "x402-exact", "session", "subscription", "x402-upto", conformance_batch.INTENT]
 
 
 def _serve() -> None:

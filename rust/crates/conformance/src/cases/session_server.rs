@@ -563,6 +563,7 @@ fn build_recipe(server: Server) -> BuildRecipe {
         authorized: Authorized::SessionKey,
         edits: vec![],
         client_blockhash: None,
+        signer_max_version: None,
     }
 }
 

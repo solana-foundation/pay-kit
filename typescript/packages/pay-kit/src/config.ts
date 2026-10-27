@@ -35,7 +35,11 @@ export type MppOptions = {
  */
 export type X402Options = {
     readonly enableSmartWalletVerification?: boolean;
-    /** Compute-unit ceiling on the static path. Default: unset (no limit). */
+    /**
+     * Compute-unit ceiling on the static path, for a version-0
+     * `SetComputeUnitLimit` and a version-1 header `computeUnitLimit` alike.
+     * Default: 400,000 (scheme_exact_svm.md §2.2.1 reference default).
+     */
     readonly maxComputeUnits?: number;
     /**
      * Compute-unit-price ceiling on the static path. The operator is the fee
@@ -45,7 +49,8 @@ export type X402Options = {
     readonly maxPriorityFeeMicroLamports?: number;
     /**
      * Signature-count ceiling; each signature costs the operator 5,000 lamports
-     * of base fee. A typical payment needs two. Default: unset (no limit).
+     * of base fee. A payment needs exactly two (payer and fee payer), and the
+     * exact scheme refuses any other required signer (§2.1.4). Default: 2.
      */
     readonly maxRequiredSignatures?: number;
     /**
@@ -65,6 +70,15 @@ export type X402Options = {
     readonly smartWalletAllowedPrograms?: readonly string[];
     readonly smartWalletMaxComputeUnits?: number;
     readonly smartWalletMaxPriorityFeeMicroLamports?: number;
+    /**
+     * Transaction message versions the operator sponsors, forwarded to the
+     * `exact` and `upto` facilitators and advertised as
+     * `extra.transactionVersions`. A transaction of any other version is
+     * refused with `unsupported_transaction_version` before any instruction
+     * is inspected. Narrow it to `[0]` for a signer or RPC without version-1
+     * support. Default: `[0, 1]`.
+     */
+    readonly transactionVersions?: readonly (0 | 1)[];
 };
 
 /** Merchant identity: where money lands and which key signs. */

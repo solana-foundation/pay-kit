@@ -38,7 +38,6 @@ UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exce
 class _UptoExtraRequired(TypedDict):
     """Spec-required ``extra`` fields (always advertised by a server offer)."""
 
-    decimals: int
     tokenProgram: str
     feePayer: str
     receiverAuthorizer: str
@@ -48,8 +47,8 @@ class _UptoExtraRequired(TypedDict):
 class UptoExtra(_UptoExtraRequired, total=False):
     """The ``extra`` object on an ``upto`` payment requirement.
 
-    ``decimals``/``tokenProgram``/``feePayer``/``receiverAuthorizer``/
-    ``withdrawDelay`` are required. ``feePayer`` is the transaction fee payer,
+    ``tokenProgram``/``feePayer``/``receiverAuthorizer``/``withdrawDelay`` are
+    required. ``feePayer`` is the transaction fee payer,
     channel rent payer, and zero-share channel payee (lifecycle authority);
     ``receiverAuthorizer`` is the authorized voucher signer only (payment
     authority). ``recentBlockhash``/``recentSlot``/
@@ -58,8 +57,13 @@ class UptoExtra(_UptoExtraRequired, total=False):
     like the session challenge; a plain number is accepted inbound). ``memo`` is
     a seller-declared memo the client must emit as a single SPL Memo instruction
     after ``open``; a facilitator that declares it requires an exact match.
+    ``transactionVersions`` lists the open message versions the facilitator
+    accepts (absent means ``[0]``). ``decimals`` is informational (not in the
+    scheme's table); verifiers ignore it when matching ``accepted``.
     """
 
+    decimals: int
+    transactionVersions: list[int]
     recentBlockhash: str
     recentSlot: str
     lastValidBlockHeight: str

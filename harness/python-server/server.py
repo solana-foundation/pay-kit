@@ -248,7 +248,13 @@ class _Adapter:
         self.pay_to = pay_to
         decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
-        self.replay_path = ""
+        # Cross-route replay scenarios mount a cheaper source route; a payment
+        # for it must not unlock the protected route.
+        replay_path = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_PATH") or ""
+        if replay_path:
+            replay_amount = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_AMOUNT") or amount_units
+            self.routes[replay_path] = _base_units_to_human(replay_amount, decimals)
+        self.replay_path = replay_path
 
     # -- x402 upto ------------------------------------------------------------
 

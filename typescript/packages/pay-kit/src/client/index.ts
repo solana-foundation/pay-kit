@@ -21,13 +21,22 @@ import {
     solana,
 } from '@solana/mpp/client';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
-import type { Network, PaymentRequired, PaymentRequirements } from '@x402/core/types';
+import type {
+    Network,
+    PaymentRequired,
+    PaymentRequiredV1,
+    PaymentRequirements,
+    PaymentRequirementsV1,
+} from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
+import { ExactSvmSchemeV1 } from '@x402/svm/exact/v1/client';
 import { UptoSvmScheme } from '@x402/svm/upto/client';
+import { NETWORKS as X402_V1_NETWORKS } from '@x402/svm/v1';
 
 import { ConfigurationError } from '../errors.js';
+import { PaymentIdentifier } from '../payment-identifier.js';
 import type { Protocol } from '../protocol.js';
-import { paymentIdentifierExtension } from './payment-identifier.js';
+import { paymentIdentifierExtension, withPaymentIdentifier } from './payment-identifier.js';
 import {
     ClientPermissions,
     type PaymentDestination,
@@ -46,10 +55,10 @@ export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
     /**
-     * Highest Solana transaction message version the signer can sign. x402
-     * payments build the highest version the server advertises up to this one;
-     * set `0` for a signer (such as a wallet) that cannot sign version 1.
-     * Defaults to `1`. Applies to x402 `exact` and `upto`.
+     * Highest Solana transaction message version the signer can sign.
+     * Payments build the highest version the server advertises up to this
+     * one; set `0` for a signer (such as a wallet) that cannot sign version 1.
+     * Defaults to `1`. Applies to x402 `exact` and `upto` and to MPP `charge`.
      */
     readonly maxTransactionVersion?: 0 | 1;
     /** Solana cluster used to pin default permissions. Defaults to `mainnet`. */
@@ -64,15 +73,38 @@ export type PayKitClientOptions = {
     readonly signer: KeyPairSigner;
 };
 
+/** Per-request options for {@link PayKitClient.fetch}. */
+export type PayKitFetchOptions = {
+    /**
+     * The x402 `payment-identifier` id to send (x402
+     * specs/extensions/payment_identifier.md): 16-128 characters of
+     * `[A-Za-z0-9_-]`. Reuse one id to retry the same logical payment
+     * idempotently. Sent only when the server advertises the extension, and
+     * never in place of an id the server declared itself. Without it the
+     * client generates a fresh `pay_` id when the server requires one.
+     */
+    readonly paymentIdentifier?: string;
+    /** Force a protocol when the server offers more than one (e.g. `'x402'`); otherwise MPP is preferred. */
+    readonly protocol?: Protocol;
+};
+
 /** The PayKit client instance: a payment-aware `fetch`. */
 export type PayKitClient = {
     /**
      * Like `fetch`, but transparently settles a `402`: reads the challenge,
      * pays with the matching protocol, and retries. Non-402 responses pass
      * through untouched. When the server offers more than one protocol, pass
-     * `protocol` to force one (e.g. `'x402'`); otherwise MPP is preferred.
+     * a `protocol` (or {@link PayKitFetchOptions}) to force one (e.g.
+     * `'x402'`); otherwise MPP is preferred. x402 is answered in the version
+     * the server challenges with: a v2 `PAYMENT-REQUIRED` header gets a
+     * `PAYMENT-SIGNATURE`, a legacy v1 JSON body (`x402Version: 1`) an
+     * `X-PAYMENT` header.
      */
-    readonly fetch: (input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol) => Promise<Response>;
+    readonly fetch: (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+        options?: PayKitFetchOptions | Protocol,
+    ) => Promise<Response>;
 };
 
 /** Fluent builder for {@link PayKitClient}. */
@@ -190,12 +222,12 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     // are pinned to `rpcUrl` — otherwise they derive their RPC from the
     // challenge's network (which for localnet is tagged as devnet's CAIP-2),
     // building a transfer with a blockhash the settlement RPC would reject.
+    const maxTransactionVersion = options.maxTransactionVersion ?? 1;
+    if (maxTransactionVersion !== 0 && maxTransactionVersion !== 1) {
+        throw new ConfigurationError(`maxTransactionVersion must be 0 or 1, got ${String(maxTransactionVersion)}`);
+    }
     let http: x402HTTPClient | undefined;
     if (acceptsX402) {
-        const maxTransactionVersion = options.maxTransactionVersion ?? 1;
-        if (maxTransactionVersion !== 0 && maxTransactionVersion !== 1) {
-            throw new ConfigurationError(`maxTransactionVersion must be 0 or 1, got ${String(maxTransactionVersion)}`);
-        }
         const svm = {
             rpcUrl: options.rpcUrl,
             transactionVersions: maxTransactionVersion === 0 ? ([0] as const) : ([0, 1] as const),
@@ -207,6 +239,10 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         client.setSpendControls(false);
         client.register('solana:*' as Network, new ExactSvmScheme(options.signer, svm));
         client.register('solana:*' as Network, new UptoSvmScheme(options.signer, svm));
+        // Legacy x402 v1 (x402-specification-v1.md): `exact` only, on the
+        // plain network names (`solana`, `solana-devnet`, `solana-testnet`).
+        const exactV1 = new ExactSvmSchemeV1(options.signer, svm);
+        for (const v1Network of X402_V1_NETWORKS) client.registerV1(v1Network as Network, exactV1);
         client.registerExtension(paymentIdentifierExtension);
         http = new x402HTTPClient(client);
     }
@@ -216,7 +252,18 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     const subscriptionCredentials = new Map<string, string>();
     const forward = onProgress ? (event: unknown) => onProgress(event) : undefined;
 
-    async function payFetch(input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol): Promise<Response> {
+    async function payFetch(
+        input: RequestInfo | URL,
+        init?: RequestInit,
+        fetchOptions?: PayKitFetchOptions | Protocol,
+    ): Promise<Response> {
+        const { paymentIdentifier, protocol } =
+            typeof fetchOptions === 'string'
+                ? { paymentIdentifier: undefined, protocol: fetchOptions }
+                : (fetchOptions ?? {});
+        if (paymentIdentifier !== undefined && !PaymentIdentifier.parse(paymentIdentifier)) {
+            throw new ConfigurationError('paymentIdentifier must be 16-128 characters of [A-Za-z0-9_-]');
+        }
         // Keep one pristine request and send clones so a POST body can be
         // replayed exactly once after the 402 challenge.
         const request = new Request(input, init);
@@ -274,6 +321,7 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                         const method = solana.charge({
                             expectedNetwork: challengeNetwork,
                             maxAmount: authorization.maxAmountAtomic,
+                            maxTransactionVersion,
                             onProgress: forward,
                             rpcUrl: options.rpcUrl,
                             signer: options.signer,
@@ -324,17 +372,18 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             }
         }
 
-        if (useX402 && http && probe.headers.get('payment-required')) {
+        const required = useX402 && http ? await x402PaymentRequired(http, probe) : undefined;
+        if (http && required) {
             // Parse the challenge → build + sign the payment → encode the
-            // `X-PAYMENT` header → retry. (`handlePaymentRequired` is only a
-            // pre-payment hook dispatcher; the payload is built explicitly.)
-            // Emit the same progress vocabulary as the MPP path so callers get a
-            // uniform flow (challenge → signing → paying → paid) on both rails.
-            const required = http.getPaymentRequiredResponse(name => probe.headers.get(name));
-            const permitted: PaymentRequirements[] = [];
+            // `PAYMENT-SIGNATURE` (v2) or `X-PAYMENT` (v1) header → retry.
+            // (`handlePaymentRequired` is only a pre-payment hook dispatcher;
+            // the payload is built explicitly.) Emit the same progress
+            // vocabulary as the MPP path so callers get a uniform flow
+            // (challenge → signing → paying → paid) on both rails.
+            const permitted: (PaymentRequirements | PaymentRequirementsV1)[] = [];
             for (const requirement of required.accepts ?? []) {
                 try {
-                    const amount = challengeAmount(requirement.amount);
+                    const amount = challengeAmount(requirementAmount(requirement));
                     permissions.authorize({
                         amount,
                         destinations: [{ amount, recipient: requirement.payTo }],
@@ -352,20 +401,26 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                 if (rejections.length > 0) throw new PermissionDeniedError(rejections);
                 return probe;
             }
-            const permittedRequired: PaymentRequired = { ...required, accepts: permitted };
+            const permittedRequired = { ...required, accepts: permitted } as PaymentRequired;
             const requirement = permitted[0];
             // Decimals are intentionally omitted: the x402 requirement carries
             // only the asset address, not its precision. Hardcoding 6 would
             // misreport non-6-decimal assets, so leave it to the consumer to
             // resolve from asset metadata.
             onProgress?.({
-                amount: requirement?.amount,
+                amount: requirement && requirementAmount(requirement),
                 currency: requirement?.asset,
                 recipient: requirement?.payTo,
                 type: 'challenge',
             });
             onProgress?.({ type: 'signing' });
-            const payload = await http.createPaymentPayload(permittedRequired);
+            const created = await http.createPaymentPayload(permittedRequired);
+            // A caller-chosen id replaces the one the extension generated
+            // (x402 v1 has no extensions, so this is a v2-only no-op there).
+            const payload =
+                paymentIdentifier === undefined
+                    ? created
+                    : withPaymentIdentifier(created, permittedRequired, paymentIdentifier);
             const payHeaders = http.encodePaymentSignatureHeader(payload);
             const headers = new Headers(request.headers);
             for (const [name, value] of Object.entries(payHeaders)) headers.set(name, value);
@@ -390,12 +445,47 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     return Promise.resolve({ fetch: payFetch });
 }
 
+/**
+ * The x402 challenge of a `402`: the v2 `PAYMENT-REQUIRED` header, else a
+ * legacy v1 JSON body (`x402Version: 1`, x402-specification-v1.md §5.1).
+ * `undefined` when the response carries neither.
+ */
+async function x402PaymentRequired(
+    http: x402HTTPClient,
+    probe: Response,
+): Promise<PaymentRequired | PaymentRequiredV1 | undefined> {
+    if (probe.headers.get('payment-required')) {
+        return http.getPaymentRequiredResponse(name => probe.headers.get(name));
+    }
+    let body: unknown;
+    try {
+        body = await probe.clone().json();
+    } catch {
+        return undefined;
+    }
+    if (body === null || typeof body !== 'object' || (body as { x402Version?: unknown }).x402Version !== 1) {
+        return undefined;
+    }
+    return http.getPaymentRequiredResponse(() => null, body) as unknown as PaymentRequiredV1;
+}
+
+/** The amount an x402 requirement asks for: v2 `amount`, v1 `maxAmountRequired`. */
+function requirementAmount(requirement: PaymentRequirements | PaymentRequirementsV1): string {
+    return 'maxAmountRequired' in requirement ? requirement.maxAmountRequired : requirement.amount;
+}
+
 function normalizeNetwork(value: string, configured: SolanaNetwork): SolanaNetwork {
-    if (value === 'mainnet' || value === 'mainnet-beta' || value === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') {
+    // x402 v1 names the cluster plainly: `solana` (mainnet), `solana-devnet`.
+    if (
+        value === 'mainnet' ||
+        value === 'mainnet-beta' ||
+        value === 'solana' ||
+        value === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
+    ) {
         return 'mainnet';
     }
     if (value === 'localnet') return 'localnet';
-    if (value === 'devnet' || value === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') {
+    if (value === 'devnet' || value === 'solana-devnet' || value === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') {
         return configured === 'localnet' ? 'localnet' : 'devnet';
     }
     throw new PermissionDeniedError([

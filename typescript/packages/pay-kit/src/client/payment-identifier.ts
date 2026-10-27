@@ -24,19 +24,39 @@ function record(value: unknown): Record<string, unknown> | undefined {
         : undefined;
 }
 
+type ExtensionsCarrier = { readonly extensions?: Record<string, unknown> };
+
+/**
+ * Append `id` as `payment-identifier.info.id` to a payload whose server
+ * declared the extension. Every declared field is kept, and an id the server
+ * itself declared is never overwritten ("it may append additional info but
+ * cannot delete or overwrite existing info", x402 v2 §5.1.2). Returns the
+ * payload unchanged when the server did not declare the extension, or when it
+ * did as optional and `onlyWhenRequired` is set.
+ */
+export function withPaymentIdentifier<T extends ExtensionsCarrier>(
+    payload: T,
+    paymentRequired: ExtensionsCarrier,
+    id: string,
+    onlyWhenRequired = false,
+): T {
+    const declared = record(paymentRequired.extensions?.[PAYMENT_IDENTIFIER]);
+    if (!declared) return payload;
+    const info = record(declared.info) ?? {};
+    if (info.id !== undefined) return payload;
+    if (onlyWhenRequired && info.required !== true) return payload;
+    return {
+        ...payload,
+        extensions: {
+            ...payload.extensions,
+            [PAYMENT_IDENTIFIER]: { ...declared, info: { ...info, id } },
+        },
+    };
+}
+
 /** Fills `payment-identifier.info.id` when the server declared the extension as required. */
 export const paymentIdentifierExtension: ClientExtension = {
-    enrichPaymentPayload: (payload, paymentRequired) => {
-        const declared = record(paymentRequired.extensions?.[PAYMENT_IDENTIFIER]);
-        const info = record(declared?.info);
-        if (info?.required !== true || info.id !== undefined) return Promise.resolve(payload);
-        return Promise.resolve({
-            ...payload,
-            extensions: {
-                ...payload.extensions,
-                [PAYMENT_IDENTIFIER]: { ...declared, info: { ...info, id: generatePaymentIdentifier() } },
-            },
-        });
-    },
+    enrichPaymentPayload: (payload, paymentRequired) =>
+        Promise.resolve(withPaymentIdentifier(payload, paymentRequired, generatePaymentIdentifier(), true)),
     key: PAYMENT_IDENTIFIER,
 };

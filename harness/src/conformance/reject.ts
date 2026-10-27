@@ -71,7 +71,9 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/fee payer (token account )?cannot fund/i, "fee-payer-is-funds-source"],
   [/primary amount is zero after splits|split amounts exceed/i, "splits-exceed-amount"],
   [/splits exceed maximum/i, "too-many-splits"],
-  [/ata creation owner is not authorized|unsupported compute budget|unexpected_signer/i, "unexpected-instruction"],
+  // A required signer beyond the client and the sponsor (scheme_exact_svm.md
+  // §2.1.4): @x402/svm's `excessive_signers`, the Rust kit's `unexpected_signer`.
+  [/ata creation owner is not authorized|unsupported compute budget|unexpected_signer|invalid_exact_svm_payload_excessive_signers/i, "unexpected-instruction"],
   [/atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey/i, "invalid-challenge"],
   [/ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed/i, "invalid-payload"],
   // x402 v2: the credential's `accepted` matches none of the route's

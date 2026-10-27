@@ -24,6 +24,16 @@ import {
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import {
+    acceptedTransactionVersions,
+    advertisedTransactionVersions,
+    checkTransactionEnvelope,
+    checkV1BudgetCaps,
+    type CompiledMessageView,
+    normalizeCompiledMessage,
+    type TransactionVersion,
+    V1_MAX_TRANSACTION_SIZE,
+} from '../utils/transaction-versions.js';
+import {
     assertReportedTransactionVersion,
     assertTransactionSignaturesVerify,
     coSignBase64Transaction,
@@ -89,6 +99,7 @@ export function charge(parameters: charge.Parameters) {
         store = Store.memory(),
         splits,
         signer,
+        transactionVersions,
     } = parameters;
 
     // Reject unknown network slugs at boot (spec: mainnet | devnet | localnet),
@@ -115,6 +126,7 @@ export function charge(parameters: charge.Parameters) {
     // positive parseable amount, no duplicate recipients, no aggregate overflow.
     // Invalid splits would otherwise only surface at on-chain settlement.
     validateChargeSplits(splits);
+    const advertisedVersions = advertisedTransactionVersions(transactionVersions);
 
     const hasAtaCreationSplits = splits?.some(split => split.ataCreationRequired === true) === true;
     if (!isSplToken && hasAtaCreationSplits) {
@@ -210,6 +222,7 @@ export function charge(parameters: charge.Parameters) {
                     ...(signer ? { feePayer: true, feePayerKey: signer.address } : {}),
                     ...(splits?.length ? { splits } : {}),
                     ...(recentBlockhash ? { recentBlockhash } : {}),
+                    ...(advertisedVersions ? { transactionVersions: advertisedVersions } : {}),
                 },
                 recipient,
             };
@@ -340,6 +353,8 @@ function extractRecentBlockhash(clientTxBase64: string): string | null {
 }
 
 const MAX_COMPUTE_UNIT_LIMIT = 200_000;
+/** No message version allows more than this; the version's own limit applies after decoding. */
+const MAX_DECODED_TRANSACTION_BYTES = V1_MAX_TRANSACTION_SIZE;
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
 // Audit #25: in fee-sponsored pull mode the server co-signs as fee payer and
 // pays the priority fee, so a client picking a price near the general cap could
@@ -356,47 +371,8 @@ const MAX_SPONSORED_PRIORITY_FEE_LAMPORTS = 2_000n;
 const RUNTIME_UNITS_PER_INSTRUCTION = 200_000n;
 const RUNTIME_MAX_UNITS = 1_400_000n;
 
-type CompiledMessage = {
-    addressTableLookups?: readonly unknown[];
-    header: { numSignerAccounts: number };
-    instructions: readonly CompiledInstruction[];
-    staticAccounts: readonly string[];
-};
-
-type CompiledInstruction = {
-    accountIndices: readonly number[];
-    data: Uint8Array;
-    programAddressIndex: number;
-};
-
-/** Solana's maximum serialized transaction size (the 1232-byte packet payload). */
-const MAX_TRANSACTION_SIZE_BYTES = 1232;
-
-/**
- * The kit decoder omits `accountIndices` and `data` when an instruction has
- * none. Fill them with empty values so policy checks reject such instructions
- * instead of crashing on `undefined`.
- */
-function normalizeCompiledMessage(
-    decoded: ReturnType<ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']>,
-) {
-    const message = decoded as unknown as Omit<CompiledMessage, 'instructions'> & {
-        instructions?: readonly Partial<CompiledInstruction>[];
-    };
-    const { instructions } = message;
-    if (instructions === undefined) {
-        // Not a legacy or version-0 message layout.
-        throw new Error(`unsupported message version ${String((decoded as { version?: unknown }).version)}`);
-    }
-    return {
-        ...message,
-        instructions: instructions.map(ix => ({
-            accountIndices: ix.accountIndices ?? [],
-            data: ix.data ?? new Uint8Array(),
-            programAddressIndex: ix.programAddressIndex ?? -1,
-        })),
-    } as CompiledMessage;
-}
+type CompiledMessage = CompiledMessageView;
+type CompiledInstruction = CompiledMessageView['instructions'][number];
 
 /**
  * RPC-free pre-broadcast verification of a base64-encoded charge transaction
@@ -430,12 +406,11 @@ async function verifyChargeTransactionShape(clientTxBase64: string, challenge: C
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
-    // draft-solana-charge-00 §Transaction payload: "The transaction MUST be a
-    // valid Solana versioned transaction that does not exceed the 1232-byte
-    // transaction size limit."
-    if (txBytes.byteLength > MAX_TRANSACTION_SIZE_BYTES) {
+    // A transaction far over every version's size limit is refused before
+    // decoding; the per-version limit is applied once the version is known.
+    if (txBytes.byteLength > MAX_DECODED_TRANSACTION_BYTES) {
         throw new Error(
-            `Transaction is ${txBytes.byteLength} bytes, over the ${MAX_TRANSACTION_SIZE_BYTES}-byte limit`,
+            `Transaction is ${txBytes.byteLength} bytes, over the ${MAX_DECODED_TRANSACTION_BYTES}-byte limit`,
         );
     }
     let message: CompiledMessage;
@@ -446,11 +421,24 @@ async function verifyChargeTransactionShape(clientTxBase64: string, challenge: C
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Legacy and v0 messages both decode to this shape; a legacy message is
-    // verified under the same rules as v0 (it cannot carry lookup tables).
-    if (message.addressTableLookups?.length) {
-        throw new Error('v0 transactions with address lookup tables are not supported');
-    }
+    // mpp-specs-txv1 Transaction Versions, envelope first: "Servers MUST
+    // accept every version they list, MUST reject any other version"; legacy
+    // messages are rejected; no lookup tables; the version's size limit
+    // (1232 bytes for version 0, 4096 for version 1). Then, for version 1, the
+    // header compute config is held to the caps the ComputeBudget
+    // instructions get on version 0.
+    checkTransactionEnvelope(
+        message,
+        txBytes.byteLength,
+        acceptedTransactionVersions(challenge.methodDetails.transactionVersions),
+    );
+    checkV1BudgetCaps(
+        message,
+        MAX_COMPUTE_UNIT_LIMIT,
+        challenge.methodDetails.feePayer
+            ? MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+            : MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    );
 
     const splits = challenge.methodDetails.splits ?? [];
     if (splits.length > 8) {
@@ -1085,6 +1073,17 @@ async function verifyOnChain(rpcUrl: string, signature: string, challenge: Chall
     const tx = await fetchTransaction(rpcUrl, signature);
     if (!tx) throw new Error('Transaction not found or not yet confirmed');
     assertReportedTransactionVersion(tx.version);
+    // The RPC returns whatever version it was asked for; the challenge's
+    // accepted set decides, and MPP refuses legacy messages.
+    const accepted = acceptedTransactionVersions(challenge.methodDetails.transactionVersions);
+    if (tx.version === 'legacy') {
+        throw new Error(`legacy transaction version is not accepted; accepted versions: ${accepted.join(', ')}`);
+    }
+    if (!accepted.includes(tx.version as TransactionVersion)) {
+        throw new Error(
+            `transaction version ${String(tx.version)} is not accepted; accepted versions: ${accepted.join(', ')}`,
+        );
+    }
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
     const instructions = tx.transaction.message.instructions;
@@ -1453,6 +1452,8 @@ export type ChallengeRequest = {
         recentBlockhash?: string;
         splits?: Array<{ amount: string; ataCreationRequired?: boolean; memo?: string; recipient: string }>;
         tokenProgram?: string;
+        /** Transaction message versions the server accepts. Absent means [0]. */
+        transactionVersions?: readonly TransactionVersion[];
     };
     recipient: string;
 };
@@ -1723,5 +1724,13 @@ export declare namespace charge {
         store?: Store.Store;
         /** Token program hint. If omitted, clients fetch the mint owner and fail closed on lookup errors. */
         tokenProgram?: string;
+        /**
+         * Transaction message versions the server accepts and advertises in
+         * `methodDetails.transactionVersions` (mpp-specs-txv1). Defaults to
+         * `[0]`, which is not advertised. List `1` only once the cluster has
+         * activated the `enable_tx_v1` feature gate. Legacy messages are
+         * always refused.
+         */
+        transactionVersions?: readonly TransactionVersion[];
     };
 }

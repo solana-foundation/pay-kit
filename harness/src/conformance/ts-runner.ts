@@ -13,12 +13,13 @@
 
 import { createHmac } from "node:crypto";
 import { run as runBatch } from "./intents/x402-batch-settlement";
+import { run as runSessionServer } from "./intents/session";
 import { run as runSubscription } from "./intents/subscription";
 import { run as runUpto } from "./intents/x402-upto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
-import { caip2, readPaymentIdentifier, toNetwork, verifyX402ExactCredential } from "@solana/pay-kit";
+import { bindX402ExactCredential, caip2, readPaymentIdentifier, toNetwork, x402V1Network } from "@solana/pay-kit";
 import { createPayKitClient, PermissionDeniedError } from "@solana/pay-kit/client";
 import { charge as chargeMethod, session as sessionMethod } from "@solana/mpp";
 import {
@@ -91,6 +92,11 @@ async function buildTransactionForVector(
     ...(input.request.computeUnitPrice !== undefined
       ? { computeUnitPrice: BigInt(input.request.computeUnitPrice) }
       : {}),
+    // The highest message version the signer can sign (e.g. a hardware
+    // wallet on version 0): the SDK negotiates against the advertisement.
+    ...(input.signerMaxTransactionVersion !== undefined
+      ? { maxTransactionVersion: input.signerMaxTransactionVersion }
+      : {}),
     request,
     rpcUrl: rpcUrlOf(vector),
     signer,
@@ -128,32 +134,49 @@ function shapeFromDecoded(transactionBase64: string): RunnerResult["transactionS
 //
 //   build  -> pay-kit's client (`createPayKitClient().fetch`) answers a
 //             loopback 402 carrying the vector's offer and advertised
-//             extensions. It reads the mint over input.rpcUrl, builds and
-//             signs a real exact transfer, and the runner captures the
-//             payment header it retries with.
+//             extensions (a v2 PAYMENT-REQUIRED header, or for
+//             input.x402Version 1 the legacy v1 JSON body), with the
+//             vector's pinned payment-identifier id when it has one. It
+//             reads the mint over input.rpcUrl, builds and signs a real
+//             exact transfer, and the runner captures the payment header it
+//             retries with (PAYMENT-SIGNATURE, or X-PAYMENT for v1).
 //   verify -> the exact facilitator pay-kit's x402 adapter wires
 //             (adapters/x402.ts: `new x402Facilitator().register(network,
 //             new ExactSvmScheme(toFacilitatorSvmSigner(operator)))`), run
 //             on the vector's real transaction against requirements shaped
-//             like the adapter's `requirementsFor`. A route that requires a
-//             payment-identifier first runs pay-kit's `readPaymentIdentifier`,
-//             the check the adapter applies to a `paymentIdentifier:
-//             'required'` gate before any chain work (a failure is HTTP 400).
-
-const X402_V1_UNSUPPORTED =
-  "unsupported-mode: @solana/pay-kit speaks x402 v2 only (its client answers only the PAYMENT-REQUIRED header and its server registers only the v2 exact facilitator)";
+//             like the adapter's `requirementsFor`, after pay-kit's
+//             `bindX402ExactCredential` (v2 `accepted` or v1 scheme and
+//             network bound to the route, fee payer isolation). A route that
+//             requires a payment-identifier first runs pay-kit's
+//             `readPaymentIdentifier`, the check the adapter applies to a
+//             `paymentIdentifier: 'required'` gate before any chain work (a
+//             failure is HTTP 400).
 
 // The 402 a server would send for the vector's offer. v1 challenges travel
-// in the response body; v2 in the base64 PAYMENT-REQUIRED header.
+// in the response body as x402-specification-v1.md §5.1 PaymentRequirements
+// (plain network name, `maxAmountRequired`); v2 in the base64
+// PAYMENT-REQUIRED header.
 function challengeResponse(
   input: ConformanceVector["input"],
   resourceUrl: string,
 ): { headers: Record<string, string>; body: string } {
   const offer = input.x402Offer!;
   if ((input.x402Version ?? 2) === 1) {
+    const accept = {
+      asset: offer.asset,
+      description: "",
+      ...(offer.extra !== undefined ? { extra: offer.extra } : {}),
+      maxAmountRequired: offer.amount,
+      maxTimeoutSeconds: offer.maxTimeoutSeconds ?? 300,
+      mimeType: "application/json",
+      network: x402V1Network(offer.network),
+      payTo: offer.payTo,
+      resource: resourceUrl,
+      scheme: offer.scheme ?? "exact",
+    };
     return {
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ x402Version: 1, error: "payment required", accepts: [offer] }),
+      body: JSON.stringify({ x402Version: 1, error: "X-PAYMENT header is required", accepts: [accept] }),
     };
   }
   const paymentRequired = {
@@ -181,14 +204,6 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
   if (!input.signerSecretKey) {
     throw new Error("invalid payload: x402 build vector missing input.signerSecretKey");
   }
-  if (input.x402PaymentIdentifierId !== undefined) {
-    return {
-      error:
-        "unsupported-mode: @solana/pay-kit generates the payment-identifier id itself and has no option to supply a caller-chosen id",
-      id: vector.id,
-      outcome: "unsupported-mode",
-    };
-  }
   const signer = await createKeyPairSignerFromBytes(new Uint8Array(input.signerSecretKey));
   let captured: string | undefined;
   const server = createServer((req, res) => {
@@ -215,7 +230,11 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       rpcUrl: rpcUrlOf(vector),
       signer,
     });
-    const response = await client.fetch(`http://127.0.0.1:${port}/resource`).catch((error: unknown) => {
+    const response = await client
+      .fetch(`http://127.0.0.1:${port}/resource`, undefined, {
+        paymentIdentifier: input.x402PaymentIdentifierId,
+      })
+      .catch((error: unknown) => {
       // A refused offer: report why each one was refused, not just that it was.
       if (error instanceof PermissionDeniedError) {
         const reasons = error.rejections.map((r) => `${r.code}: ${r.message}`).join("; ");
@@ -224,9 +243,6 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       throw error;
     });
     if (captured === undefined) {
-      if ((input.x402Version ?? 2) === 1) {
-        return { error: X402_V1_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-      }
       throw new Error(`pay-kit client did not pay the 402 (final status ${response.status})`);
     }
     return {
@@ -243,28 +259,8 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
 
 type X402VerifyInput = ConformanceVector["input"];
 
-// Transaction-version knobs the TypeScript SDKs do not expose. The runner
-// cannot express them, so it reports unsupported-mode instead of guessing.
-const SIGNER_VERSION_UNSUPPORTED =
-  "unsupported-mode: @solana/mpp buildChargeTransaction takes no highest signable transaction version (input.signerMaxTransactionVersion)";
-const SPONSOR_VERSIONS_UNSUPPORTED =
-  "unsupported-mode: the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated), with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])";
-
-function sponsorVersionsExpressible(versions: ConformanceVector["input"]["x402ServerTransactionVersions"]): boolean {
-  // Absent: the vector's verdict does not depend on the sponsor's own set
-  // (the spec gives it no default, so every vector that depends on it states
-  // it), and the facilitator's fixed [0, 1] serves.
-  if (versions === undefined) return true;
-  // A repeated entry names the same version (RULINGS T1): compare as sets.
-  const set = new Set(versions);
-  return set.size === 2 && set.has(0) && set.has(1);
-}
-
 async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input as X402VerifyInput;
-  if (!sponsorVersionsExpressible(vector.input.x402ServerTransactionVersions)) {
-    return { error: SPONSOR_VERSIONS_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-  }
   if (!input.x402PaymentHeader) {
     throw new Error("invalid payload: x402 verify vector missing input.x402PaymentHeader");
   }
@@ -294,9 +290,16 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
     ...toFacilitatorSvmSigner(operator, { defaultRpcUrl: rpcUrlOf(vector) }),
     simulateTransaction: async (): Promise<void> => {},
   };
+  // The sponsor's own accepted set (scheme_exact_svm.md §1.5), as pay-kit's
+  // `x402.transactionVersions` forwards it; absent keeps the default [0, 1].
+  // Every other limit is the facilitator default pay-kit leaves unset.
   const facilitator = new x402Facilitator().register(
     network,
-    new ExactSvmFacilitator(facilitatorSigner, undefined, {}),
+    new ExactSvmFacilitator(facilitatorSigner, undefined, {
+      ...(input.x402ServerTransactionVersions !== undefined
+        ? { transactionVersions: input.x402ServerTransactionVersions }
+        : {}),
+    }),
   );
   // Same shape as pay-kit's `requirementsFor` (adapters/x402.ts).
   const requirements: PaymentRequirements = {
@@ -323,21 +326,11 @@ async function verifyX402Vector(vector: ConformanceVector): Promise<RunnerResult
     readPaymentIdentifier(payload.extensions, "required");
   }
   // pay-kit's own checks ahead of the facilitator, as its x402 adapter runs
-  // them: `accepted` bound to the route, fee payer out of every instruction.
-  // v1 envelopes carry no `accepted`; the facilitator refuses them below.
-  if (payload.x402Version === 2) {
-    verifyX402ExactCredential(payload, requirements);
-  }
-  let verification: Awaited<ReturnType<typeof facilitator.verify>>;
-  try {
-    verification = await facilitator.verify(payload, requirements);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/no facilitator registered for x402 version: 1$/i.test(message)) {
-      return { error: X402_V1_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-    }
-    throw error;
-  }
+  // them: the credential bound to the route (v2 `accepted`, v1 scheme and
+  // network), fee payer out of every instruction. The bound credential is
+  // what the adapter hands the facilitator.
+  const bound = bindX402ExactCredential(payload, requirements) as PaymentPayload;
+  const verification = await facilitator.verify(bound, requirements);
   if (!verification.isValid) {
     const reason = verification.invalidReason ?? "invalid_proof";
     throw new Error(
@@ -424,20 +417,11 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.intent === "x402-exact" && vector.mode !== "canonical-bytes") {
     return runX402Vector(vector);
   }
-  if (vector.mode === "build-transaction" && vector.input.signerMaxTransactionVersion !== undefined) {
-    return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
-  }
   if (vector.intent === "session" && vector.mode === "build-transaction") {
-    return {
-      error: "unsupported-mode: no session client open builder path (input.sessionOpenBuild)",
-      id: vector.id,
-      outcome: "unsupported-mode",
-    };
+    return runSessionServer(vector);
   }
   if (vector.intent === "session" && vector.mode === "verify-transaction") {
-    if (!vector.input.sessionVoucherVerify) {
-      return { error: "unsupported-mode: session verify input", id: vector.id, outcome: "unsupported-mode" };
-    }
+    if (!vector.input.sessionVoucherVerify) return runSessionServer(vector);
     return runSessionVoucherVerify(vector);
   }
   if (vector.mode === "canonical-bytes") {

@@ -118,6 +118,9 @@ export class X402Upto {
                 ...(config.x402.paymentChannelsTreasuryOwner && {
                     paymentChannelsTreasuryOwner: config.x402.paymentChannelsTreasuryOwner,
                 }),
+                ...(config.x402.transactionVersions && {
+                    transactionVersions: [...config.x402.transactionVersions],
+                }),
             },
         );
         this.#facilitator = new x402Facilitator().register(this.#network, scheme);
@@ -233,13 +236,13 @@ export class X402Upto {
      */
     #assertOpenSlotBoundToChallenge(payload: PaymentPayload, recentSlot: bigint | undefined): void {
         const raw = payload.payload as { openSlot?: unknown } | undefined;
-        if (!raw || typeof raw.openSlot !== 'string' || !/^\d+$/.test(raw.openSlot)) {
+        const openSlot = parseOpenSlot(raw?.openSlot);
+        if (openSlot === undefined) {
             throw new InvalidProofError(
                 'invalid_upto_svm_payload_channel_seed',
-                'payload.openSlot must be a u64 decimal string',
+                'payload.openSlot must be a u64, as a non-negative safe integer or a decimal string',
             );
         }
-        const openSlot = BigInt(raw.openSlot);
         if (recentSlot === undefined) return;
         if (openSlot > recentSlot) {
             throw new InvalidProofError(
@@ -378,4 +381,27 @@ function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
         throw new InvalidProofError('invalid_upto_payload');
     }
     return { channelId: raw.channelId, expiresAt: raw.expiresAt, from: raw.from };
+}
+
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * Read `payload.openSlot` as a u64. The scheme types it as a number
+ * (scheme_upto_svm.md §4.2); a decimal string is accepted too, as the
+ * facilitator does, so a slot past 2^53 survives JSON.
+ *
+ * @param value - The wire `openSlot`.
+ * @returns The slot, or `undefined` when it is not a u64.
+ */
+export function parseOpenSlot(value: unknown): bigint | undefined {
+    let slot: bigint;
+    if (typeof value === 'number') {
+        if (!Number.isSafeInteger(value) || value < 0) return undefined;
+        slot = BigInt(value);
+    } else if (typeof value === 'string' && /^\d+$/.test(value)) {
+        slot = BigInt(value);
+    } else {
+        return undefined;
+    }
+    return slot <= U64_MAX ? slot : undefined;
 }

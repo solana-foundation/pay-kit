@@ -141,6 +141,20 @@ def test_method_details_new_channel_context_is_decimal_string_on_the_wire() -> N
     assert SessionMethodDetails.from_dict(wire) == details
 
 
+def test_method_details_carry_transaction_versions() -> None:
+    details = _details()
+    assert "transactionVersions" not in details.to_dict()
+    for versions in ([0, 1], [1], [0], []):
+        details.transaction_versions = versions
+        wire = details.to_dict()
+        assert wire["transactionVersions"] == versions
+        assert SessionMethodDetails.from_dict(wire) == details
+    wire = details.to_dict()
+    for bad in (["legacy"], [2], ["1"], [True], 1):
+        with pytest.raises(ValueError):
+            SessionMethodDetails.from_dict({**wire, "transactionVersions": bad})
+
+
 def test_method_details_resume_challenge_omits_open_transaction_context() -> None:
     # A resume challenge (channelId present) MUST NOT carry
     # recentBlockhash/recentSlot; unset fields stay off the wire.
@@ -166,6 +180,9 @@ def test_open_payload_uses_exact_string_amount_and_slot_fields() -> None:
 
     with pytest.raises(ValueError, match="must not include bump"):
         OpenPayload.from_dict({**wire, "bump": 255})
+    # draft-solana-session-00: an open MUST NOT carry an initial voucher.
+    with pytest.raises(ValueError, match="initial voucher"):
+        OpenPayload.from_dict({**wire, "voucher": {"signature": "x"}})
     for stale in ("deposit", "recentSlot", "programId", "mode"):
         assert stale not in wire
 

@@ -21,6 +21,7 @@ expectTypeOf<
 // no-bare-offer failure path.
 const rpcState = vi.hoisted(() => ({ fail: false, slot: 314n }));
 const ctorCalls = vi.hoisted(() => [] as unknown[][]);
+const exactVerifyCalls = vi.hoisted(() => [] as unknown[][]);
 const uptoCtorCalls = vi.hoisted(() => [] as unknown[][]);
 const uptoSettleCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
@@ -53,6 +54,10 @@ vi.mock('@x402/svm/exact/facilitator', async importOriginal => {
             constructor(...args: ConstructorParameters<typeof actual.ExactSvmScheme>) {
                 ctorCalls.push(args);
                 super(...args);
+            }
+            verify(...args: Parameters<InstanceType<typeof actual.ExactSvmScheme>['verify']>) {
+                exactVerifyCalls.push(args);
+                return super.verify(...args);
             }
         },
     };
@@ -93,7 +98,7 @@ import {
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 
 import { createX402ExactAdapter } from '../adapters/x402.js';
-import { Charge, X402Upto } from '../adapters/x402-upto.js';
+import { Charge, parseOpenSlot, X402Upto } from '../adapters/x402-upto.js';
 import { configure, type PayKitConfig } from '../config.js';
 import { InvalidProofError, PaymentIdentifierError, ProtocolIncompatibleError } from '../errors.js';
 import { Gate } from '../gate.js';
@@ -192,7 +197,7 @@ describe('x402 exact adapter', () => {
 
     it.each([
         ['an unknown', 3],
-        ['the v1', 1],
+        ['a v0', 0],
     ])('rejects %s x402 version as a 402, not a server error', async (_label, x402Version) => {
         const error = await verifyHeader({
             accepted: { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', scheme: 'exact' },
@@ -203,6 +208,72 @@ describe('x402 exact adapter', () => {
         });
         expect(error).toBeInstanceOf(InvalidProofError);
         expect((error as InvalidProofError).code).toBe('invalid_x402_version');
+    });
+
+    // x402-specification-v1.md §5.2: a v1 X-PAYMENT credential commits to a
+    // scheme and a plain network name, with no `accepted`.
+    describe('x402 v1 credentials', () => {
+        async function verifyV1(
+            envelope: Record<string, unknown>,
+            policy?: PaymentIdentifierPolicy,
+        ): Promise<{ error: unknown; requirements: Record<string, unknown> }> {
+            const config = await testConfig();
+            const adapter = createX402ExactAdapter(config);
+            const gate = Gate.create(
+                { accept: ['x402'], amount: usd('0.10'), name: 'test', paymentIdentifier: policy },
+                gateDefaults(config),
+            );
+            const requirements = (await adapter.acceptsEntry(gate, new Request('http://localhost/r'))) as never;
+            const header = encodePaymentSignatureHeader({
+                payload: { transaction: wireTransaction(0) },
+                x402Version: 1,
+                ...envelope,
+            } as never);
+            const request = new Request('http://localhost/r', { headers: { 'x-payment': header } });
+            const error = await adapter.verifyAndSettle(gate, request).catch((e: unknown) => e);
+            return { error, requirements };
+        }
+
+        it('hands a route-bound v1 credential to the facilitator as a v2 payload accepting the route', async () => {
+            exactVerifyCalls.length = 0;
+            // The localnet test config advertises mainnet's CAIP-2 id
+            // (surfpool clones mainnet's genesis), whose v1 name is `solana`.
+            const { error, requirements } = await verifyV1({ network: 'solana', scheme: 'exact' });
+            // The minimal transaction fails later, on its content.
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).not.toMatch(/network_mismatch|invalid_x402_version/);
+            expect(exactVerifyCalls).toHaveLength(1);
+            const [payload, verified] = exactVerifyCalls[0] as [Record<string, unknown>, Record<string, unknown>];
+            const { protocol: _protocol, ...route } = requirements as Record<string, unknown>;
+            expect(payload).toMatchObject({ accepted: route, x402Version: 2 });
+            expect(payload.payload).toEqual({ transaction: wireTransaction(0) });
+            expect(verified).toMatchObject({ network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' });
+        });
+
+        it.each([
+            ['devnet', 'solana-devnet'],
+            ['a CAIP-2 id instead of a v1 name', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+            ['an unknown name', 'solana-localnet'],
+        ])('rejects a v1 network naming %s with network_mismatch', async (_label, network) => {
+            exactVerifyCalls.length = 0;
+            const { error } = await verifyV1({ network, scheme: 'exact' });
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).toBe('network_mismatch');
+            expect((error as Error).message).toMatch(/^Network mismatch/);
+            expect(exactVerifyCalls).toHaveLength(0);
+        });
+
+        it('rejects a v1 scheme other than the route scheme', async () => {
+            const { error } = await verifyV1({ network: 'solana', scheme: 'upto' });
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).toBe('unsupported_scheme');
+        });
+
+        it('answers a v1 credential on a gate requiring a payment id with a 400 (v1 has no extensions)', async () => {
+            const { error } = await verifyV1({ network: 'solana', scheme: 'exact' }, 'required');
+            expect(error).toBeInstanceOf(PaymentIdentifierError);
+            expect((error as PaymentIdentifierError).code).toBe('payment_identifier_required');
+        });
     });
 
     describe('payment-identifier extension', () => {
@@ -422,6 +493,24 @@ describe('x402 smart-wallet options', () => {
         expect(uptoCtorCalls.at(-1)?.[1]).toEqual({ paymentChannelsTreasuryOwner: owner });
     });
 
+    it('forwards the sponsored transaction versions to both facilitators and advertises them', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { transactionVersions: [0] },
+        });
+        uptoCtorCalls.length = 0;
+        const adapter = createX402ExactAdapter(config);
+        const upto = new X402Upto(config);
+        expect((ctorCalls.at(-1)?.[2] as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+        expect(uptoCtorCalls.at(-1)?.[1]).toEqual({ transactionVersions: [0] });
+        // scheme_exact_svm.md §1.5: the server copies the facilitator's set.
+        const entry = await adapter.acceptsEntry(gateFor(config), new Request('http://localhost/r'));
+        expect((entry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+        const [uptoEntry] = await upto.accepts(usd('1.00'));
+        expect((uptoEntry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0]);
+    });
+
     it('copies the allowlist so callers cannot mutate verification policy', async () => {
         const allowed = ['SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf'];
         const config = await configure({
@@ -487,7 +576,7 @@ describe('x402 upto engine', () => {
     // recentSlot BEFORE the facilitator broadcasts the open: the facilitator
     // pins the open transaction's openArgs.openSlot to payload.openSlot, so
     // rejecting the payload value here rejects the openArgs transitively.
-    async function verifyOpenRequestFor(openSlot: string): Promise<{ request: Request; upto: X402Upto }> {
+    async function verifyOpenRequestFor(openSlot: number | string): Promise<{ request: Request; upto: X402Upto }> {
         const config = await testConfig();
         const upto = new X402Upto(config);
         const [accepted] = await upto.accepts(usd('1.00'));
@@ -554,11 +643,41 @@ describe('x402 upto engine', () => {
         },
     );
 
-    it('rejects a payload without a decimal-string openSlot before any broadcast', async () => {
+    it('rejects a payload without a u64 openSlot before any broadcast', async () => {
         const { request, upto } = await verifyOpenRequestFor('not-a-slot');
+        await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(/payload.openSlot must be a u64/);
+    });
+
+    // scheme_upto_svm.md §4.2 types openSlot as a number: a numeric slot
+    // passes the window check and reaches the facilitator's settle.
+    it('accepts a numeric openSlot and hands it to the facilitator', async () => {
+        uptoSettleCalls.length = 0;
+        const { request, upto } = await verifyOpenRequestFor(314);
+        await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow();
+        expect(uptoSettleCalls).toHaveLength(1);
+        const payload = uptoSettleCalls[0]?.[0] as { payload?: { openSlot?: unknown } } | undefined;
+        expect(payload?.payload?.openSlot).toBe(314);
+    });
+
+    it('window-checks a numeric openSlot like a decimal one', async () => {
+        const { request, upto } = await verifyOpenRequestFor(315);
         await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(
-            /payload.openSlot must be a u64 decimal string/,
+            /openSlot 315 is ahead of the challenged recentSlot 314/,
         );
+    });
+
+    it.each<[unknown, bigint | undefined]>([
+        [314, 314n],
+        ['314', 314n],
+        ['18446744073709551615', 18446744073709551615n],
+        ['18446744073709551616', undefined],
+        [-1, undefined],
+        [1.5, undefined],
+        [Number.MAX_SAFE_INTEGER + 1, undefined],
+        ['0x10', undefined],
+        [undefined, undefined],
+    ])('parseOpenSlot(%s) is %s', (value, expected) => {
+        expect(parseOpenSlot(value)).toBe(expected);
     });
 
     it('skips the window check when the recentSlot re-fetch fails (program still enforces it)', async () => {

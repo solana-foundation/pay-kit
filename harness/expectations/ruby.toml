@@ -204,10 +204,16 @@ tracking = "FINDINGS.md#txv1-ruby"
 ids = [
   "cross/charge-build-duplicate-advertisement/rust/ruby",
   "cross/charge-build-v1-advertised/rust/ruby",
+  "cross/charge-build-v1-advertised/typescript/ruby",
+  "cross/charge-build-v1-advertised/python/ruby",
   "cross/charge-build-v1-large-memos/rust/ruby",
   "cross/charge-build-v1-only-advertised/rust/ruby",
   "cross/charge-build-v1-sol/rust/ruby",
+  "cross/charge-build-v1-sol/typescript/ruby",
+  "cross/charge-build-v1-sol/python/ruby",
   "cross/charge-build-v1-sponsored/rust/ruby",
+  "cross/charge-build-v1-sponsored/typescript/ruby",
+  "cross/charge-build-v1-sponsored/python/ruby",
 ]
 reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK's that the Rust judge accepts): the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-ruby"
@@ -215,7 +221,9 @@ tracking = "FINDINGS.md#txv1-ruby"
 [[known_failing]]
 ids = [
   "cross/x402-build-duplicate-advertisement/rust/ruby",
+  "cross/x402-build-duplicate-advertisement/python/ruby",
   "cross/x402-build-v1-advertised/rust/ruby",
+  "cross/x402-build-v1-advertised/python/ruby",
   "cross/x402-build-duplicate-advertisement/typescript/ruby",
   "cross/x402-build-v1-advertised/typescript/ruby",
 ]
