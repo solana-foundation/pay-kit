@@ -21,6 +21,7 @@ expectTypeOf<
 // no-bare-offer failure path.
 const rpcState = vi.hoisted(() => ({ fail: false, slot: 314n }));
 const ctorCalls = vi.hoisted(() => [] as unknown[][]);
+const exactVerifyCalls = vi.hoisted(() => [] as unknown[][]);
 const uptoCtorCalls = vi.hoisted(() => [] as unknown[][]);
 const uptoSettleCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
@@ -53,6 +54,10 @@ vi.mock('@x402/svm/exact/facilitator', async importOriginal => {
             constructor(...args: ConstructorParameters<typeof actual.ExactSvmScheme>) {
                 ctorCalls.push(args);
                 super(...args);
+            }
+            verify(...args: Parameters<InstanceType<typeof actual.ExactSvmScheme>['verify']>) {
+                exactVerifyCalls.push(args);
+                return super.verify(...args);
             }
         },
     };
@@ -192,7 +197,7 @@ describe('x402 exact adapter', () => {
 
     it.each([
         ['an unknown', 3],
-        ['the v1', 1],
+        ['a v0', 0],
     ])('rejects %s x402 version as a 402, not a server error', async (_label, x402Version) => {
         const error = await verifyHeader({
             accepted: { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', scheme: 'exact' },
@@ -203,6 +208,72 @@ describe('x402 exact adapter', () => {
         });
         expect(error).toBeInstanceOf(InvalidProofError);
         expect((error as InvalidProofError).code).toBe('invalid_x402_version');
+    });
+
+    // x402-specification-v1.md §5.2: a v1 X-PAYMENT credential commits to a
+    // scheme and a plain network name, with no `accepted`.
+    describe('x402 v1 credentials', () => {
+        async function verifyV1(
+            envelope: Record<string, unknown>,
+            policy?: PaymentIdentifierPolicy,
+        ): Promise<{ error: unknown; requirements: Record<string, unknown> }> {
+            const config = await testConfig();
+            const adapter = createX402ExactAdapter(config);
+            const gate = Gate.create(
+                { accept: ['x402'], amount: usd('0.10'), name: 'test', paymentIdentifier: policy },
+                gateDefaults(config),
+            );
+            const requirements = (await adapter.acceptsEntry(gate, new Request('http://localhost/r'))) as never;
+            const header = encodePaymentSignatureHeader({
+                payload: { transaction: wireTransaction(0) },
+                x402Version: 1,
+                ...envelope,
+            } as never);
+            const request = new Request('http://localhost/r', { headers: { 'x-payment': header } });
+            const error = await adapter.verifyAndSettle(gate, request).catch((e: unknown) => e);
+            return { error, requirements };
+        }
+
+        it('hands a route-bound v1 credential to the facilitator as a v2 payload accepting the route', async () => {
+            exactVerifyCalls.length = 0;
+            // The localnet test config advertises mainnet's CAIP-2 id
+            // (surfpool clones mainnet's genesis), whose v1 name is `solana`.
+            const { error, requirements } = await verifyV1({ network: 'solana', scheme: 'exact' });
+            // The minimal transaction fails later, on its content.
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).not.toMatch(/network_mismatch|invalid_x402_version/);
+            expect(exactVerifyCalls).toHaveLength(1);
+            const [payload, verified] = exactVerifyCalls[0] as [Record<string, unknown>, Record<string, unknown>];
+            const { protocol: _protocol, ...route } = requirements as Record<string, unknown>;
+            expect(payload).toMatchObject({ accepted: route, x402Version: 2 });
+            expect(payload.payload).toEqual({ transaction: wireTransaction(0) });
+            expect(verified).toMatchObject({ network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' });
+        });
+
+        it.each([
+            ['devnet', 'solana-devnet'],
+            ['a CAIP-2 id instead of a v1 name', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+            ['an unknown name', 'solana-localnet'],
+        ])('rejects a v1 network naming %s with network_mismatch', async (_label, network) => {
+            exactVerifyCalls.length = 0;
+            const { error } = await verifyV1({ network, scheme: 'exact' });
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).toBe('network_mismatch');
+            expect((error as Error).message).toMatch(/^Network mismatch/);
+            expect(exactVerifyCalls).toHaveLength(0);
+        });
+
+        it('rejects a v1 scheme other than the route scheme', async () => {
+            const { error } = await verifyV1({ network: 'solana', scheme: 'upto' });
+            expect(error).toBeInstanceOf(InvalidProofError);
+            expect((error as InvalidProofError).code).toBe('unsupported_scheme');
+        });
+
+        it('answers a v1 credential on a gate requiring a payment id with a 400 (v1 has no extensions)', async () => {
+            const { error } = await verifyV1({ network: 'solana', scheme: 'exact' }, 'required');
+            expect(error).toBeInstanceOf(PaymentIdentifierError);
+            expect((error as PaymentIdentifierError).code).toBe('payment_identifier_required');
+        });
     });
 
     describe('payment-identifier extension', () => {

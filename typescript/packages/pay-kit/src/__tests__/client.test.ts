@@ -156,9 +156,33 @@ describe('createPayKitClient', () => {
          */
         async function payWithExtensions(
             extensions: Record<string, unknown>,
-            options: { extra?: Record<string, unknown>; maxTransactionVersion?: 0 | 1 } = {},
+            options: {
+                extra?: Record<string, unknown>;
+                maxTransactionVersion?: 0 | 1;
+                paymentIdentifier?: string;
+                v1?: boolean;
+            } = {},
         ): Promise<Record<string, unknown>> {
             const feePayer = await generateKeyPairSigner();
+            // x402-specification-v1.md §5.1: the v1 challenge is the JSON body.
+            const v1Body = JSON.stringify({
+                accepts: [
+                    {
+                        asset: MINT,
+                        description: '',
+                        extra: { feePayer: feePayer.address, ...options.extra },
+                        maxAmountRequired: '1000',
+                        maxTimeoutSeconds: 300,
+                        mimeType: 'application/json',
+                        network: 'solana-devnet',
+                        payTo: feePayer.address,
+                        resource: 'https://api.test/paid',
+                        scheme: 'exact',
+                    },
+                ],
+                error: 'X-PAYMENT header is required',
+                x402Version: 1,
+            });
             const paymentRequired = btoa(
                 JSON.stringify({
                     accepts: [
@@ -201,10 +225,16 @@ describe('createPayKitClient', () => {
                               };
                     return Promise.resolve(Response.json({ id, jsonrpc: '2.0', result }));
                 }
-                const header = input instanceof Request ? input.headers.get('payment-signature') : null;
+                const header =
+                    input instanceof Request ? input.headers.get(options.v1 ? 'x-payment' : 'payment-signature') : null;
                 if (header) {
                     sent = header;
                     return Promise.resolve(response(200));
+                }
+                if (options.v1) {
+                    return Promise.resolve(
+                        new Response(v1Body, { headers: { 'content-type': 'application/json' }, status: 402 }),
+                    );
                 }
                 return Promise.resolve(response(402, { 'payment-required': paymentRequired }));
             });
@@ -216,7 +246,11 @@ describe('createPayKitClient', () => {
                 rpcUrl: RPC_URL,
                 signer,
             });
-            const result = await client.fetch('https://api.test/paid');
+            const result = await client.fetch(
+                'https://api.test/paid',
+                undefined,
+                options.paymentIdentifier === undefined ? undefined : { paymentIdentifier: options.paymentIdentifier },
+            );
 
             expect(result.status).toBe(200);
             if (!sent) throw new Error('client did not send a payment');
@@ -270,6 +304,124 @@ describe('createPayKitClient', () => {
             const envelope = await payWithExtensions({ 'payment-identifier': { info: { required: false } } });
 
             expect(envelope.extensions).toEqual({ 'payment-identifier': { info: { required: false } } });
+        });
+
+        const PINNED = 'pay_abcdef1234567890abcdef1234567890';
+
+        it('sends a caller-chosen payment id in place of a generated one, echoing every declared field', async () => {
+            const envelope = await payWithExtensions(
+                {
+                    'future-extension': { info: { foo: 'bar' } },
+                    'payment-identifier': { info: { required: true }, schema: { type: 'object' } },
+                },
+                { paymentIdentifier: PINNED },
+            );
+
+            expect(envelope.extensions).toEqual({
+                'future-extension': { info: { foo: 'bar' } },
+                'payment-identifier': { info: { id: PINNED, required: true }, schema: { type: 'object' } },
+            });
+        });
+
+        it('sends a caller-chosen payment id when the server declares the extension optional', async () => {
+            const envelope = await payWithExtensions(
+                { 'payment-identifier': { info: { required: false } } },
+                { paymentIdentifier: PINNED },
+            );
+
+            expect(envelope.extensions).toEqual({ 'payment-identifier': { info: { id: PINNED, required: false } } });
+        });
+
+        it('never overwrites an id the server declared, nor adds the extension unadvertised', async () => {
+            const declared = await payWithExtensions(
+                { 'payment-identifier': { info: { id: 'pay_server0000000000000', required: true } } },
+                { paymentIdentifier: PINNED },
+            );
+            expect(declared.extensions).toEqual({
+                'payment-identifier': { info: { id: 'pay_server0000000000000', required: true } },
+            });
+
+            const unadvertised = await payWithExtensions({}, { paymentIdentifier: PINNED });
+            expect(unadvertised.extensions ?? {}).toEqual({});
+        });
+
+        it.each(['pay_short', 'pay_abcdef1234567890!', ''])(
+            'refuses a malformed caller-chosen payment id %j before any request',
+            async id => {
+                const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+                await expect(
+                    client.fetch('https://api.test/paid', undefined, { paymentIdentifier: id }),
+                ).rejects.toBeInstanceOf(ConfigurationError);
+                expect(mockFetch).not.toHaveBeenCalled();
+            },
+        );
+
+        it('still accepts a bare protocol as the third argument', async () => {
+            mockFetch.mockResolvedValue(response(402, { 'www-authenticate': 'Payment intent="session"' }));
+            const client = await createPayKitClient({ accept: ['x402', 'mpp'], rpcUrl: RPC_URL, signer });
+            // Forcing x402 skips the MPP session refusal; no x402 offer, so the probe comes back.
+            const result = await client.fetch('https://api.test/paid', undefined, 'x402');
+            expect(result.status).toBe(402);
+        });
+
+        // x402-specification-v1.md §5.2: a v1 challenge (JSON body,
+        // `x402Version: 1`) is answered with a v1 `X-PAYMENT` envelope.
+        it('answers a legacy v1 challenge body with a v1 X-PAYMENT envelope', async () => {
+            const envelope = await payWithExtensions({}, { v1: true });
+
+            expect(envelope).toMatchObject({ network: 'solana-devnet', scheme: 'exact', x402Version: 1 });
+            expect(envelope.accepted).toBeUndefined();
+            expect(envelope.extensions).toBeUndefined();
+            expect(typeof (envelope.payload as { transaction?: unknown }).transaction).toBe('string');
+        });
+
+        it('builds version 1 for a v1 challenge advertising it', async () => {
+            const envelope = await payWithExtensions({}, { extra: { transactionVersions: [0, 1] }, v1: true });
+            expect(messageVersionByte(envelope)).toBe(0x81);
+        });
+
+        it('ignores a 402 body that is not a v1 challenge', async () => {
+            mockFetch.mockResolvedValue(
+                new Response(JSON.stringify({ x402Version: 2, accepts: [] }), {
+                    headers: { 'content-type': 'application/json' },
+                    status: 402,
+                }),
+            );
+            const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+            const result = await client.fetch('https://api.test/paid');
+            expect(result.status).toBe(402);
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+        });
+
+        it('applies permissions to a v1 offer by its maxAmountRequired and network name', async () => {
+            const feePayer = await generateKeyPairSigner();
+            mockFetch.mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        accepts: [
+                            {
+                                asset: MINT,
+                                description: '',
+                                extra: { feePayer: feePayer.address },
+                                maxAmountRequired: '1000',
+                                maxTimeoutSeconds: 300,
+                                mimeType: 'application/json',
+                                network: 'solana-devnet',
+                                payTo: feePayer.address,
+                                resource: 'https://api.test/paid',
+                                scheme: 'exact',
+                            },
+                        ],
+                        x402Version: 1,
+                    }),
+                    { headers: { 'content-type': 'application/json' }, status: 402 },
+                ),
+            );
+            // Default permissions pin mainnet; the v1 offer names devnet.
+            const client = await createPayKitClient({ accept: ['x402'], rpcUrl: RPC_URL, signer });
+            const error: unknown = await client.fetch('https://api.test/paid').catch((caught: unknown) => caught);
+            expect(error).toBeInstanceOf(PermissionDeniedError);
+            expect(mockFetch).toHaveBeenCalledTimes(1);
         });
     });
 

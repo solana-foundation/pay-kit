@@ -21,11 +21,52 @@ export interface X402ExactRouteRequirements {
     readonly scheme: string;
 }
 
-/** The decoded v2 `PaymentPayload` fields these checks read. */
+/**
+ * The decoded `PaymentPayload` fields these checks read: v2 names the
+ * requirement it accepts in `accepted`; v1 commits only to a top-level
+ * `scheme` and `network`. A payload without `x402Version` is read as v2.
+ */
 export interface X402ExactCredential {
     readonly accepted?: unknown;
+    readonly network?: unknown;
     readonly payload?: unknown;
+    readonly scheme?: unknown;
+    readonly x402Version?: unknown;
 }
+
+/** The v2 payload {@link bindX402ExactCredential} hands the exact facilitator. */
+export interface X402ExactBoundCredential {
+    readonly accepted: Readonly<Record<string, unknown>>;
+    readonly extensions?: Record<string, unknown>;
+    readonly payload: Record<string, unknown>;
+    readonly resource?: unknown;
+    readonly x402Version: 2;
+}
+
+/**
+ * x402 v1 SVM network names (x402-specification-v1.md; `@x402/svm/v1`
+ * `NETWORKS`) and the CAIP-2 cluster each names.
+ */
+const X402_V1_NETWORKS: Readonly<Record<string, string>> = {
+    solana: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    'solana-devnet': 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+    'solana-testnet': 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z',
+};
+
+/**
+ * The x402 v1 network name for a CAIP-2 Solana network: `solana-devnet`,
+ * `solana-testnet`, else `solana` (mainnet), as the Rust kit's
+ * `v1_network_for_requirements`.
+ */
+export function x402V1Network(caip2: string): string {
+    for (const [name, network] of Object.entries(X402_V1_NETWORKS)) {
+        if (network === caip2) return name;
+    }
+    return 'solana';
+}
+
+/** Reason for a v1 credential naming another network than the route's. */
+export const X402_NETWORK_MISMATCH = 'network_mismatch';
 
 /** Top-level `PaymentRequirements` fields a v2 `accepted` must echo verbatim. */
 const BOUND_FIELDS = ['scheme', 'network', 'amount', 'asset', 'payTo'] as const;
@@ -168,6 +209,32 @@ function referencedAccounts(message: CompiledTransactionMessage): ReferencedAcco
 }
 
 /**
+ * Bind a v1 credential to the route (x402-specification-v1.md §5.2): v1 has
+ * no `accepted`, so it commits only to `scheme` and a plain network name,
+ * which must name the route's own scheme and CAIP-2 network.
+ *
+ * @throws {InvalidProofError} `unsupported_scheme` or `network_mismatch`.
+ */
+export function assertX402V1EnvelopeMatchesRoute(
+    credential: X402ExactCredential,
+    requirements: X402ExactRouteRequirements,
+): void {
+    if (credential.scheme !== requirements.scheme) {
+        throw new InvalidProofError(
+            'unsupported_scheme',
+            `unsupported_scheme: v1 scheme ${String(credential.scheme)} is not ${requirements.scheme}`,
+        );
+    }
+    const network = typeof credential.network === 'string' ? X402_V1_NETWORKS[credential.network] : undefined;
+    if (network !== requirements.network) {
+        throw new InvalidProofError(
+            X402_NETWORK_MISMATCH,
+            `Network mismatch: expected ${requirements.network}, got ${String(credential.network)}`,
+        );
+    }
+}
+
+/**
  * Pay-kit's checks on a decoded v2 exact credential, run before the vendored
  * `@x402/svm` facilitator verifies the transaction: bind `accepted` to the
  * route, then keep the route's fee payer out of every instruction. The
@@ -184,4 +251,40 @@ export function verifyX402ExactCredential(
     if (typeof feePayer !== 'string') return;
     const transaction = isRecord(credential.payload) ? credential.payload.transaction : undefined;
     assertX402FeePayerIsolated(transaction, feePayer);
+}
+
+/**
+ * Bind a decoded exact credential of either x402 version to the route and
+ * return the v2 payload the exact facilitator verifies and settles.
+ *
+ * A v2 credential runs {@link verifyX402ExactCredential} and is returned as
+ * is. A legacy v1 credential (`X-PAYMENT`) is bound by its scheme and network
+ * ({@link assertX402V1EnvelopeMatchesRoute}) and its fee payer isolation
+ * checked; then, as the Rust kit verifies both versions with one transaction
+ * verifier, it is carried to the facilitator as a v2 payload accepting the
+ * route's own requirements. Its transaction is still checked against those
+ * requirements (amount, asset, payTo, memo), so v1 gets every verification v2
+ * gets.
+ *
+ * @throws {InvalidProofError} `invalid_x402_version` for any other version, or the first failed check.
+ */
+export function bindX402ExactCredential(
+    credential: X402ExactCredential,
+    requirements: X402ExactRouteRequirements,
+): X402ExactBoundCredential {
+    if (credential.x402Version === 2) {
+        verifyX402ExactCredential(credential, requirements);
+        return credential as X402ExactBoundCredential;
+    }
+    if (credential.x402Version !== 1) {
+        throw new InvalidProofError(
+            'invalid_x402_version',
+            `Unsupported x402 version: ${String(credential.x402Version)}`,
+        );
+    }
+    assertX402V1EnvelopeMatchesRoute(credential, requirements);
+    const payload = isRecord(credential.payload) ? credential.payload : {};
+    const feePayer = requirements.extra?.feePayer;
+    if (typeof feePayer === 'string') assertX402FeePayerIsolated(payload.transaction, feePayer);
+    return { accepted: { ...requirements }, payload, x402Version: 2 };
 }
