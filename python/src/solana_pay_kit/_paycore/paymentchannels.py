@@ -27,6 +27,7 @@ generated builders encode it.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass, field
 
@@ -78,6 +79,7 @@ __all__ = [
     "build_settle_and_seal_instructions",
     "build_top_up_instruction",
     "decode_channel_account",
+    "distribution_hash",
     "find_associated_token_address",
     "find_channel_pda",
     "find_event_authority_pda",
@@ -278,6 +280,23 @@ def _validate_integer(value: int, name: str, bits: int, *, signed: bool = False)
     maximum = (1 << (bits - int(signed))) - 1
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} {value} does not fit in {'i' if signed else 'u'}{bits}")
+
+
+def distribution_hash(recipients: list[Distribution]) -> bytes:
+    """The 32-byte commitment a channel stores for its payout split.
+
+    ``sha256(u32 LE count || (recipient (32) || bps u16 LE) for each entry)``,
+    the program's ``distribution_hash`` (``pc::distribution_hash`` in the Rust
+    kit). A verifier compares it with the on-chain channel so settlement pays
+    the split the client opened with.
+    """
+    hasher = hashlib.sha256()
+    hasher.update(struct.pack("<I", len(recipients)))
+    for entry in recipients:
+        _validate_integer(entry.bps, "recipient bps", 16)
+        hasher.update(bytes(entry.recipient))
+        hasher.update(struct.pack("<H", entry.bps))
+    return hasher.digest()
 
 
 def voucher_message_bytes(channel_id: Pubkey, cumulative: int, expires_at: int) -> bytes:

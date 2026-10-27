@@ -4,6 +4,7 @@ language = "python"
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
 vector = ["charge", "x402-exact", "session", "subscription"]
+vector = ["charge", "x402-exact", "session", "x402-upto"]
 protocol = true
 flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds

@@ -947,6 +947,11 @@ def _run_vector(vector: dict[str, Any]) -> dict[str, Any]:
     if vector.get("intent") == "subscription":
         return conformance_subscription.run(vector)
 
+    if vector.get("intent") == "x402-upto":
+        import conformance_x402_upto
+
+        return conformance_x402_upto.run(vector)
+
     if vector.get("intent") == "session" and mode in ("verify-transaction", "build-transaction"):
         session_result = _run_session(vector)
         if session_result is not None:
@@ -1097,7 +1102,7 @@ def _result_for(vector: dict[str, Any]) -> dict[str, Any]:
 
 # Intents this runner implements; pkc checks them against
 # harness/expectations/python.toml.
-_INTENTS = ["charge", "x402-exact", "session", "subscription"]
+_INTENTS = ["charge", "x402-exact", "session", "subscription", "x402-upto"]
 
 
 def _serve() -> None:

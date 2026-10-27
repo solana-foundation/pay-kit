@@ -257,3 +257,14 @@ async def test_await_confirmation_forwards_the_history_flag():
     rpc = _rpc({"result": {"value": [{"err": None, "confirmationStatus": "finalized"}]}})
     await rpc.await_confirmation("sig", attempts=1, delay_seconds=0, search_transaction_history=True)
     assert rpc._client.last_body["params"][1] == {"searchTransactionHistory": True}  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_is_blockhash_valid_reads_the_boolean_and_rejects_garbage():
+    rpc = _rpc({"result": {"context": {"slot": 1}, "value": True}, "id": 1})
+    assert await rpc.is_blockhash_valid("hash") is True
+    assert rpc._client.last_body["method"] == "isBlockhashValid"  # type: ignore[attr-defined]
+    assert rpc._client.last_body["params"] == ["hash", {"commitment": "confirmed"}]  # type: ignore[attr-defined]
+    assert await _rpc({"result": {"value": False}, "id": 1}).is_blockhash_valid("hash") is False
+    with pytest.raises(_RpcError):
+        await _rpc({"result": {"value": "yes"}, "id": 1}).is_blockhash_valid("hash")
