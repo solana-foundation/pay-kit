@@ -127,6 +127,7 @@ async def build_charge_transaction(
     compute_unit_limit: int | None = None,
     compute_unit_price: int | None = None,
     allow_unknown_token_2022: bool = False,
+    max_transaction_version: int | None = None,
 ) -> CredentialPayload:
     """Build a Solana transaction for a charge intent.
 
@@ -146,6 +147,12 @@ async def build_charge_transaction(
             and the TS ``buildChargeTransaction`` compute overrides.
         compute_unit_price: Optional override for the SetComputeUnitPrice
             prelude (defaults to 1 micro-lamport).
+        max_transaction_version: The highest message version the signer can
+            sign (``None``: any). The build uses the highest version the
+            challenge advertises in ``methodDetails.transactionVersions``
+            (default ``[0]``) that the signer can sign; version 1 carries the
+            compute budget in its message header instead of ComputeBudget
+            instructions (mpp-specs-txv1).
 
     Returns:
         A CredentialPayload with the signed transaction.
@@ -156,10 +163,13 @@ async def build_charge_transaction(
     from solders.pubkey import Pubkey  # type: ignore[import-untyped]
     from solders.system_program import TransferParams, transfer  # type: ignore[import-untyped]
 
-    from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+    from solana_pay_kit._paycore.transaction import build_partially_signed_transaction
+    from solana_pay_kit._paycore.txv1 import check_limits, decode_transaction, negotiate, v1_config
 
     details = method_details or MethodDetails()
-    amount_int = int(amount)
+    _validate_challenge_details(currency, details)
+    amount_int = _parse_u64_amount(amount)
+    version = negotiate(details.transaction_versions, max_transaction_version)
     # Cap split count, matching rust ``if splits.len() > 8`` (charge.rs:76-78);
     # the server enforces the same MAX_SPLITS cap, but the client must fail fast.
     if len(details.splits) > MAX_SPLITS:
@@ -191,11 +201,15 @@ async def build_charge_transaction(
     # The price / limit are overridable so a caller can build a transaction
     # carrying values the server cap rejects (parity with the Go BuildOptions
     # and the TS compute overrides).
+    # Version 1 carries the same budget in its message header (limit, the
+    # priority fee it implies, and the maximum loaded-accounts data size)
+    # and MUST NOT contain ComputeBudget instructions.
     price = compute_unit_price if compute_unit_price is not None else 1
     limit = compute_unit_limit if compute_unit_limit is not None else 200_000
-    compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
-    instructions.append(Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), []))
-    instructions.append(Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), []))
+    if version == 0:
+        compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
+        instructions.append(Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), []))
+        instructions.append(Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), []))
 
     def append_memo(memo: str) -> None:
         if not memo:
@@ -329,12 +343,17 @@ async def build_charge_transaction(
     # (charge.rs:162-163). The client signs ONLY its own slot; when sponsored
     # the server cosigns the fee-payer slot at account[0].
     actual_fee_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey
-    tx_bytes = await build_partially_signed_v0_transaction(
+    tx_bytes = await build_partially_signed_transaction(
         instructions,
         actual_fee_payer,
         blockhash,
         signer,
+        version=version,
+        config=v1_config(limit, price) if version == 1 else None,
     )
+    # Refuse a build over the negotiated version's wire limits instead of
+    # handing the server a transaction it must reject.
+    check_limits(decode_transaction(tx_bytes), version)
 
     # Encode transaction
     import base64 as b64
@@ -342,6 +361,41 @@ async def build_charge_transaction(
     tx_b64 = b64.b64encode(tx_bytes).decode("ascii")
 
     return CredentialPayload(type="transaction", transaction=tx_b64)
+
+
+#: Clusters a charge challenge may name (draft-solana-charge-00, Method
+#: Details); ``mainnet-beta`` is the legacy spelling of ``mainnet``.
+SUPPORTED_NETWORKS = frozenset({"mainnet", "mainnet-beta", "devnet", "localnet"})
+
+_U64_MAX = (1 << 64) - 1
+
+
+def _validate_challenge_details(currency: str, details: MethodDetails) -> None:
+    """The challenge-shape rules a client checks before building anything.
+
+    The cluster is one of the defined ones (so an unknown network never
+    resolves to a mainnet mint), ``tokenProgram`` is absent for native SOL,
+    and a sponsored challenge (``feePayer: true``) names its ``feePayerKey``.
+    Mirrors ``validate_challenge_details`` in the Rust client.
+    """
+    if details.network not in SUPPORTED_NETWORKS:
+        raise InvalidChallengeError(
+            f"unsupported challenge network {details.network!r} (allowed: mainnet, devnet, localnet)"
+        )
+    if is_native_sol(currency) and details.token_program is not None:
+        raise InvalidChallengeError('methodDetails.tokenProgram MUST NOT be present when currency is "sol"')
+    if details.fee_payer and not details.fee_payer_key:
+        raise InvalidChallengeError("methodDetails.feePayer is true but the challenge names no feePayerKey")
+
+
+def _parse_u64_amount(amount: str) -> int:
+    """A base-unit amount: a decimal integer string that fits in a u64."""
+    if not isinstance(amount, str) or not amount.isdigit() or not amount.isascii():
+        raise InvalidChallengeError(f"invalid amount: {amount!r}")
+    value = int(amount)
+    if value > _U64_MAX:
+        raise InvalidChallengeError(f"invalid amount: {amount} does not fit in a u64")
+    return value
 
 
 async def _get_latest_blockhash_confirmed(rpc_client: Any) -> Any:

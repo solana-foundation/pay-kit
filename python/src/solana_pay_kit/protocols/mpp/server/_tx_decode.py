@@ -322,18 +322,18 @@ def _status_ok(response: Any) -> bool:
 
 
 def _extract_recent_blockhash(transaction_b64: str) -> str:
-    """Decode a base64 (legacy or v0) transaction and return its recent blockhash (base58).
+    """Decode a base64 transaction and return its recent blockhash (base58).
 
-    ``VersionedTransaction.from_bytes`` dispatches on the message-version
-    prefix, so legacy and v0 wires both decode; the caller maps any decode
+    ``decode_transaction`` dispatches on the message-version prefix, so
+    legacy, v0 and v1 wires all decode; the caller maps any decode
     failure to ``invalid-payload-type``. Kept thin so the surrounding network
     check can be exercised by tests without a full verification pipeline in
     place.
     """
-    from solders.transaction import VersionedTransaction
+    from solana_pay_kit._paycore.txv1 import decode_transaction
 
     raw = base64.b64decode(transaction_b64)
-    return str(VersionedTransaction.from_bytes(raw).message.recent_blockhash)
+    return str(decode_transaction(raw).message.recent_blockhash)
 
 
 def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sponsored: bool = False) -> None:
@@ -392,21 +392,21 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sp
 
 
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
-    """Decode local transfer and memo instructions from a legacy or v0 transaction.
+    """Decode local transfer and memo instructions from a legacy, v0 or v1 transaction.
 
-    ``VersionedTransaction.from_bytes`` dispatches on the message-version
-    prefix, so a pre-cutover client's legacy wire decodes alongside v0 and is
-    verified under the same rules. We only inspect the static account keys;
+    ``decode_transaction`` dispatches on the message-version prefix; which
+    versions are admitted is the envelope check's call
+    (``_verify_local_transaction_intent``). We only inspect the static account keys;
     address lookup tables are rejected up-front (a v0 tx with a non-empty ALT
     list would let an instruction reference accounts the verifier cannot
     see). Mirrors the Rust spine's ``verify_versioned_transaction_pre_broadcast``
     policy.
     """
-    from solders.transaction import VersionedTransaction
+    from solana_pay_kit._paycore.txv1 import decode_transaction
 
     raw = base64.b64decode(transaction_b64)
     try:
-        vtx = VersionedTransaction.from_bytes(raw)
+        vtx = decode_transaction(raw)
     except Exception as exc:
         raise PaymentError(
             "unsupported transaction shape for pre-broadcast verification",

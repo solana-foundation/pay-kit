@@ -40,47 +40,39 @@ on a party outside the client and the sponsor.
 ## charge-client-sol-token-program-ignored
 
 **Case:** `vector/charge-build-sol-token-program-reject`
-**SDKs:** go, python, swift, typescript
+**SDKs:** go, swift
 
 draft-solana-charge-00 Method Details, tokenProgram: “MUST NOT be present when
 currency is "sol".” Rust refuses (`validate_challenge_details`,
 `rust/crates/kit/src/mpp/client/charge.rs`). The others build the SOL
-transfer and ignore the field: TypeScript
-`typescript/packages/mpp/src/client/Charge.ts:331`, Go
-`go/protocols/mpp/client/charge.go:92`, Python
-`python/src/solana_pay_kit/protocols/mpp/client/charge.py:208`, Swift
-`swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:319`. A client
+transfer and ignore the field: Go `go/protocols/mpp/client/charge.go:92`,
+Swift `swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:319`. A client
 that cannot tell a malformed challenge from a valid one pays challenges a
 server never meant to issue.
 
 ## charge-client-fee-payer-without-key
 
 **Case:** `vector/charge-build-fee-payer-without-key-reject`
-**SDKs:** go, python
+**SDKs:** go
 
 Method Details, feePayer: “When true, the feePayerKey field MUST also be
 present.” TypeScript (`typescript/packages/mpp/src/client/Charge.ts:197`),
-Swift (`swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:216`)
-and Rust (`validate_challenge_details`,
+Swift (`swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:216`),
+Python and Rust (`validate_challenge_details`,
 `rust/crates/kit/src/mpp/client/charge.rs`) refuse; Go
-(`go/protocols/mpp/client/charge.go:87`) and Python
-(`python/src/solana_pay_kit/protocols/mpp/client/charge.py:169`) silently fall
-back to a client-paid transaction, so the client pays fees the challenge
-promised to sponsor.
+(`go/protocols/mpp/client/charge.go:87`) silently falls back to a client-paid
+transaction, so the client pays fees the challenge promised to sponsor.
 
 ## charge-client-unknown-network
 
 **Case:** `vector/charge-build-unknown-network-reject`
-**SDKs:** go, python, swift, typescript
+**SDKs:** go, swift
 
 Method Details, network: “MUST be one of "mainnet", "devnet", or "localnet".”
 Rust refuses (`rust/crates/kit/src/mpp/client/charge.rs:1031`). The others
 build for `testnet`: Go `go/protocols/mpp/client/charge.go:49` (the network
-guard at `:327` is opt-in), Python
-`python/src/solana_pay_kit/protocols/mpp/client/charge.py:112` (opt-in guard at
-`:88`), Swift `swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:164`
-(opt-in), TypeScript `typescript/packages/mpp/src/client/Charge.ts:187`, which
-also falls back to the mainnet RPC for an unknown network.
+guard at `:327` is opt-in), Swift
+`swift/Sources/SolanaPayKit/Protocols/Mpp/Client/Charge.swift:164` (opt-in).
 
 ## ts-charge-client-split-cap
 
@@ -91,19 +83,6 @@ Method Details, splits: “An array of at most 8 additional payment splits.”
 Rust (`rust/crates/kit/src/mpp/client/charge.rs:317`), Go and Python refuse
 nine splits; the TypeScript client sums and iterates them with no length check
 (`typescript/packages/mpp/src/client/Charge.ts:204`).
-
-## charge-client-amount-not-u64-validated
-
-**Case:** `vector/charge-build-amount-overflow-reject`
-**SDKs:** python, typescript
-
-Shared Fields, amount: “The value MUST be a positive integer that fits in a
-64-bit unsigned integer”. Both reject 2^64 only by accident, when a lower
-layer cannot encode it: TypeScript `BigInt(amount)` with no bound
-(`typescript/packages/mpp/src/client/Charge.ts:205`, then the u64 codec
-throws), Python `int(amount)` with no bound
-(`python/src/solana_pay_kit/protocols/mpp/client/charge.py:155`, then solders
-raises "int too big to convert"). Rust, Go and Swift parse a u64 explicitly.
 
 ## go-charge-sol-ata-creation-required
 
@@ -117,17 +96,6 @@ the flag (`go/protocols/mpp/client/charge.go:92`) and the server's native
 branch ignores it (`go/protocols/mpp/server/server.go:757`; required ATA owners
 are only computed on the SPL path, `:811`). Rust, TypeScript and Python refuse
 the challenge.
-
-## python-charge-sol-ata-creation-required-order
-
-**Case:** `vector/charge-verify-sol-ata-creation-required-reject`
-**SDKs:** python
-
-The Python server refuses the same challenge, but as a missing ATA creation
-(`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:550`, after
-computing required ATA owners for a native charge at `:349`) instead of
-refusing the out-of-spec challenge first. The verdict is right; the reason is
-not the rule that applies.
 
 ## go-charge-ata-owner-allowlist
 
@@ -146,20 +114,6 @@ of `ataCreationRequired` or fee sponsorship
 `feePayer: true` the server would fund rent for ATAs the challenge never
 authorized. RULINGS C5 records the client half of this as fixed; the server
 half was not.
-
-## charge-server-fee-payer-not-checked
-
-**Case:** `vector/charge-verify-fee-payer-not-server-key-reject`
-**SDKs:** python
-
-Pull Mode Verification: “The transaction MUST have the server's feePayerKey
-set as the fee payer account.” Under `feePayer: true`, Python
-(`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:558`; account 0 is
-only used as the expected ATA payer, `:316`) never compares account 0 with the
-key. Go now refuses it in its client-signature check
-(`solanatx.VerifyClientSignatures`). Python's later slot check (`_assert_signature_slot`,
-`python/src/solana_pay_kit/protocols/mpp/server/_verify.py:84`) runs only when
-co-signing, after verification passed.
 
 ## lua-charge-compute-budget-allowlist
 
@@ -435,17 +389,6 @@ refuses every prefix but legacy and version 0, and no charge or x402 type
 carries `transactionVersions`. Session wire vectors are unsupported (the Go
 session types are on the superseded draft).
 
-## txv1-python
-
-**Cases:** the charge and session transaction-version vectors listed in `python.toml`
-**SDKs:** python (x402 `exact` fixed 2026-10-27)
-
-No transaction-version negotiation in MPP: builders emit version 0, solders refuses
-the version-1 prefix (`python/tests/test_server_v0_transactions.py`), and no
-request type carries `transactionVersions`. The kit's own version-1 codec
-(`python/src/solana_pay_kit/_paycore/txv1.py`) now backs the x402 `exact`
-client and sponsor.
-
 ## txv1-swift
 
 **Cases:** the charge and x402 transaction-version vectors listed in `swift.toml`
@@ -550,6 +493,7 @@ the vectors or adapters instead:
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `python-x402-double-delivery`, the Python row of `x402-replay-route-missing`, `upto-settlement-funds-recipient-ata`, `session-open-initial-voucher-accepted` (Python), the session wire part of `txv1-python` | Python x402 server refuses a confirmed payment presented again (`signature_consumed`) and grants each confirmation once; the harness x402 server mounts the replay route; upto settlement creates only the payee and treasury accounts and the open is refused until every payout account is usable; session `methodDetails.transactionVersions` and the open-voucher refusal |
 | `x402-extra-required-signer-accepted`, `x402-fee-payer-drain-category`, `x402-client-network-not-checked`, the x402 `exact` vectors and cross cells of `txv1-python` (Python) | `solana_pay_kit` x402 `exact`: version-1 codec, `extra.transactionVersions` negotiation and admission, version-1 header rules, the 400k compute-unit and sponsored priority-fee caps, the required-signer set, fee-payer isolation before the optional allowlist, and a configured client network is never left |
+| `charge-client-sol-token-program-ignored`, `charge-client-fee-payer-without-key`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated` (Python), `python-charge-sol-ata-creation-required-order`, `charge-server-fee-payer-not-checked`, the charge vectors and charge cross cells of `txv1-python` | Python MPP charge client and server: challenge-shape checks and a u64 amount before building, version negotiation and version-1 builds, version admission with the version-1 header budget caps, and account 0 held to `feePayerKey` |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
