@@ -16,11 +16,6 @@ interop = ["x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:u
 honours_clock = true
 
 [[known_failing]]
-id = "vector/x402-exact-verify-extra-required-signer-reject"
-reason = "the x402 exact verifier accepts a third required signer (scheme_exact_svm.md §2.1.4); python/src/solana_pay_kit/protocols/x402/exact/verify.py:83 never checks the header's signer set"
-tracking = "FINDINGS.md#x402-extra-required-signer-accepted"
-
-[[known_failing]]
 id = "vector/charge-build-sol-token-program-reject"
 reason = "the client builds a SOL charge whose challenge carries tokenProgram (python/src/solana_pay_kit/protocols/mpp/client/charge.py:208)"
 tracking = "FINDINGS.md#charge-client-sol-token-program-ignored"
@@ -51,23 +46,11 @@ reason = "under feePayer=true account 0 is never compared with feePayerKey befor
 tracking = "FINDINGS.md#charge-server-fee-payer-not-checked"
 
 [[known_failing]]
-id = "vector/x402-exact-verify-fee-payer-sol-drain-reject"
-reason = "refused by the static-layout check (unknown_fourth_instruction) before fee-payer isolation (python/src/solana_pay_kit/protocols/x402/exact/verify.py:154)"
-tracking = "FINDINGS.md#x402-fee-payer-drain-category"
-
-[[known_failing]]
 ids = [
   "interop/x402-exact-idempotent-resubmit/rust/python",
 ]
 reason = "answers a second presentation of an already-settled payment with 200 and serves the resource again"
 tracking = "FINDINGS.md#python-x402-double-delivery"
-
-[[known_failing]]
-ids = [
-  "interop/x402-exact-client-wrong-network/python/rust",
-]
-reason = "the x402 client pays a requirement for solana mainnet while configured for the devnet CAIP-2 network"
-tracking = "FINDINGS.md#x402-client-network-not-checked"
 
 [[known_failing]]
 ids = [
@@ -133,7 +116,6 @@ ids = [
   "vector/charge-verify-v0-to-v1-only-reject",
   "vector/charge-verify-legacy-reject",
   "vector/charge-verify-legacy-default-reject",
-  "vector/charge-verify-lookup-table-reject",
   "vector/charge-verify-v0-oversize-reject",
   "vector/charge-verify-v1-large-memos-accept",
   "vector/charge-verify-v1-compute-budget-instruction-reject",
@@ -146,41 +128,6 @@ ids = [
   "vector/charge-verify-v1-reduced-limit-price-reject",
 ]
 reason = "the charge verifier has no version admission or version-1 rules (mpp-specs-txv1 Transaction Versions): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
-tracking = "FINDINGS.md#txv1-python"
-
-[[known_failing]]
-ids = [
-  "vector/x402-build-v1-advertised",
-  "vector/x402-build-duplicate-advertisement",
-  "vector/x402-build-no-intersection-reject",
-  "vector/x402-build-empty-advertisement-reject",
-  "vector/x402-build-legacy-only-reject",
-  "vector/x402-build-unknown-entry-reject",
-  "vector/x402-build-string-entry-reject",
-  "vector/x402-verify-v1-accept",
-  "vector/x402-verify-v1-loaded-data-limit-4mib-accept",
-  "vector/x402-verify-v1-loaded-data-limit-small-accept",
-  "vector/x402-verify-v1-heap-size-reject",
-  "vector/x402-verify-v1-not-accepted-reject",
-  "vector/x402-verify-v1-explicit-v0-sponsor-reject",
-  "vector/x402-verify-v1-over-1232-accept",
-  "vector/x402-verify-v0-over-1232-reject",
-  "vector/x402-verify-v1-over-4096-reject",
-  "vector/x402-verify-v1-missing-compute-unit-limit-reject",
-  "vector/x402-verify-v1-missing-loaded-data-limit-reject",
-  "vector/x402-verify-v1-compute-limit-at-cap-accept",
-  "vector/x402-verify-v1-compute-limit-over-cap-reject",
-  "vector/x402-verify-v1-priority-fee-at-cap-accept",
-  "vector/x402-verify-v1-priority-fee-over-cap-reject",
-  "vector/x402-verify-v1-too-many-instructions-reject",
-  "vector/x402-verify-v1-underpay-reject",
-  "vector/x402-verify-v1-wrong-recipient-reject",
-  "vector/x402-verify-v1-wrong-mint-reject",
-  "vector/x402-verify-v1-decimals-reject",
-  "vector/x402-verify-v1-fee-payer-authority-reject",
-  "vector/x402-verify-v1-fee-payer-in-accounts-reject",
-]
-reason = "the x402 exact client and sponsor have no transaction-version support (scheme_exact_svm.md §1.5, x402-foundation/x402 PR 3473/3474): the Python SDK has no transaction-version negotiation: its builders emit version 0, solders refuses the version-1 prefix (python/tests/test_server_v0_transactions.py), and no request type carries transactionVersions"
 tracking = "FINDINGS.md#txv1-python"
 
 # Cross-verification of the transaction-version builds.
@@ -201,16 +148,6 @@ ids = [
   "cross/charge-build-v1-only-advertised/typescript/python",
 ]
 reason = "accepts a version-0 charge build the Rust verifier refuses: version 0 for a challenge advertising [1] only, or over the 1232-byte version-0 limit (mpp-specs-txv1 Transaction Versions)"
-tracking = "FINDINGS.md#txv1-python"
-
-[[known_failing]]
-ids = [
-  "cross/x402-build-duplicate-advertisement/rust/python",
-  "cross/x402-build-v1-advertised/rust/python",
-  "cross/x402-build-duplicate-advertisement/typescript/python",
-  "cross/x402-build-v1-advertised/typescript/python",
-]
-reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-python"
 
 [[unsupported]]
