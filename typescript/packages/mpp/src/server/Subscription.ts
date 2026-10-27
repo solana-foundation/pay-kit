@@ -139,6 +139,11 @@ export function subscription(parameters: subscription.Parameters) {
         secretKey,
         subscriptionProgram,
     };
+    // The secret and realm `Mppx.create` issued this request's challenge under,
+    // keyed by the frozen request snapshot mppx hands to both `preflight` and
+    // `verify` (`envelope.capturedRequest`). A host may configure them only on
+    // `Mppx.create`, so `routeBinding` alone would refuse its valid activations.
+    const frameworkBindings = new WeakMap<object, FrameworkBinding>();
     const pendingAccessProofs = new WeakMap<Request, { credential: Credential.Credential; secretKey?: string }>();
     const httpTransport = Transport.http();
     const subscriptionTransport = Transport.from({
@@ -188,7 +193,10 @@ export function subscription(parameters: subscription.Parameters) {
             recipient,
         },
 
-        preflight({ input, secretKey }) {
+        preflight({ capturedRequest, input, realm: frameworkRealm, secretKey }) {
+            // mppx passes its configured realm, or the request hostname it
+            // derives the challenge realm from when none is configured.
+            if (capturedRequest) frameworkBindings.set(capturedRequest, { realm: frameworkRealm, secretKey });
             const pending = pendingAccessProofs.get(input);
             if (pending) pending.secretKey = secretKey;
             return undefined;
@@ -249,12 +257,25 @@ export function subscription(parameters: subscription.Parameters) {
         // its five-minute challenge expiry does not terminate a paid term.
         transport: subscriptionTransport,
 
-        async verify({ credential, request }) {
+        async verify({ credential, envelope, request }) {
             const cred = credential as unknown as CredentialPayload;
             // Bind the echoed challenge to this server and route before reading
             // anything else from it: verify() is reachable outside Mppx.create,
             // which is where mppx would otherwise check the HMAC and the route.
-            assertChallengeBoundToRoute(cred.challenge, request as Partial<ChallengeRequest> | undefined, routeBinding);
+            //
+            // Under Mppx.create the framework's secret and realm take precedence
+            // over the method's own (parameters or environment): mppx issued the
+            // challenge with them and has already checked its HMAC and realm, so
+            // a differing method-level value could only refuse every activation.
+            // Called directly, verify() falls back to the method's values and
+            // fails closed when it has none.
+            const framework = envelope?.capturedRequest ? frameworkBindings.get(envelope.capturedRequest) : undefined;
+            const verifyBinding = framework ? { ...routeBinding, ...framework } : routeBinding;
+            assertChallengeBoundToRoute(
+                cred.challenge,
+                request as Partial<ChallengeRequest> | undefined,
+                verifyBinding,
+            );
             const challenge = cred.challenge.request;
             const payloadType = resolvePayloadType(cred.payload);
 
@@ -370,6 +391,9 @@ export function subscription(parameters: subscription.Parameters) {
     return method;
 }
 
+/** The secret and realm `Mppx.create` hands to `preflight` for one request. */
+type FrameworkBinding = { realm: string; secretKey: string };
+
 type RouteBinding = {
     mint: string;
     network: string;
@@ -425,7 +449,7 @@ function assertChallengeBoundToRoute(
     // (the Rust server makes both required for the same reason).
     if (binding.secretKey === undefined || binding.realm === undefined) {
         throw new Error(
-            'Subscription verify requires secretKey and realm (pass them to subscription() or set MPP_SECRET_KEY and MPP_REALM)',
+            'Subscription verify requires secretKey and realm (pass them to subscription() or Mppx.create(), or set MPP_SECRET_KEY and MPP_REALM)',
         );
     }
     if (

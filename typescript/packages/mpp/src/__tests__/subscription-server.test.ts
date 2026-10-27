@@ -1747,3 +1747,205 @@ describe('subscription().verify() credential source', () => {
         await expect(verifyWithSource(() => undefined)).rejects.toThrow(/RPC reached/);
     });
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// Secret and realm supplied only to Mppx.create
+// ══════════════════════════════════════════════════════════════════════
+
+describe('subscription() served through Mppx.create', () => {
+    const FRAMEWORK_SECRET = 'framework-only-secret-at-least-32-bytes!';
+    const FRAMEWORK_REALM = 'api.example.com';
+    const ROUTE = {
+        amount: '10000000',
+        currency: MINT,
+        methodDetails: {
+            decimals: 6,
+            mint: MINT,
+            planAddress: PLAN_ID,
+            puller: PULLER,
+            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+            tokenProgram: TOKEN_PROGRAM,
+        },
+        periodCount: '30',
+        periodUnit: 'day' as const,
+        recipient: RECIPIENT,
+    };
+    const SIGNATURE = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
+
+    beforeEach(() => {
+        // Only Mppx.create carries the secret and realm.
+        delete process.env.MPP_SECRET_KEY;
+        delete process.env.MPP_REALM;
+    });
+
+    /** Stub an RPC on which activation by `subscriberAddress` confirms and its delegation is live. */
+    async function stubActivatingChain(subscriberAddress: string) {
+        const delegationB64 = Buffer.from(
+            buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n, BigInt(Math.floor(Date.now() / 1000) - 60)),
+        ).toString('base64');
+        const authorityB64 = Buffer.from(buildAuthorityData()).toString('base64');
+        const authorityPda = await deriveSubscriptionAuthorityPda({
+            mint: address(MINT),
+            programId: address(SUBSCRIPTIONS_PROGRAM),
+            subscriber: address(subscriberAddress),
+        });
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string] };
+            switch (body.method) {
+                case 'getLatestBlockhash':
+                    return rpcSuccess({ value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
+                case 'simulateTransaction':
+                    return rpcSuccess({ value: { err: null, logs: [] } });
+                case 'sendTransaction':
+                    return rpcSuccess(SIGNATURE);
+                case 'getSignatureStatuses':
+                    return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+                case 'getAccountInfo':
+                    return rpcSuccess({
+                        value: {
+                            data: [
+                                body.params?.[0] === authorityPda.toString() ? authorityB64 : delegationB64,
+                                'base64',
+                            ],
+                            executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
+                            rentEpoch: 0,
+                        },
+                    });
+                default:
+                    return rpcSuccess({});
+            }
+        };
+    }
+
+    function method(overrides: Partial<Parameters<typeof subscription>[0]> = {}) {
+        return subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            store: Store.memory(),
+            tokenProgram: TOKEN_PROGRAM,
+            ...overrides,
+        });
+    }
+
+    async function activate(mppx: object, challenge?: Challenge.Challenge) {
+        const { subscriber, subscriberAddress, transaction } = await buildActivationTransactionBase64();
+        await stubActivatingChain(subscriberAddress);
+        const handler = (
+            mppx as unknown as { subscription: (route: unknown) => (input: Request) => Promise<any> }
+        ).subscription(ROUTE);
+        let issued = challenge;
+        if (!issued) {
+            const first = await handler(new Request(`https://${FRAMEWORK_REALM}/member`));
+            expect(first.status).toBe(402);
+            issued = Challenge.fromResponse(first.challenge);
+        }
+        const credential = Credential.from({
+            challenge: issued,
+            payload: {
+                authentication: await buildAuthentication(issued.id, subscriber),
+                transaction,
+                type: 'transaction',
+            },
+        });
+        return handler(
+            new Request(`https://${FRAMEWORK_REALM}/member`, {
+                headers: { Authorization: Credential.serialize(credential) },
+            }),
+        );
+    }
+
+    test('verifies an activation when only Mppx.create has the secret and realm', async () => {
+        const mppx = Mppx.create({ methods: [method()], realm: FRAMEWORK_REALM, secretKey: FRAMEWORK_SECRET });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+        const receipt = result.withReceipt(new Response('member content')).headers.get('Payment-Receipt');
+        expect(receipt).toBeTruthy();
+    });
+
+    test('verifies an activation under the request-derived realm when Mppx.create has none', async () => {
+        const mppx = Mppx.create({ methods: [method()], secretKey: FRAMEWORK_SECRET });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+    });
+
+    test('prefers the framework secret and realm over differing method parameters', async () => {
+        const mppx = Mppx.create({
+            methods: [method({ realm: 'method.example.com', secretKey: 'method-level-secret-that-differs-32b' })],
+            realm: FRAMEWORK_REALM,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+    });
+
+    test('refuses an activation challenge issued under another secret or realm', async () => {
+        const mppx = Mppx.create({ methods: [method()], realm: FRAMEWORK_REALM, secretKey: FRAMEWORK_SECRET });
+        const request = { ...ROUTE, methodDetails: { ...ROUTE.methodDetails, network: 'devnet' } };
+        const otherSecret = Challenge.from({
+            intent: 'subscription',
+            method: 'solana',
+            realm: FRAMEWORK_REALM,
+            request,
+            secretKey: 'another-secret-entirely-of-32-bytes!',
+        });
+        expect((await activate(mppx, otherSecret)).status).toBe(402);
+        const otherRealm = Challenge.from({
+            intent: 'subscription',
+            method: 'solana',
+            realm: 'sibling.example.com',
+            request,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        expect((await activate(mppx, otherRealm)).status).toBe(402);
+    });
+
+    test('verify() binds to the secret and realm preflight received for the same request', async () => {
+        const server = method();
+        const capturedRequest = {
+            headers: new Headers(),
+            method: 'GET',
+            url: new URL(`https://${FRAMEWORK_REALM}/member`),
+        };
+        await server.preflight!({
+            capturedRequest,
+            credential: null,
+            input: new Request(`https://${FRAMEWORK_REALM}/member`),
+            options: {} as never,
+            realm: FRAMEWORK_REALM,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        const request = { ...ROUTE, methodDetails: { ...ROUTE.methodDetails, network: 'devnet' } };
+        const verifyWith = (challenge: Challenge.Challenge, captured: typeof capturedRequest) =>
+            server.verify!({
+                credential: { challenge, payload: { type: 'transaction' } } as never,
+                envelope: { capturedRequest: captured } as never,
+                request: ROUTE_REQUEST as never,
+            });
+        const issue = (realm: string, secretKey: string) =>
+            Challenge.from({ intent: 'subscription', method: 'solana', realm, request, secretKey });
+
+        await expect(verifyWith(issue(FRAMEWORK_REALM, FRAMEWORK_SECRET), capturedRequest)).rejects.toThrow(
+            /Missing transaction data/,
+        );
+        await expect(
+            verifyWith(issue(FRAMEWORK_REALM, 'another-secret-entirely-of-32-bytes!'), capturedRequest),
+        ).rejects.toThrow(/HMAC mismatch/);
+        await expect(verifyWith(issue('sibling.example.com', FRAMEWORK_SECRET), capturedRequest)).rejects.toThrow(
+            /realm `sibling.example.com` does not match this server/,
+        );
+        // A request snapshot preflight never saw carries no framework binding,
+        // so a method without its own secret and realm still fails closed.
+        await expect(verifyWith(issue(FRAMEWORK_REALM, FRAMEWORK_SECRET), { ...capturedRequest })).rejects.toThrow(
+            /requires secretKey and realm/,
+        );
+    });
+});
