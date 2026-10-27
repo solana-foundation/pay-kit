@@ -753,6 +753,12 @@
     "bugType": "settlement",
     "description": "The static layout's 200,000 compute unit limit paired with a 5,000,000 micro-lamport unit price: each is within its own cap, but the sponsor would pay a 1,000,000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6). Differs from x402-exact-v2-verify-accept only in the price. Mutation: compute unit price set to 5000000 micro-lamports.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "scheme_exact_svm.md §2.2.1 bounds the compute unit limit and the unit price separately (reference defaults 400,000 units and 5,000,000 micro-lamports per unit) and this transaction is within both; the 2,000 lamport cap on their product is pay-kit's stricter sponsor policy (§2.3: “Sponsors MAY introduce stricter limits but MUST NOT relax the §2.1 MUSTs.”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "compute-price-over-cap"
     },

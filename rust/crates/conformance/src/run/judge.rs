@@ -91,8 +91,47 @@ fn expect_same(
     }
 }
 
-/// `judgeVector`: the vector's `expect` block against the result.
+/// `judgeVector`: the vector's `expect` block against the result. A result
+/// that misses the primary verdict passes when it matches one of the
+/// verdicts the specs also allow (`expect.alsoConformant`: an outcome and,
+/// for a reject, its code). An accepted build is still judged on its
+/// artifact by the driver.
 pub fn judge_expect(vector: &Vector, result: &Value) -> Result<Verdict, Failure> {
+    let primary = judge_primary(vector, result);
+    let Err(mut failure) = primary else {
+        return primary;
+    };
+    let Some(alternatives) = vector.expect()["alsoConformant"].as_array() else {
+        return Err(failure);
+    };
+    let outcome = result["outcome"].as_str().unwrap_or_default();
+    let code = result.get("rejectCode").and_then(Value::as_str);
+    let matched = alternatives.iter().any(|alt| {
+        alt["outcome"].as_str() == Some(outcome)
+            && (outcome != "reject" || alt["rejectCode"].as_str() == code)
+    });
+    if matched && result.get("id").and_then(Value::as_str) == Some(vector.id.as_str()) {
+        return Ok(Verdict::Pass);
+    }
+    failure.message = format!(
+        "{}\n(also conformant: {}; {})",
+        failure.message,
+        alternatives
+            .iter()
+            .map(|alt| match alt["rejectCode"].as_str() {
+                Some(code) => format!("reject {code}"),
+                None => alt["outcome"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        vector.expect()["alsoConformantReason"]
+            .as_str()
+            .unwrap_or_default()
+    );
+    Err(failure)
+}
+
+fn judge_primary(vector: &Vector, result: &Value) -> Result<Verdict, Failure> {
     let actual_id = result.get("id");
     if actual_id.and_then(Value::as_str) != Some(vector.id.as_str()) {
         return Err(Failure::at(
@@ -904,6 +943,32 @@ mod tests {
             judge_expect(&v, &r).unwrap(),
             Verdict::Unsupported("unsupported-mode: server-only".into())
         );
+    }
+
+    #[test]
+    fn also_conformant_verdicts_pass_and_others_do_not() {
+        // Primary reject channel-state; payload-type is also conformant.
+        let v = vector("batch-verify-voucher-server-mode-config-reject");
+        let primary = json!({"id": v.id, "outcome": "reject", "rejectCode": "channel-state"});
+        assert_eq!(judge_expect(&v, &primary).unwrap(), Verdict::Pass);
+        let alternative = json!({"id": v.id, "outcome": "reject", "rejectCode": "payload-type"});
+        assert_eq!(judge_expect(&v, &alternative).unwrap(), Verdict::Pass);
+        let other = json!({"id": v.id, "outcome": "reject", "rejectCode": "invalid-payload"});
+        let failure = judge_expect(&v, &other).unwrap_err();
+        assert!(failure
+            .message
+            .contains("also conformant: reject payload-type"));
+        let accepted = json!({"id": v.id, "outcome": "accept"});
+        assert!(judge_expect(&v, &accepted).is_err());
+        // Primary reject; accept is also conformant (sponsor fee policy).
+        let v = vector("x402-exact-verify-priority-fee-over-cap-reject");
+        let accepted = json!({"id": v.id, "outcome": "accept"});
+        assert_eq!(judge_expect(&v, &accepted).unwrap(), Verdict::Pass);
+        let wrong = json!({"id": v.id, "outcome": "reject", "rejectCode": "invalid-payload"});
+        assert!(judge_expect(&v, &wrong).is_err());
+        // An alternative never excuses a result for another vector.
+        let foreign = json!({"id": "another-vector", "outcome": "accept"});
+        assert!(judge_expect(&v, &foreign).is_err());
     }
 
     #[test]

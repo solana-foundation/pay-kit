@@ -90,10 +90,10 @@ async function canonical(vector: ConformanceVector): Promise<RunnerResult> {
   if (input.subscriptionPeriod) {
     const { periodUnit, periodCount } = input.subscriptionPeriod;
     try {
-      // The SDK's own client reads periodCount with Number() before mapping.
+      // The wire string, as the SDK's client and server pass it.
       const periodHours = mapSubscriptionPeriodToHours(
         periodUnit as "day" | "week",
-        Number(periodCount),
+        periodCount,
       );
       return exactJson(vector.id, { periodHours });
     } catch (error) {

@@ -22,6 +22,15 @@ pub mod x402_policy;
 pub mod x402_tx_versions;
 pub mod x402_upto;
 
+/// Why an accept is also conformant where pay-kit's sponsors refuse a
+/// priority fee above 2,000 lamports (limit times price, RULINGS S6): the
+/// x402 schemes bound each factor and leave a tighter total to the sponsor.
+pub const SPONSOR_FEE_PRODUCT_POLICY: &str = "scheme_exact_svm.md §2.2.1 bounds the compute unit limit and the unit price separately (reference defaults 400,000 units and 5,000,000 micro-lamports per unit) and this transaction is within both; the 2,000 lamport cap on their product is pay-kit's stricter sponsor policy (§2.3: “Sponsors MAY introduce stricter limits but MUST NOT relax the §2.1 MUSTs.”), so a sponsor without it accepts (RULINGS S6).";
+
+/// As [`SPONSOR_FEE_PRODUCT_POLICY`], for the payment-channel transactions an
+/// upto or batch-settlement sponsor co-signs.
+pub const CHANNEL_FEE_PRODUCT_POLICY: &str = "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).";
+
 /// `registry! { name => case_expr; ... }`: one constructor fn per case, the
 /// module's `cases()`, and a positive-control `#[test]` per case that also
 /// asserts the fn name equals the case id (dashes as underscores).

@@ -163,7 +163,9 @@ impl Route {
         if let Some(memo) = self.memo() {
             extra["memo"] = json!(memo);
         }
-        if let Some(versions) = &self.versions {
+        // What the server advertises: nothing for `[0]` (the kit's
+        // `advertised` rule), as for x402 exact.
+        if let Some(versions) = self.versions.as_ref().filter(|v| v.as_slice() != [0]) {
             extra["transactionVersions"] = json!(versions);
         }
         json!({

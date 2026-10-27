@@ -12,6 +12,12 @@
 //!   whose channel store holds `batchServerChannel`, verifies and reserves
 //!   `x402PaymentHeader` against the chain state of `rpcFixtures`. A
 //!   `batchCorrective` input is the client-side check of a corrective 402.
+//!   `batchVerdictFromStore: true` marks a vector whose verdict rests on the
+//!   store record alone (the charged or accepted cumulative, a close-pending
+//!   mark): a stateless facilitator never sees it (RULINGS B1), so a testee
+//!   whose only verify entry point is one reports `unsupported-mode`.
+//!   `batchServer.transactionVersions` is the facilitator's own accepted
+//!   set; a vector whose verdict depends on it states it.
 //! - **build-transaction**: the client builds the payload `batchClient`
 //!   names against `batchClient.requirements`; the judge checks the build
 //!   against the spec's structural rules and the Rust server's verifier.
@@ -639,7 +645,30 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
             ));
         }
     }
-    if c.get("openSlot")
+    // Phase 1: "The client MAY use `extra.recentBlockhash` and
+    // `extra.recentSlot` ... If either hint is stale, the client MUST fetch a
+    // fresh value". The Rust kit takes the slot from its caller
+    // (`batchClient.openSlot`); an SDK that fetches the cluster slot or uses
+    // the hint is as conformant. Any slot the program's open-slot window
+    // accepts against the fixture cluster's slot is judged correct.
+    let cluster_slot = input["rpcFixtures"]["slot"]
+        .as_u64()
+        .filter(|_| operation == "deposit");
+    if let Some(cluster) = cluster_slot {
+        let open = config.open_slot;
+        if open > cluster || cluster - open > pc::OPEN_SLOT_WINDOW {
+            return Err(fail_at(
+                "payload.channelConfig.openSlot",
+                Some(&json!(format!(
+                    "a slot in [{}, {cluster}]",
+                    cluster.saturating_sub(pc::OPEN_SLOT_WINDOW)
+                ))),
+                Some(&json!(open)),
+                "the channel must open at a slot inside the program's open-slot window of the cluster slot",
+            ));
+        }
+    } else if c
+        .get("openSlot")
         .and_then(Value::as_u64)
         .is_some_and(|slot| slot != config.open_slot)
     {

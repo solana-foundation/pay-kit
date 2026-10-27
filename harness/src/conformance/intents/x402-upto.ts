@@ -112,6 +112,18 @@ function codeFor(reason: string, message: string): RejectCode | undefined {
   }
   if (/unsupported_transaction_version|transaction version/.test(m))
     return "unsupported-version";
+  // Version-1 header budget (x402-txv1 §1.5) and per-version size limit:
+  // `transaction v1 config rejected (<violation>)` and `above the N-byte
+  // limit for version V`. A ComputeBudget instruction beside the open is an
+  // instruction outside the open (the Rust verifier's category for upto);
+  // an unset or malformed header field and an oversize message are
+  // malformed payloads (RULINGS T4).
+  const v1 = /v1 config rejected \(([a-z_]+)\)/.exec(m)?.[1];
+  if (v1 === "compute_budget_instruction") return "unexpected-instruction";
+  if (v1 === "compute_unit_limit_too_high") return "compute-limit-over-cap";
+  if (v1 === "priority_fee_too_high") return "compute-price-over-cap";
+  if (v1 !== undefined) return "invalid-payload";
+  if (/byte limit for version/.test(m)) return "invalid-payload";
   if (/setcomputeunitprice .* exceeds/.test(m)) return "compute-price-over-cap";
   if (/setcomputeunitlimit .* exceeds/.test(m)) return "compute-limit-over-cap";
   if (
@@ -214,8 +226,27 @@ async function build(vector: ConformanceVector): Promise<RunnerResult> {
   }
 }
 
+// The vendored upto facilitator accepts legacy, version 0 and version 1 with
+// no option to narrow the set, so a sponsor configured with another set
+// (input.x402ServerTransactionVersions other than absent or [0, 1]) cannot
+// be expressed (scheme_upto_svm.md: "The facilitator enforces its own
+// accepted set").
+function sponsorVersionsExpressible(versions: Array<0 | 1> | undefined): boolean {
+  if (versions === undefined) return true;
+  const set = new Set(versions);
+  return set.size === 2 && set.has(0) && set.has(1);
+}
+
 async function verify(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input;
+  if (!sponsorVersionsExpressible(input.x402ServerTransactionVersions)) {
+    return {
+      error:
+        "unsupported-mode: the vendored @x402/svm upto facilitator's accepted transaction-version set is fixed (legacy, 0 and 1) with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])",
+      id: vector.id,
+      outcome: "unsupported-mode",
+    };
+  }
   if (!input.x402PaymentHeader)
     throw new Error(
       "invalid payload: upto verify vector missing x402PaymentHeader",

@@ -142,7 +142,8 @@ crate::registry! {
         &[SPONSORSHIP_ABUSE],
         "The static layout's 200,000 compute unit limit paired with a 5,000,000 micro-lamport unit price: each is within its own cap, but the sponsor would pay a 1,000,000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6). Differs from x402-exact-v2-verify-accept only in the price.",
         mutated(devnet_route(), Mutation::SetComputeUnitPrice { micro_lamports: 5_000_000 }),
-    );
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::SPONSOR_FEE_PRODUCT_POLICY);
     // RULINGS SIG1: the client's signature verifies over this message
     // before the sponsor claims, co-signs or sends it.
     x402_exact_verify_forged_client_signature_reject => reject_case(

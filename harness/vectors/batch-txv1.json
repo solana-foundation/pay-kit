@@ -170,7 +170,7 @@
   },
   {
     "bugType": "auth-bypass",
-    "description": "The same version-1 top_up on a route that accepts only version 0 (no transactionVersions advertised).",
+    "description": "The same version-1 top_up to a facilitator configured to accept only version 0 (batchServer.transactionVersions [0]).",
     "expect": {
       "outcome": "reject",
       "rejectCode": "unsupported-version"
@@ -267,6 +267,9 @@
         "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "price": "0.001",
         "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "transactionVersions": [
+          0
+        ],
         "withdrawDelay": 3600
       },
       "batchServerChannel": {
@@ -1675,6 +1678,12 @@
     "bugType": "auth-bypass",
     "description": "priorityFee 2001 lamports at computeUnitLimit 200000: far under the per-unit cap, but one lamport over the cap the sponsor puts on the total fee it pays (RULINGS S6).",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "setup-transaction"
     },
@@ -2344,7 +2353,7 @@
   },
   {
     "bugType": "auth-bypass",
-    "description": "A client-mode refund whose request_close is version 1 on a route that accepts only version 0.",
+    "description": "A client-mode refund whose request_close is version 1, to a facilitator configured to accept only version 0 (batchServer.transactionVersions [0]).",
     "expect": {
       "outcome": "reject",
       "rejectCode": "unsupported-version"
@@ -2441,6 +2450,9 @@
         "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "price": "0.001",
         "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "transactionVersions": [
+          0
+        ],
         "withdrawDelay": 3600
       },
       "batchServerChannel": {

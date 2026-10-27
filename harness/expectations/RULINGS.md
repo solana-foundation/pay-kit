@@ -105,31 +105,42 @@ accepts a credential without decoding its transaction does not conform.
 16–128 characters of `[A-Za-z0-9_-]`. A server that advertises the extension
 as required MUST reject a payload without a valid id.
 
-**S5. Overpayment is tolerated by default.** scheme_exact_svm.md §1.4: “A
-matching transfer MAY exceed PaymentRequirements.amount ... it MUST NOT be
-less.” The generic scheme_exact.md SVM bullet once required the transferred
-amount to equal maxAmountRequired; it now agrees with the network binding (“Amount: the transfer to `payTo` MUST be at least
-`amount`”). §2.3 lets a sponsor reject overpayment only as an explicit
-stricter policy; default verifiers MUST accept it.
+**S5. Overpayment is tolerated; an exact-amount sponsor is conformant too.**
+scheme_exact_svm.md §1.4: “A matching transfer MAY exceed
+PaymentRequirements.amount ... it MUST NOT be less.” The generic
+scheme_exact.md SVM bullet once required the transferred amount to equal
+maxAmountRequired; it now agrees with the network binding (“Amount: the
+transfer to `payTo` MUST be at least `amount`”). But §3.1 still says “exact
+amount match are enforced on both layouts”, and §2.3 lets a sponsor refuse a
+scheme-valid transaction (“A transaction MAY be valid under the `exact` scheme
+while being rejected by a sponsor's policy.”). The Rust sponsor accepts
+overpayment; `x402-exact-verify-overpayment-accept` pins that and also
+admits `reject amount-mismatch` (`expect.alsoConformant`). Upstream: align
+the §3.1 wording with §1.4.
 
-**S6. A sponsor bounds the priority fee as limit times price.**
+**S6. A cap on limit times price is sponsor policy, not spec.**
 scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
 enforcing maximum compute unit limits and maximum compute unit (priority fee)
-price”. Capping each field alone still lets the largest limit pair with the
-largest price, so the fee the sponsor pays is bounded as their product. The
-pay-kit sponsors cap it at 2,000 lamports; a 200,000 unit limit at 5,000,000
-micro-lamports per unit (each within its own cap, a 1,000,000 lamport fee) is
-refused as `compute-price-over-cap`. Vector:
-`x402-exact-verify-priority-fee-over-cap-reject`. A version-1 header
-`priorityFee` is the same product, so the cap applies to it unchanged; the
-txv1 per-unit cap (5 lamports per unit) still holds below it, and
-`x402-verify-v1-priority-fee-{at,over}-cap-*` pin that boundary at a 300 unit
-limit, where it binds before the total does. The same sponsor cap covers the
-payment-channel transactions an x402 sponsor co-signs (upto `open`, batch
-`open`, `top_up` and refund `request_close`), whose spec ceilings (400,000
-units, 5,000,000 micro-lamports) are absolute maxima a sponsor MAY tighten;
-without a declared limit the price is charged on the runtime default of
-200,000 units per non-ComputeBudget instruction. Vectors:
+price”, with reference defaults of 400,000 units and 5,000,000
+micro-lamports per unit, each capped on its own. Capping each field alone
+still lets the largest limit pair with the largest price, so the pay-kit
+sponsors also bound the fee they pay as the product, at 2,000 lamports; a
+200,000 unit limit at 5,000,000 micro-lamports per unit (each within its own
+cap, a 1,000,000 lamport fee) is refused as `compute-price-over-cap`. The spec
+fixes no such total, so it is a stricter local policy (“Sponsors MAY
+introduce stricter limits but MUST NOT relax the §2.1 MUSTs.”): the vectors
+pin pay-kit's reject and also admit `accept` (`expect.alsoConformant`).
+Vector: `x402-exact-verify-priority-fee-over-cap-reject`. A version-1 header
+`priorityFee` is the same product; the txv1 per-unit cap (5 lamports per
+unit) is spec and holds below it, and `x402-verify-v1-priority-fee-{at,over}-cap-*`
+pin that boundary at a 300 unit limit, where it binds before the total does.
+The same policy covers the payment-channel transactions an x402 sponsor
+co-signs (upto `open`, batch `open`, `top_up` and refund `request_close`),
+whose spec ceilings (400,000 units, 5,000,000 micro-lamports) are absolute
+maxima a sponsor MAY tighten (“A sponsor MAY apply a stricter local policy for
+compute-unit limit, compute-unit price, and required-signature count”);
+without a declared limit pay-kit charges the price on the runtime default of
+200,000 units per non-ComputeBudget instruction. Vectors (reject, or accept):
 `x402-upto-verify-{priority-fee,implicit-limit-priority-fee,v1-priority-fee-over-sponsor}-*`
 and `batch-verify-top-up-{priority-fee,implicit-limit-priority-fee}-over-cap-reject`,
 `batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject`.
@@ -285,9 +296,12 @@ Associated Token program. Both SDK clients prepend a `CreateIdempotent` of the
 subscriber's own ATA so a first-time wallet can activate; it moves no tokens.
 Until the draft lists it, vectors accept that one instruction and reject any
 other ATA creation (the recipient's, a third party's) as
-`unexpected-instruction`: “MUST NOT reference writable accounts that could
-redirect funds away from recipient.” Upstream: list the subscriber's
-idempotent ATA creation explicitly.
+`unexpected-instruction`, on the client list's closing MUST: the activation
+must “contain no instructions other than those above plus optional
+compute-budget and memo instructions.” Creating the recipient's ATA moves no
+funds away from `recipient`, so the writable-account rule is not what refuses
+it; it is an instruction the list does not name. Upstream: list the
+subscriber's idempotent ATA creation explicitly.
 
 **SUB2. Activation is `type="transaction"` only.** “Solana subscription
 activation uses type="transaction".” and “Solana transactions containing
@@ -305,6 +319,28 @@ cancellation (`delegation.expires_at_ts`) equal to `now` has taken effect:
 “a non-zero timestamp only blocks renewal once the current time is at or
 after that timestamp.”
 
+**SUB4. The subscription authority is initialized before the activation,
+not inside it (spec bug).** The client list says the activation must
+“contain an `initialize_subscription_authority` instruction prepended only
+when the `(subscriber, mint)` authority does not yet exist on-chain;”. But
+`subscribe` commits the subscriber's signature to the authority's `init_id`,
+which the program sets when `initialize_subscription_authority` lands (from
+that slot), and every later access check must “require its current `init_id`
+to equal the delegation header's `init_id`.” A client that signs one
+transaction carrying both instructions cannot know the slot it lands in, so
+it cannot sign the `init_id` `subscribe` needs: the prescribed shape cannot be
+built. The Rust client sends `initialize_subscription_authority` first, in
+its own subscriber-signed and subscriber-paid transaction, reads the
+resulting `init_id`, then signs the activation; the Rust server refuses an
+activation carrying the instruction (`invalid-payload`). The vectors do not
+depend on it: every subscription fixture serves an existing authority, so no
+conformant activation carries the instruction, and
+`subscription-verify-unrelated-authority-init-reject` refuses one for another
+mint (`unexpected-instruction`). Upstream: drop the prepended initialization from
+the activation list and say the authority MUST exist before the client signs
+the activation (or let `subscribe` take the `init_id` from the same
+transaction).
+
 ## x402 batch-settlement on SVM
 
 Pinned `scheme_batch_settlement_svm.md` (x402 @03b3919b); transaction-version
@@ -319,9 +355,12 @@ the vector's `batchServerChannel`), so `charged + amount + 1` is rejected
 with `cumulative-amount-mismatch`. A stateless facilitator cannot apply this
 rule: it sees only onchain `settled`, and the txv1 draft gives it a floor
 instead (“the facilitator MUST require `maxClaimableAmount >= Channel.settled +
-PaymentRequirements.amount`”). An SDK whose only verify entry point is a
-facilitator therefore fails the above-amount vectors; that is a known
-failure of the facilitator-only testee, not a reading of the server rule.
+PaymentRequirements.amount`”). The vectors whose verdict rests on the store
+record alone (above, below and at the charged watermark, a close-pending
+mark, a refund at an older accepted cumulative) carry
+`batchVerdictFromStore: true`; a testee whose only verify entry point is a
+stateless facilitator reports them unsupported, since it cannot express the
+resource server they judge.
 
 **B2. A client-mode refund carries the voucher.** “| `voucher` | `BatchVoucher`
 | REQUIRED in client mode.” The `request_close` transaction is the retry path
@@ -380,12 +419,19 @@ advertised version. A lookup table, a size over the version's limit, or a
 version-1 header without `computeUnitLimit` or `loadedAccountsDataSizeLimit`
 is `invalid-payload`. A ComputeBudget instruction in a version-1 message is
 `unexpected-instruction` for MPP charge (“Any unexpected instructions MUST
-cause rejection.”) and `invalid-payload` for x402 (the static layout
-mismatch). A charge or session server accepts exactly the versions its
-challenge's `methodDetails.transactionVersions` lists; an x402 sponsor its
-own configured set (`input.x402ServerTransactionVersions`), since “The
-sponsor enforces its own accepted set; it does not read
-`PaymentRequirements.extra.transactionVersions`.”
+cause rejection.”), `invalid-payload` for x402 exact (the static layout
+mismatch), `unexpected-instruction` for an upto open (an instruction outside
+the open) and `setup-transaction` for a batch top-up. A version-1 header over
+the compute caps is `compute-limit-over-cap` / `compute-price-over-cap` for
+x402 exact and upto. A charge or session server accepts exactly the versions
+its challenge's `methodDetails.transactionVersions` lists; an x402 sponsor
+its own configured set (`input.x402ServerTransactionVersions`,
+`batchServer.transactionVersions`), since “The sponsor enforces its own
+accepted set; it does not read `PaymentRequirements.extra.transactionVersions`.”
+That set has no default (“When the field is absent, the accepted set is
+`[0]`” is about the advertised field), so every vector whose verdict depends
+on it states it; an SDK whose sponsor cannot be narrowed reports those
+unsupported.
 
 ## Signatures (both protocols)
 
@@ -410,6 +456,12 @@ both specs' verification steps.
 
 ## Harness consequences
 
+- Where the specs leave a verdict to the implementation (a sponsor's
+  stricter local policy, two checks in no prescribed order, a rule stated for
+  another instruction), a vector pins the Rust kit's verdict and lists the
+  other conformant ones in `expect.alsoConformant`, with the reason
+  (`alsoConformantReason`). The judge passes either; an accepted build is
+  still judged on its artifact.
 - Vectors encode these rulings. Runners pass chain state through the fixture
   RPC (`input.rpcUrl`) and MUST NOT inject defaults, resolve token programs or
   apply field precedence themselves.

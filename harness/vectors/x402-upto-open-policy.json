@@ -4824,6 +4824,12 @@
     "bugType": "auth-bypass",
     "description": "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000: each at its absolute ceiling, but the sponsor would pay a 2000000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6): rejected as compute-price-over-cap. Pair: x402-upto-verify-compute-at-caps-accept. Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "compute-price-over-cap"
     },
@@ -5004,6 +5010,12 @@
     "bugType": "auth-bypass",
     "description": "SetComputeUnitPrice 5001 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the open and the memo, so the sponsor would pay 2001 lamports, one over its cap (RULINGS S6). A verifier that bounds only declared limits accepts it: rejected as compute-price-over-cap. Pair: x402-upto-verify-implicit-limit-at-fee-cap-accept. Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "compute-price-over-cap"
     },

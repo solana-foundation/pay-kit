@@ -192,6 +192,14 @@ export type VectorExpect = {
   // Optional human-readable reason for reject vectors; not asserted, just
   // documents the divergence class.
   rejectReason?: string;
+  // Other verdicts the pinned specs allow where they leave the choice to the
+  // implementation (a sponsor's stricter local policy, an unordered pair of
+  // checks, a rule stated for another instruction). The judge passes a
+  // result matching the primary verdict or any of these (outcome and, for a
+  // reject, its code); an accepted build is still judged on its artifact.
+  alsoConformant?: Array<{ outcome: VectorOutcome; rejectCode?: RejectCode }>;
+  // Why the alternatives conform, quoting the spec.
+  alsoConformantReason?: string;
   // Normalized reject category asserted across every SDK. Pins WHY the SDK
   // rejected, not just that it did, so a guard that fires for the wrong
   // reason (e.g. a decimals-mismatch caught only by a generic
@@ -564,10 +572,14 @@ export type VectorInput = {
   // `methodDetails.transactionVersions` (`[0]` when absent); charge verify
   // runners configure the server from it.
   signerMaxTransactionVersion?: 0 | 1;
-  // verify-transaction (x402): the sponsor's own accepted message versions
-  // (scheme_exact_svm §1.5: "The sponsor enforces its own accepted set";
-  // absent means [0]). The route advertises them as
-  // `extra.transactionVersions` and the vector's `accepted` echoes them.
+  // verify-transaction (x402 exact and upto): the sponsor's own accepted
+  // message versions (scheme_exact_svm §1.5: "The sponsor enforces its own
+  // accepted set"). The spec gives that set no default, so every vector
+  // whose verdict depends on it states it; absent, the Rust reference
+  // sponsor accepts [0]. The route advertises them as
+  // `extra.transactionVersions` (nothing for [0]) and the vector's
+  // `accepted` echoes them. A testee whose SDK cannot configure the set
+  // reports unsupported-mode for a value it cannot express.
   x402ServerTransactionVersions?: Array<0 | 1>;
   // canonical-bytes (charge): an MPP charge request round-trip. The runner
   // DECODES `value` with the production SDK charge-request type (incl.

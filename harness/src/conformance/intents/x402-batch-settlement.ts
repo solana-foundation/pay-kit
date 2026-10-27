@@ -177,7 +177,29 @@ async function verify(
       "@x402/svm adopts a corrective 402 only inside its client channel flow, with no single-shot entry point",
     );
   }
+  // The testee drives the stateless upstream facilitator: it never sees the
+  // resource server's store record, so a vector whose verdict rests on that
+  // record alone (RULINGS B1) cannot be expressed.
+  if (input.batchVerdictFromStore === true) {
+    return unsupported(
+      vector,
+      "the testee drives the stateless upstream facilitator, which never sees the resource server's store record (chargedCumulativeAmount, the accepted cumulative, a close-pending mark) this verdict rests on (RULINGS B1)",
+    );
+  }
   const server = input.batchServer as Json;
+  // The upstream facilitator accepts legacy, version 0 and version 1 with
+  // no option to narrow the set ("The facilitator enforces its own accepted
+  // set").
+  const versions = server.transactionVersions as Array<0 | 1> | undefined;
+  if (
+    versions !== undefined &&
+    !(new Set(versions).size === 2 && versions.includes(0) && versions.includes(1))
+  ) {
+    return unsupported(
+      vector,
+      "the upstream batch facilitator's accepted transaction-version set is fixed (legacy, 0 and 1) with no option to narrow it (batchServer.transactionVersions other than absent or [0, 1])",
+    );
+  }
   const requirements = input.batchRequirements as PaymentRequirements;
   const feePayer = await createKeyPairSignerFromBytes(
     new Uint8Array(server.feePayerSecretKey as number[]),
@@ -233,12 +255,19 @@ async function build(
   const signer = await createKeyPairSignerFromBytes(
     new Uint8Array(c.secretKey as number[]),
   );
+  // The highest version the client's signer signs, through the upstream
+  // client's own option, as @solana/pay-kit maps its maxTransactionVersion
+  // (typescript/packages/pay-kit/src/client/index.ts).
+  const maxVersion = c.maxTransactionVersion as 0 | 1 | undefined;
   const client = new x402Client().register(
     requirements.network as Network,
     new BatchClient(signer, {
       depositAmount: String(c.depositAmount),
       discoverChannels: false,
       rpcUrl: rpcUrl(input),
+      ...(maxVersion !== undefined
+        ? { transactionVersions: maxVersion === 0 ? [0] : [0, 1] }
+        : {}),
     }),
   );
   try {

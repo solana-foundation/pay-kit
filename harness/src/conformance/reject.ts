@@ -37,6 +37,14 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/invalid_batch_settlement_svm_channel_state/, "channel-state"],
   [/invalid_batch_settlement_svm_refund_transaction/, "refund-transaction"],
   [/\bduplicate_settlement\b/, "duplicate-settlement"],
+  // The bare x402 reason (not `invalid_exact_svm_network_mismatch`): the
+  // facilitator compares `paymentPayload.accepted.network` with the
+  // requirements' network, so it names an accepted that differs from the
+  // requirements (RULINGS B3), not a transaction for another cluster.
+  [/\bnetwork_mismatch\b/, "accepted-mismatch"],
+  // The batch facilitator's /verify envelope check: paymentPayload.accepted
+  // differs from paymentRequirements (spec 4.5), named with core's code.
+  [/\binvalid_payment_requirements\b/, "accepted-mismatch"],
   [/\bunsupported_scheme\b/, "unsupported-scheme"],
   // @x402/svm batch-settlement client: refusals of a challenge's terms
   // (plain Errors, no reason code).
@@ -87,7 +95,7 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   ],
   // Client refusing a challenge that violates the method spec (RULINGS C2,
   // C3). Checked first: these messages also contain generic words.
-  [/decimals is required|failed to determine token program/i, "invalid-challenge"],
+  [/decimals is required|failed to determine token program|tokenprogram must not be present/i, "invalid-challenge"],
   // @solana/pay-kit's client refusing an offer's terms (an unknown network).
   [/invalid_challenge_terms|unsupported solana network/i, "invalid-challenge"],
   // Sponsors bound the priority fee as limit x price (RULINGS S6).

@@ -426,6 +426,7 @@
         "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "settled": "0"
       },
+      "batchVerdictFromStore": true,
       "rpcFixtures": {
         "accounts": {
           "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {

@@ -994,8 +994,27 @@ pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
 
 // ── expectation ────────────────────────────────────────────────────────────
 
-/// Build the `expect` block, enforcing the case's contract with the kit.
+/// Build the `expect` block, enforcing the case's contract with the kit, and
+/// append the verdicts the specs also allow (`alsoConformant`).
 pub fn expectation(case: &Case, input: &Value, observed: &Observed) -> Result<Value, String> {
+    let mut expect = primary_expectation(case, input, observed)?;
+    if let Some(also) = &case.also_conformant {
+        expect["alsoConformant"] = also
+            .verdicts
+            .iter()
+            .map(|alt| match alt {
+                crate::case::Alternative::Accept => json!({ "outcome": "accept" }),
+                crate::case::Alternative::Reject(code) => {
+                    json!({ "outcome": "reject", "rejectCode": code.as_str() })
+                }
+            })
+            .collect();
+        expect["alsoConformantReason"] = json!(also.reason);
+    }
+    Ok(expect)
+}
+
+fn primary_expectation(case: &Case, input: &Value, observed: &Observed) -> Result<Value, String> {
     match &case.provenance {
         Provenance::Generated => match (&case.expect, observed) {
             (Expect::Accept(pin), Observed::Accept(output)) => {

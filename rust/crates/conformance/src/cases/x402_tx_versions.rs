@@ -343,8 +343,8 @@ crate::registry! {
         BugType::AuthBypass,
         sponsor_spec(),
         &[SPONSOR_SET, PAYLOAD_VERSION],
-        "A sponsor with the default accepted set [0] receives the same valid version-1 transaction: rejected with unsupported_transaction_version before any instruction is inspected. Pair: x402-verify-v1-accept.",
-        layout(MessageFormat::V1, None, None),
+        "A sponsor whose accepted set is [0] receives the same valid version-1 transaction: rejected with unsupported_transaction_version before any instruction is inspected. The set is stated explicitly (input.x402ServerTransactionVersions): §1.5 gives the sponsor's own set no default. Pair: x402-verify-v1-accept.",
+        layout(MessageFormat::V1, Some(&[0]), None),
         reject(RejectCode::UnsupportedVersion, "unsupported_transaction_version"),
     ).build();
     x402_verify_v1_explicit_v0_sponsor_reject => verify(
@@ -459,8 +459,8 @@ crate::registry! {
         BugType::Settlement,
         caps_spec(),
         &[V1_CAPS],
-        "Version-1 header computeUnitLimit at the configured maximum (200000): accepted (the base layout already sits at the cap; this pins it explicitly next to its over-cap pair).",
-        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1ComputeUnitLimit { limit: 200_000 })),
+        "Version-1 header computeUnitLimit at the reference default maximum (400000, scheme_exact_svm.md §2.2.1): accepted, pinned next to its over-cap pair.",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1ComputeUnitLimit { limit: 400_000 })),
         Expect::Accept(Pin::Outcome),
     ).build();
     x402_verify_v1_compute_limit_over_cap_reject => verify(
@@ -468,9 +468,9 @@ crate::registry! {
         BugType::Settlement,
         caps_spec(),
         &[V1_CAPS],
-        "Version-1 header computeUnitLimit 200001, one unit over the configured maximum.",
-        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1ComputeUnitLimit { limit: 200_001 })),
-        from_table(&Mutation::V1ComputeUnitLimit { limit: 200_001 }),
+        "Version-1 header computeUnitLimit 400001, one unit over the reference default maximum (scheme_exact_svm.md §2.2.1: 400,000).",
+        layout(MessageFormat::V1, Some(BOTH), Some(Mutation::V1ComputeUnitLimit { limit: 400_001 })),
+        from_table(&Mutation::V1ComputeUnitLimit { limit: 400_001 }),
     ).build();
     x402_verify_v1_priority_fee_at_cap_accept => verify(
         "x402-verify-v1-priority-fee-at-cap-accept",
@@ -528,7 +528,12 @@ crate::registry! {
         &[EXACTLY_ONE],
         "Version-1 TransferChecked declaring 9 decimals for a 6-decimal mint.",
         Mutation::SetDecimals { transfer: 0, decimals: 9 },
-    ).build();
+    )
+    .also_conformant(
+        &[crate::case::Alternative::Accept],
+        "§1.4 matches a transfer by mint, destination ATA and amount (“correct mint, correct destination ATA, amount >= required”) and the scheme never names the TransferChecked decimals; the token program fails a TransferChecked whose decimals differ from the mint's, which the sponsor's simulation catches (§2.2.3, not run by offline vectors), so a static verifier that leaves it to simulation is conformant.",
+    )
+    .build();
     x402_verify_v1_fee_payer_authority_reject => v1_policy(
         "x402-verify-v1-fee-payer-authority-reject",
         spec(SVM, "2.1.1 Fee Payer Isolation (MUST)", "The fee payer / sponsor MUST NOT be the authority on any observed transfer (self-spend protection)."),

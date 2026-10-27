@@ -267,6 +267,7 @@
         "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "settled": "0"
       },
+      "batchVerdictFromStore": true,
       "rpcFixtures": {
         "accounts": {
           "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
@@ -425,6 +426,7 @@
         "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "settled": "0"
       },
+      "batchVerdictFromStore": true,
       "rpcFixtures": {
         "accounts": {
           "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
@@ -583,6 +585,7 @@
         "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "settled": "0"
       },
+      "batchVerdictFromStore": true,
       "rpcFixtures": {
         "accounts": {
           "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
@@ -1994,6 +1997,7 @@
         "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
         "settled": "0"
       },
+      "batchVerdictFromStore": true,
       "rpcFixtures": {
         "accounts": {
           "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP": {
@@ -3791,6 +3795,13 @@
     "bugType": "auth-bypass",
     "description": "channelConfig omits receiverAuthorizer while the requirements advertise one: both MUST be present and equal.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "reject",
+          "rejectCode": "payload-type"
+        }
+      ],
+      "alsoConformantReason": "channelConfig.receiverAuthorizer is a required field of the wire object (“| `receiverAuthorizer` | string | Required.”), so a verifier that validates the payload shape before comparing it with extra.receiverAuthorizer refuses it as invalid_batch_settlement_svm_payload_type; the spec does not order the two checks.",
       "outcome": "reject",
       "rejectCode": "receiver-authorizer-mismatch"
     },
@@ -3950,6 +3961,13 @@
     "bugType": "auth-bypass",
     "description": "channelConfig.voucherSigner \"server\" on a client-mode route: the mode must equal extra.voucherSigner.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "reject",
+          "rejectCode": "payload-type"
+        }
+      ],
+      "alsoConformantReason": "no reason code names a voucherSigner that differs from extra.voucherSigner; a server-mode channelConfig on a client-mode route is a payload the route's operation does not take (invalid_batch_settlement_svm_payload_type, “payload `type` is not valid for the current verify or settle operation”) as plausibly as a channel-state mismatch.",
       "outcome": "reject",
       "rejectCode": "channel-state"
     },

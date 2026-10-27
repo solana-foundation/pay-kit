@@ -107,6 +107,14 @@ async function payTarget(
         // the choice via MPP_HARNESS_PAYMENT_MODE so a single client
         // adapter covers both wire modes.
         broadcast: environment.paymentMode === "push",
+        // Like the Rust client fixture: refuse a challenge for another
+        // cluster or above the amount the scenario agreed to pay.
+        ...(process.env.MPP_HARNESS_NETWORK
+          ? { expectedNetwork: process.env.MPP_HARNESS_NETWORK }
+          : {}),
+        ...(process.env.MPP_HARNESS_AMOUNT
+          ? { maxAmount: BigInt(process.env.MPP_HARNESS_AMOUNT) }
+          : {}),
         signer,
         rpcUrl: environment.rpcUrl,
         ...(environment.computeUnitLimit !== undefined

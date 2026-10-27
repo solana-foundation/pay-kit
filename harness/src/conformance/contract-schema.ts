@@ -129,6 +129,19 @@ export const conformanceVectorSchema = {
       properties: {
         outcome: { enum: ["accept", "reject"] },
         rejectCode: rejectCodeSchema,
+        alsoConformant: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            required: ["outcome"],
+            properties: {
+              outcome: { enum: ["accept", "reject"] },
+              rejectCode: rejectCodeSchema,
+            },
+          },
+        },
+        alsoConformantReason: { type: "string", minLength: 1 },
       },
     },
   },

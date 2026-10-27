@@ -251,9 +251,9 @@ const SPONSOR_VERSIONS_UNSUPPORTED =
   "unsupported-mode: the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated), with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])";
 
 function sponsorVersionsExpressible(versions: ConformanceVector["input"]["x402ServerTransactionVersions"]): boolean {
-  // Absent is the default accepted set [0]; the facilitator accepts a superset,
-  // which only changes the verdict for a version-1 transaction (listed in
-  // harness/expectations/typescript.toml).
+  // Absent: the vector's verdict does not depend on the sponsor's own set
+  // (the spec gives it no default, so every vector that depends on it states
+  // it), and the facilitator's fixed [0, 1] serves.
   if (versions === undefined) return true;
   // A repeated entry names the same version (RULINGS T1): compare as sets.
   const set = new Set(versions);

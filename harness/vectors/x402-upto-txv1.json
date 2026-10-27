@@ -843,6 +843,9 @@
       ],
       "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
       "x402ServerTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "x402ServerTransactionVersions": [
+        0
+      ],
       "x402ServerWithdrawDelay": 900
     },
     "intent": "x402-upto",
@@ -1022,6 +1025,9 @@
       ],
       "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
       "x402ServerTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "x402ServerTransactionVersions": [
+        0
+      ],
       "x402ServerWithdrawDelay": 900
     },
     "intent": "x402-upto",
@@ -1770,6 +1776,12 @@
     "bugType": "auth-bypass",
     "description": "A version-1 open at 200000 units with priorityFee 2001 lamports: far under 5000000 micro-lamports per unit, but one lamport over the cap the sponsor puts on the total fee it pays (RULINGS S6): rejected as compute-price-over-cap. Verify is the read-only preflight of the deposit settle (Phase 3): every static check before co-signing, at the vector's clock (nowSeconds).",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "compute-price-over-cap"
     },

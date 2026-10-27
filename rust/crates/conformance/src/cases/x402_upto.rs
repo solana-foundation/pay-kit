@@ -219,6 +219,17 @@ fn v1_route() -> Route {
     }
 }
 
+/// A sponsor configured to accept version 0 only, stated explicitly: the
+/// scheme gives a facilitator's own accepted set no default (“The facilitator
+/// enforces its own accepted set; it does not read
+/// `PaymentRequirements.extra.transactionVersions`.”).
+fn v0_only_route() -> Route {
+    Route {
+        versions: Some(vec![0]),
+        ..Route::default()
+    }
+}
+
 fn input_of(spec: &VerifySpec) -> Input {
     Input::Static(
         spec.input()
@@ -1122,7 +1133,8 @@ crate::registry! {
         with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
-    );
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
     x402_upto_verify_implicit_limit_priority_fee_over_cap_reject => verify_case(
         "x402-upto-verify-implicit-limit-priority-fee-over-cap-reject",
         POLICY_FILE,
@@ -1133,7 +1145,8 @@ crate::registry! {
         with(base(), Tamper::Prefix(vec![unit_price_ix(5_001)])),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
-    );
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
     x402_upto_verify_compute_limit_over_cap_reject => reject(
         "x402-upto-verify-compute-limit-over-cap-reject",
         POLICY_FILE,
@@ -1572,20 +1585,6 @@ crate::registry! {
         Expect::AcceptAuthored(json!({"exactBytes": {"openMessageVersion": 0}})),
         None,
     );
-    x402_upto_build_foreign_blockhash_reject => build_case(
-        "x402-upto-build-foreign-blockhash-reject",
-        BUILD_FILE,
-        spec(SVM, "Phase 1 - Setup", "The client builds an open transaction against the canonical payment-channels program, deposits maxAmount, sets payee and rent_payer to extra.feePayer, sets authorized_signer to extra.receiverAuthorizer, encodes grace_period = extra.withdrawDelay, and signs as channel payer."),
-        &[CLIENT_DERIVES],
-        "extra.recentBlockhash is not a live blockhash on the client's cluster (its RPC's latest is another). The blockhash alone binds the signed open to a cluster, so an open over it would escrow maxAmount on whichever cluster knows that hash rather than the offer's network: the client refuses the challenge before signing. Pair: x402-upto-build-accept.",
-        {
-            let mut input = build_input(Route::default().offer());
-            input["rpcFixtures"]["recentBlockhash"] = json!(crate::realize::session::OTHER_BLOCKHASH);
-            input
-        },
-        Expect::Reject { code: RejectCode::InvalidChallenge, reason: Some("recentBlockhash unknown to the client's cluster".into()) },
-        None,
-    );
     x402_upto_build_zero_withdraw_delay_reject => build_case(
         "x402-upto-build-zero-withdraw-delay-reject",
         BUILD_FILE,
@@ -1682,7 +1681,7 @@ crate::registry! {
         s_txv1_reject(),
         &[TV_REJECT_FIRST, TV_MESSAGE],
         BugType::Wire,
-        base(),
+        VerifySpec::honest(v0_only_route()),
         Tamper::Form(Form::v1()),
         RejectCode::UnsupportedVersion,
         None,
@@ -1693,7 +1692,7 @@ crate::registry! {
         s_txv1_reject(),
         &[TV_REJECT_FIRST],
         BugType::Wire,
-        with(base(), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), solana_instruction::Instruction { program_id: keys::pubkey(keys::SPLIT_RECIPIENT_2), accounts: vec![], data: vec![1] }])),
+        with(VerifySpec::honest(v0_only_route()), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), solana_instruction::Instruction { program_id: keys::pubkey(keys::SPLIT_RECIPIENT_2), accounts: vec![], data: vec![1] }])),
         Tamper::Form(Form::v1()),
         RejectCode::UnsupportedVersion,
         None,
@@ -1749,7 +1748,8 @@ crate::registry! {
         with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(2_001), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
-    );
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
     x402_upto_verify_v1_missing_limit_reject => verify_case(
         "x402-upto-verify-v1-missing-limit-reject",
         TXV1_FILE,

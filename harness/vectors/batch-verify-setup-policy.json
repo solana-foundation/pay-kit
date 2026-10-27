@@ -322,6 +322,12 @@
     "bugType": "auth-bypass",
     "description": "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000, each at its own cap: the sponsor would pay a 2000000 lamport priority fee, so it bounds the fee as limit times price (RULINGS S6). Pair: batch-verify-top-up-compute-budget-prefix.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "setup-transaction"
     },
@@ -481,6 +487,12 @@
     "bugType": "auth-bypass",
     "description": "SetComputeUnitPrice 5001 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the top_up and the memo, so the sponsor would pay 2001 lamports, one over its cap (RULINGS S6). A verifier that bounds only declared limits accepts it.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "the upto and batch-settlement schemes cap the compute unit limit at 400,000 and the unit price at 5,000,000 micro-lamports (or a version-1 priorityFee at 5 lamports per unit) and this transaction is within them; the 2,000 lamport cap on the total fee is pay-kit's stricter local policy, which the schemes allow but do not require (upto: “A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count”; batch-settlement: “A sponsor MAY apply stricter local compute-unit, priority-fee, or required-signature caps”), so a sponsor without it accepts (RULINGS S6).",
       "outcome": "reject",
       "rejectCode": "setup-transaction"
     },
@@ -4114,8 +4126,14 @@
   },
   {
     "bugType": "auth-bypass",
-    "description": "top_up data with one trailing byte (10 bytes instead of 9).",
+    "description": "top_up data with one trailing byte (10 bytes instead of 9). The Rust sponsor decodes the top_up as strictly as the open and refuses it; the spec states the trailing-bytes rule for the open only.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "accept"
+        }
+      ],
+      "alsoConformantReason": "“The facilitator MUST fully decode the instruction data, reject truncated data or trailing bytes” is stated under Canonical open only; Canonical top_up requires that “The facilitator MUST confirm the decoded amount equals `payload.deposit.amount`”, which a decoder that ignores the extra byte also confirms.",
       "outcome": "reject",
       "rejectCode": "setup-transaction"
     },
@@ -4260,13 +4278,13 @@
     "mode": "verify-transaction",
     "provenance": "generated",
     "requirements": [
-      "X402-176a26e5b6"
+      "X402-06bb8f3a9e"
     ],
     "role": "server",
     "spec": {
       "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "The facilitator MUST fully decode the instruction data, reject truncated data or trailing bytes",
-      "section": "Canonical open"
+      "quote": "The facilitator MUST confirm the decoded amount equals `payload.deposit.amount`; the channel is `Open`;",
+      "section": "Canonical top_up"
     },
     "tier": "offline"
   },
