@@ -83,6 +83,8 @@ export type UptoSettlement = {
  */
 export class X402Upto {
     readonly #facilitator: x402Facilitator;
+    /** The facilitator's `extra.transactionVersions`, copied into every challenge. */
+    readonly #transactionVersions: unknown;
     readonly #network: Network;
     readonly #feePayer: string;
     readonly #receiverAuthorizer: string;
@@ -102,22 +104,23 @@ export class X402Upto {
         this.#recipient = config.operator.recipient;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
-        this.#facilitator = new x402Facilitator().register(
-            this.#network,
-            // The facilitator reads and broadcasts through the signer's RPC
-            // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
-            // A configured pending-settlement store is shared with the exact
-            // adapter so a settle retry on another replica reconciles for
-            // both schemes.
-            new UptoSvmFacilitator(
-                toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
-                {
-                    ...(config.x402.pendingSettlementStore && {
-                        pendingSettlementStore: config.x402.pendingSettlementStore,
-                    }),
-                },
-            ),
+        // The facilitator reads and broadcasts through the signer's RPC
+        // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
+        // A configured pending-settlement store is shared with the exact
+        // adapter so a settle retry on another replica reconciles for
+        // both schemes.
+        const scheme = new UptoSvmFacilitator(
+            toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+            {
+                ...(config.x402.pendingSettlementStore && {
+                    pendingSettlementStore: config.x402.pendingSettlementStore,
+                }),
+            },
         );
+        this.#facilitator = new x402Facilitator().register(this.#network, scheme);
+        // scheme_upto_svm.md: the server copies the facilitator's
+        // `transactionVersions` into the requirements.
+        this.#transactionVersions = scheme.getExtra(this.#network)?.transactionVersions;
     }
 
     /** Whether `request` carries an x402 payment credential. */
@@ -313,6 +316,7 @@ export class X402Upto {
                 receiverAuthorizer: this.#receiverAuthorizer,
                 ...(recentSlot !== undefined && { recentSlot: recentSlot.toString() }),
                 tokenProgram: getStablecoinTokenProgram(mint, this.#network),
+                ...(this.#transactionVersions !== undefined && { transactionVersions: this.#transactionVersions }),
                 withdrawDelay: DEFAULT_WITHDRAW_DELAY_SECONDS,
             },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,

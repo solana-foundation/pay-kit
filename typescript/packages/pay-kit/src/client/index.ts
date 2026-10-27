@@ -45,6 +45,13 @@ const nativeFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
+    /**
+     * Highest Solana transaction message version the signer can sign. x402
+     * payments build the highest version the server advertises up to this one;
+     * set `0` for a signer (such as a wallet) that cannot sign version 1.
+     * Defaults to `1`. Applies to x402 `exact` and `upto`.
+     */
+    readonly maxTransactionVersion?: 0 | 1;
     /** Solana cluster used to pin default permissions. Defaults to `mainnet`. */
     readonly network?: SolanaNetwork;
     /** Progress callback, forwarded to the MPP charge/subscription methods. */
@@ -76,6 +83,7 @@ export class PayKitClientBuilder {
     #permissions: ClientPermissions | false | undefined;
     #rpcUrl: string | undefined;
     #signer: KeyPairSigner | undefined;
+    #maxTransactionVersion: 0 | 1 | undefined;
 
     /** Set the payer signer. */
     signer(signer: KeyPairSigner): this {
@@ -107,6 +115,12 @@ export class PayKitClientBuilder {
         return this;
     }
 
+    /** Set the highest transaction version the signer can sign; see {@link PayKitClientOptions.maxTransactionVersion}. */
+    maxTransactionVersion(version: 0 | 1): this {
+        this.#maxTransactionVersion = version;
+        return this;
+    }
+
     /** Set a payment progress callback. */
     onProgress(callback: (event: unknown) => void): this {
         this.#onProgress = callback;
@@ -119,6 +133,7 @@ export class PayKitClientBuilder {
         if (!this.#rpcUrl) throw new ConfigurationError('PayKitClient requires an RPC URL');
         return createPayKitClient({
             accept: this.#accept,
+            maxTransactionVersion: this.#maxTransactionVersion,
             network: this.#network,
             onProgress: this.#onProgress,
             permissions: this.#permissions,
@@ -177,7 +192,14 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     // building a transfer with a blockhash the settlement RPC would reject.
     let http: x402HTTPClient | undefined;
     if (acceptsX402) {
-        const svm = { rpcUrl: options.rpcUrl };
+        const maxTransactionVersion = options.maxTransactionVersion ?? 1;
+        if (maxTransactionVersion !== 0 && maxTransactionVersion !== 1) {
+            throw new ConfigurationError(`maxTransactionVersion must be 0 or 1, got ${String(maxTransactionVersion)}`);
+        }
+        const svm = {
+            rpcUrl: options.rpcUrl,
+            transactionVersions: maxTransactionVersion === 0 ? ([0] as const) : ([0, 1] as const),
+        };
         const client = new x402Client();
         // PayKit's protocol-neutral permissions are the source of truth. Avoid
         // applying @x402/core's separate defaults after they have authorized a

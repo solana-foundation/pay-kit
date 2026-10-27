@@ -133,6 +133,8 @@ describe('x402 exact adapter', () => {
         expect(typeof entry.network).toBe('string');
         expect(typeof entry.asset).toBe('string');
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
+        // Copied from the facilitator's /supported extra (scheme_exact_svm.md §1.5).
+        expect((entry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0, 1]);
     });
 
     it('detects the x402 payment header', async () => {
@@ -429,6 +431,7 @@ describe('x402 upto engine', () => {
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
         expect((entry.extra as { receiverAuthorizer?: string }).receiverAuthorizer).toBe(config.operator.signer.pubkey);
         expect((entry.extra as { withdrawDelay?: number }).withdrawDelay).toBe(900);
+        expect((entry.extra as { transactionVersions?: unknown }).transactionVersions).toEqual([0, 1]);
         expect((entry.extra as { tokenProgram?: string }).tokenProgram).toEqual(expect.any(String));
         expect((entry.extra as { assetTransferMethod?: string }).assetTransferMethod).toBeUndefined();
         expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBeUndefined();

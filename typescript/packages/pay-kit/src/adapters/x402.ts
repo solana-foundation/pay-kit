@@ -51,14 +51,16 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     };
 
     // In-process facilitator: the operator both fee-pays and signs settlement.
-    const facilitator = new x402Facilitator().register(
-        network,
-        new ExactSvmFacilitator(
-            toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
-            undefined,
-            schemeOptions,
-        ),
+    const scheme = new ExactSvmFacilitator(
+        toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+        undefined,
+        schemeOptions,
     );
+    const facilitator = new x402Facilitator().register(network, scheme);
+    // scheme_exact_svm.md §1.5: the server MUST copy the facilitator's
+    // `extra.transactionVersions` into the requirements, so clients build a
+    // version the facilitator accepts (version 1 when it accepts it).
+    const transactionVersions = scheme.getExtra(network)?.transactionVersions;
 
     function mintFor(gate: Gate): string {
         const coin = resolveCoin(gate.amount, config.stablecoins);
@@ -70,7 +72,10 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         return {
             amount: gate.total().baseUnits().toString(),
             asset: mintFor(gate),
-            extra: { feePayer: operator },
+            extra: {
+                feePayer: operator,
+                ...(transactionVersions !== undefined && { transactionVersions }),
+            },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network,
             payTo: gate.payTo,

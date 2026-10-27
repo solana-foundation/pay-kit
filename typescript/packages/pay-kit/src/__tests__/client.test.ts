@@ -154,7 +154,10 @@ describe('createPayKitClient', () => {
          * Serve the 402 (with `extensions`), the mint and blockhash RPC calls,
          * and capture the payment envelope the client retries with.
          */
-        async function payWithExtensions(extensions: Record<string, unknown>): Promise<Record<string, unknown>> {
+        async function payWithExtensions(
+            extensions: Record<string, unknown>,
+            options: { extra?: Record<string, unknown>; maxTransactionVersion?: 0 | 1 } = {},
+        ): Promise<Record<string, unknown>> {
             const feePayer = await generateKeyPairSigner();
             const paymentRequired = btoa(
                 JSON.stringify({
@@ -162,7 +165,7 @@ describe('createPayKitClient', () => {
                         {
                             amount: '1000',
                             asset: MINT,
-                            extra: { feePayer: feePayer.address },
+                            extra: { feePayer: feePayer.address, ...options.extra },
                             maxTimeoutSeconds: 300,
                             network: DEVNET,
                             payTo: feePayer.address,
@@ -206,7 +209,13 @@ describe('createPayKitClient', () => {
                 return Promise.resolve(response(402, { 'payment-required': paymentRequired }));
             });
 
-            const client = await createPayKitClient({ accept: ['x402'], permissions: false, rpcUrl: RPC_URL, signer });
+            const client = await createPayKitClient({
+                accept: ['x402'],
+                maxTransactionVersion: options.maxTransactionVersion,
+                permissions: false,
+                rpcUrl: RPC_URL,
+                signer,
+            });
             const result = await client.fetch('https://api.test/paid');
 
             expect(result.status).toBe(200);
@@ -228,6 +237,33 @@ describe('createPayKitClient', () => {
                 schema: { required: ['id'], type: 'object' },
             });
             expect(identifier.info.id).toMatch(/^pay_[0-9a-f]{32}$/);
+        });
+
+        /** First byte of the message: 0x81 for version 1, 0x80 for version 0. */
+        function messageVersionByte(envelope: Record<string, unknown>): number {
+            const transaction = (envelope.payload as { transaction: string }).transaction;
+            const bytes = Buffer.from(transaction, 'base64');
+            // Version 1 puts the message first; version 0 after the signatures.
+            return bytes[0]! & 0x80 ? bytes[0]! : bytes[1 + 64 * bytes[0]!]!;
+        }
+
+        it('builds version 1 when the server advertises it', async () => {
+            const envelope = await payWithExtensions({}, { extra: { transactionVersions: [0, 1] } });
+            expect(messageVersionByte(envelope)).toBe(0x81);
+        });
+
+        it('builds version 0 for a signer limited to version 0', async () => {
+            const envelope = await payWithExtensions(
+                {},
+                { extra: { transactionVersions: [0, 1] }, maxTransactionVersion: 0 },
+            );
+            expect(messageVersionByte(envelope)).toBe(0x80);
+        });
+
+        it('rejects a maxTransactionVersion other than 0 or 1', () => {
+            expect(() =>
+                createPayKitClient({ accept: ['x402'], maxTransactionVersion: 2 as never, rpcUrl: RPC_URL, signer }),
+            ).toThrow(ConfigurationError);
         });
 
         it('adds no id when the server does not require one', async () => {

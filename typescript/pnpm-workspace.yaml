@@ -16,7 +16,7 @@ minimumReleaseAgeExclude:
 # @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
 overrides:
   ws: '^8.21.0'
-  '@x402/core': 'file:.x402-vendor/x402-core-2.26.0.tgz'
+  '@x402/core': 'file:.x402-vendor/x402-core-2.28.0.tgz'
   '@hono/node-server': '>=2.0.10'
   '@humanfs/node': '0.16.8'
   baseline-browser-mapping: '2.11.0'
