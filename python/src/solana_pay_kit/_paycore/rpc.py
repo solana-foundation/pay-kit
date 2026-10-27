@@ -157,6 +157,17 @@ class SolanaRpc:
             slot = None
         return _RpcResponse(_BlockhashValue(blockhash), context=_RpcContext(slot))
 
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """Whether ``blockhash`` is still a live blockhash on this RPC's
+        cluster. Clients ask before signing over a challenged blockhash: a
+        hash from another cluster would make the signed transaction valid
+        there instead of on the network the payment was approved for."""
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, bool):
+            raise _RpcError("isBlockhashValid returned no boolean", code="payment_invalid")
+        return value
+
     async def get_slot(self, commitment: str = "confirmed") -> int:
         """Fetch the current slot. Used by SERVERS at challenge-issuance time:
         the program requires ``openSlot <= clock.slot`` with a 1500-slot

@@ -5,9 +5,10 @@ from __future__ import annotations
 import pytest
 from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID, find_channel_pda
 from solana_pay_kit.protocols.mpp.core.headers import format_authorization
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -162,6 +163,33 @@ async def test_challenge_uses_exact_final_request_shape() -> None:
     for stale in ("cap", "programId", "recentSlot", "modes"):
         assert stale not in request
     session.shutdown()
+
+
+def _client_open(signer: Keypair) -> OpenPayload:
+    """A client-signed open the server's bindings accept: the localnet USDC
+    mint and the channel PDA of the open's seeds."""
+    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    channel, _ = find_channel_pda(
+        Pubkey.from_string(RECIPIENT),
+        Pubkey.from_string(RECIPIENT),
+        Pubkey.from_string(mint),
+        signer.pubkey(),
+        1,
+        1,
+        PROGRAM_ID,
+    )
+    return OpenPayload(
+        channel_id=str(channel),
+        payer=RECIPIENT,
+        payee=RECIPIENT,
+        mint=mint,
+        authorized_signer=str(signer.pubkey()),
+        salt=1,
+        deposit_amount="1000",
+        grace_period_seconds=900,
+        open_slot=1,
+        transaction="transaction",
+    )
 
 
 async def test_open_challenge_expiry_is_enforced() -> None:
@@ -367,23 +395,13 @@ async def test_verify_dispatches_client_voucher_top_up_and_close() -> None:
     config.verify_top_up_tx = accept_top_up
     core = _core(config)
     challenge = await _challenge(core, "2099-01-01T00:00:00Z")
-    payload = OpenPayload(
-        channel_id=RECIPIENT,
-        payer=RECIPIENT,
-        payee=RECIPIENT,
-        mint=RECIPIENT,
-        authorized_signer=str(signer.pubkey()),
-        salt=1,
-        deposit_amount="1000",
-        grace_period_seconds=900,
-        open_slot=1,
-        transaction="transaction",
-    )
+    payload = _client_open(signer)
+    channel = payload.channel_id
     await core.process_open(payload, challenge)
     session = _session(core)
 
     def voucher(cumulative: int) -> SignedVoucher:
-        data = VoucherData(RECIPIENT, str(cumulative))
+        data = VoucherData(channel, str(cumulative))
         return SignedVoucher(
             data=data,
             signer=str(signer.pubkey()),
@@ -396,7 +414,7 @@ async def test_verify_dispatches_client_voucher_top_up_and_close() -> None:
             payload=SessionAction.voucher_action(_voucher_payload(voucher(100))).to_dict(),
         )
     )
-    assert voucher_receipt.reference == RECIPIENT
+    assert voucher_receipt.reference == channel
     assert voucher_receipt.intent == "session"
     assert voucher_receipt.accepted_cumulative == "100"
     assert voucher_receipt.spent == "25"
@@ -404,17 +422,17 @@ async def test_verify_dispatches_client_voucher_top_up_and_close() -> None:
     top_up_receipt = await session.verify_credential(
         PaymentCredential(
             challenge=challenge.to_echo(),
-            payload=SessionAction.top_up_action(TopUpPayload(RECIPIENT, "250", "transaction")).to_dict(),
+            payload=SessionAction.top_up_action(TopUpPayload(channel, "250", "transaction")).to_dict(),
         )
     )
-    assert top_up_receipt.reference == RECIPIENT
+    assert top_up_receipt.reference == channel
     close_receipt = await session.verify_credential(
         PaymentCredential(
             challenge=challenge.to_echo(),
-            payload=SessionAction.close_action(ClosePayload(RECIPIENT, voucher=voucher(200))).to_dict(),
+            payload=SessionAction.close_action(ClosePayload(channel, voucher=voucher(200))).to_dict(),
         )
     )
-    assert close_receipt.reference == RECIPIENT
+    assert close_receipt.reference == channel
 
 
 async def test_handle_accepts_valid_operator_use_header() -> None:
@@ -547,26 +565,14 @@ async def test_failed_settle_keeps_the_watchdog_and_the_close_redrives() -> None
     config.verify_open_tx = accept_open
     core = _core(config)
     challenge = await _challenge(core, "2099-01-01T00:00:00Z")
-    await core.process_open(
-        OpenPayload(
-            channel_id=RECIPIENT,
-            payer=RECIPIENT,
-            payee=RECIPIENT,
-            mint=RECIPIENT,
-            authorized_signer=str(signer.pubkey()),
-            salt=1,
-            deposit_amount="1000",
-            grace_period_seconds=900,
-            open_slot=1,
-            transaction="transaction",
-        ),
-        challenge,
-    )
+    payload = _client_open(signer)
+    channel = payload.channel_id
+    await core.process_open(payload, challenge)
     session = _session(core)
     spy = _LifecycleSpy()
     session._lifecycle = spy  # type: ignore[assignment]
 
-    data = VoucherData(RECIPIENT, "200")
+    data = VoucherData(channel, "200")
     voucher = SignedVoucher(
         data=data,
         signer=str(signer.pubkey()),
@@ -579,9 +585,9 @@ async def test_failed_settle_keeps_the_watchdog_and_the_close_redrives() -> None
 
     session._settle_channel = failing_settle  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="settle broadcast failed"):
-        await session._handle_close(ClosePayload(RECIPIENT, voucher=voucher))
+        await session._handle_close(ClosePayload(channel, voucher=voucher))
     assert spy.removed == []
-    stranded = await core.store().get_channel(RECIPIENT)
+    stranded = await core.store().get_channel(channel)
     assert stranded is not None
     assert stranded.close_requested_at is not None and stranded.settled_signature is None
 
@@ -590,9 +596,9 @@ async def test_failed_settle_keeps_the_watchdog_and_the_close_redrives() -> None
         return "SETTLEDSIG"
 
     session._settle_channel = working_settle  # type: ignore[method-assign]
-    reference = await session._handle_close(ClosePayload(RECIPIENT, voucher=voucher))
+    reference = await session._handle_close(ClosePayload(channel, voucher=voucher))
     assert reference == "SETTLEDSIG"
-    assert spy.removed == [RECIPIENT]
+    assert spy.removed == [channel]
 
 
 async def test_idle_close_redrives_a_stranded_settle() -> None:

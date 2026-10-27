@@ -520,6 +520,55 @@ def check_v1_budget_caps(
     return declared
 
 
+def check_v0_budget_caps(
+    message: Any,
+    max_unit_limit: int,
+    max_unit_price_micro_lamports: int,
+) -> DeclaredBudget | None:
+    """Version-0 ComputeBudget caps (``policy::check_v0_budget_caps``).
+
+    Legacy is policed as version 0. Returns ``None`` for a version-1 message.
+    """
+    if isinstance(message, MessageV1):
+        return None
+    declared = declared_budget(message)
+    instructions = list(message.instructions)
+    if any(len(bytes(instructions[index].accounts)) for index in declared.instruction_indexes):
+        raise TransactionVersionError("ComputeBudget instructions must not have accounts")
+    if declared.loaded_accounts_data_size_limit is not None:
+        raise TransactionVersionError("SetLoadedAccountsDataSizeLimit is not supported")
+    limit = declared.unit_limit
+    if limit is not None:
+        if limit == 0:
+            raise TransactionVersionError("compute unit limit must be positive")
+        if limit > max_unit_limit:
+            raise TransactionVersionError(f"compute unit limit {limit} exceeds maximum {max_unit_limit}")
+    price = declared.unit_price_micro_lamports
+    if price is not None:
+        if price > max_unit_price_micro_lamports:
+            raise TransactionVersionError(f"compute unit price {price} exceeds maximum {max_unit_price_micro_lamports}")
+        if price > 0 and limit is None:
+            implicit = runtime_default_unit_limit(len(instructions) - len(declared.instruction_indexes))
+            if implicit > max_unit_limit:
+                raise TransactionVersionError(
+                    f"implicit compute unit limit {implicit} exceeds maximum {max_unit_limit}; "
+                    "declare SetComputeUnitLimit"
+                )
+    return declared
+
+
+def require_budget_prefix(message: Any, declared: DeclaredBudget) -> None:
+    """ComputeBudget instructions lead the message, the unit limit before the
+    unit price (``policy::require_budget_prefix``)."""
+    if any(position != index for position, index in enumerate(declared.instruction_indexes)):
+        raise TransactionVersionError("ComputeBudget instructions must lead the transaction")
+    if declared.unit_limit is not None and declared.unit_price_micro_lamports is not None:
+        first = list(message.instructions)[0]
+        data = bytes(first.data)
+        if not (_is_compute_budget(message, first) and len(data) == 5 and data[0] == SET_UNIT_LIMIT_TAG):
+            raise TransactionVersionError("SetComputeUnitLimit must precede SetComputeUnitPrice")
+
+
 def reject_v1_heap_request(message: Any) -> None:
     if isinstance(message, MessageV1) and message.config.heap_size is not None:
         raise TransactionVersionError("version 1 transaction config must not request a heap size")
