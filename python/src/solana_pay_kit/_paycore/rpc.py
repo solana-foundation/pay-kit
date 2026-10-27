@@ -191,6 +191,57 @@ class SolanaRpc:
             return None
         return raw, owner
 
+    async def get_account_info_with_context(
+        self,
+        address: str,
+        *,
+        min_context_slot: int | None = None,
+        commitment: str = "confirmed",
+    ) -> tuple[int | None, tuple[bytes, str] | None]:
+        """``getAccountInfo`` with the serving bank's slot: ``(slot, (data, owner))``,
+        or ``(slot, None)`` for a missing account. ``min_context_slot`` asks the
+        node to answer from a bank at or after that slot, so a lagging node cannot
+        serve state older than one the caller already accepted."""
+        config: dict[str, Any] = {"encoding": "base64", "commitment": commitment}
+        if min_context_slot:
+            config["minContextSlot"] = min_context_slot
+        result = await self._call("getAccountInfo", [address, config])
+        slot: int | None = None
+        value: Any = None
+        if isinstance(result, dict):
+            context = result.get("context")
+            raw_slot = context.get("slot") if isinstance(context, dict) else None
+            slot = raw_slot if isinstance(raw_slot, int) and not isinstance(raw_slot, bool) else None
+            value = result.get("value")
+        if not isinstance(value, dict):
+            return slot, None
+        owner = value.get("owner")
+        data_field = value.get("data")
+        if not isinstance(owner, str) or not owner:
+            return slot, None
+        if isinstance(data_field, list) and data_field and isinstance(data_field[0], str):
+            return slot, (base64.b64decode(data_field[0]), owner)
+        if isinstance(data_field, str):
+            return slot, (base64.b64decode(data_field), owner)
+        return slot, None
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = "confirmed") -> bool:
+        """``isBlockhashValid``: whether a transaction built on ``blockhash`` can still land."""
+        result = await self._call("isBlockhashValid", [blockhash, {"commitment": commitment}])
+        value = result.get("value") if isinstance(result, dict) else result
+        return value is True
+
+    async def simulate_transaction(self, raw_tx: bytes, commitment: str = "confirmed") -> dict[str, Any]:
+        """``simulateTransaction`` of signed wire bytes; returns the ``value``
+        object (``err``, ``logs``)."""
+        encoded = base64.b64encode(raw_tx).decode("ascii")
+        result = await self._call(
+            "simulateTransaction",
+            [encoded, {"encoding": "base64", "commitment": commitment, "sigVerify": True}],
+        )
+        value = result.get("value") if isinstance(result, dict) else None
+        return value if isinstance(value, dict) else {}
+
     async def get_signature_statuses(
         self, signatures: list[str], *, search_transaction_history: bool = False
     ) -> list[Any]:
