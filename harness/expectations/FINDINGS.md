@@ -331,40 +331,6 @@ with `getOpenInstructionDataDecoder().decode`
 (`typescript/external/x402/typescript/packages/mechanisms/svm/src/payment-channels/open.ts:969`),
 which ignores bytes past the arguments. The fix belongs in the x402 fork.
 
-## txv1-ts-mpp-no-transaction-versions
-
-**Cases:** `vector/charge-wire-transaction-versions-*`, `vector/session-wire-transaction-versions-*`
-**SDKs:** typescript
-
-`@solana/mpp`'s charge and session request schemas
-(`typescript/packages/mpp/src/Methods.ts`) have no
-`methodDetails.transactionVersions`. zod strips the field, so a server's
-advertisement is lost in a round trip and malformed values (`["legacy"]`,
-`[0, 2]`, `["1"]`, `1`) parse. Tracks the mpp-specs
-feat/solana-transaction-versions draft (`77aa6a1`).
-
-## txv1-ts-mpp-client-v0-only
-
-**Cases:** `vector/charge-build-v1-*`, `vector/charge-build-duplicate-advertisement`, `vector/charge-build-empty-advertisement-reject`
-**SDKs:** typescript
-
-The `@solana/mpp` charge client never reads `transactionVersions` and always
-builds a version-0 message with the ComputeBudget prefix
-(`typescript/packages/mpp/src/client/Charge.ts`). For a `[1]`-only challenge
-the build is a version the server never advertised; for the 1.9 KB
-large-memo charge it exceeds the version-0 limit instead of using version 1.
-
-## txv1-ts-mpp-server-no-version-admission
-
-**Cases:** `vector/charge-verify-v1-*`, `vector/charge-verify-v0-to-v1-only-reject`, `vector/charge-verify-legacy-*`, `vector/charge-verify-v0-oversize-reject`
-**SDKs:** typescript
-
-`verifyChargeTransaction` has no version admission: a version-1 transaction
-throws while decoding (`Cannot read properties of undefined (reading
-'entries')`: the compiled version-1 message has no `instructions` array), a
-version-0 transaction is accepted for a challenge that advertises `[1]` only,
-legacy is accepted, and the version-0 size limit is not applied.
-
 ## txv1-ts-x402-v1-policy
 
 **Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`
@@ -498,6 +464,9 @@ the vectors or adapters instead:
 | Python session server and client (`session-open-*`, `session-voucher-verify-*`, `session-topup-*`, `session-close-*`, `session-use-*`, `session-build-*`, the session part of `txv1-python`; previously runner gaps) | the Python runner drives the session server (`session_testkit` pre-broadcast open and top-up checks, `verify_voucher`, `process_close`, `process_use`) and the client opener; the server binds the open's mint and channel PDA, admits versions 0 and 1 per `transactionVersions` (never legacy) with the charge compute caps and exact account privileges, refuses a top-up to a closing channel before broadcast and pins its fee payer to the channel's rent payer (co-signing a sponsored one), and charges a metered `use` with `authenticate_use` then `charge_operator_request`; the client checks the challenge's method details and that `recentBlockhash` is live on its cluster |
 | Python `x402-upto` (suite unclaimed: 128 cases) | Python upto server and client follow the Rust kit (`python/src/solana_pay_kit/protocols/x402/upto/`): strict payload parse (`voucherSignature`/`type` refused, `nonce` decimal, `openSlot` number or string), `accepted` matched against the offer, `maxChannelLifetimeSecs` and the completion window, the channel-exists read, the open acceptance policy (layout, memo binding, 14 accounts and their privileges, whole `openArgs` decode, sponsored fee cap), the payer signature before the co-signature, a distinct receiver authorizer, and transaction versions 0/1 on both sides through `_paycore/txv1.py`; the client always emits a memo (declared or a 16-byte hex nonce), derives the salt from the request nonce, reads one `getLatestBlockhash` when a hint is missing, and signs a `recentBlockhash` hint only once its own RPC's `isBlockhashValid` confirms it is live (as Rust `resolve_challenge_blockhash`) |
 | `x402-batch-settlement` unclaimed by Python | `solana_pay_kit.protocols.x402.batch_settlement` (wire types, spec 7 codes, sponsor transaction policy, channel store, self-facilitating `X402BatchSettlement` with claim/settle and a `finalize_close` that chooses and fences its seal plan in one store transition, seals permissionlessly past the grace deadline, defers a distribute into an unusable payer refund account, and isolates a failing channel from the others submitted with it) and `protocols.x402.client.batch_settlement`; the suite is claimed in `python.toml` |
+| `txv1-ts-mpp-no-transaction-versions`, `txv1-ts-mpp-client-v0-only`, `txv1-ts-mpp-server-no-version-admission` (with the `cross/charge-build-*/*/typescript` cases) | `@solana/mpp` charge and session request schemas parse `methodDetails.transactionVersions` strictly; the charge client negotiates the version (`maxTransactionVersion` for the signer's highest) and builds version 1 with the budget in the header; `verifyChargeTransaction` admits by the advertised set, refuses legacy, applies each version's size limits and the version-1 header caps (`typescript/packages/mpp/src/utils/transaction-versions.ts`) |
+| `mpp-payment-page-legacy-build` (TypeScript and Rust; no vector covers the bundled page) | the `html: true` payment page compiled a legacy message, which the TypeScript and Rust charge verifiers refuse, so every “Continue with Solana” payment failed; it ignored `transactionVersions` too. The page now compiles version 0 (0x80 prefix, empty lookup-table section) and refuses a challenge that does not list version 0 (`html/src/transaction.ts`); the embedded assets are regenerated for every server, `payment-page.test.ts` runs the page build through `verifyChargeTransaction`, and the Playwright e2e test requires the paid response. Version 1 is not built by the page |
+| pay-kit client `maxTransactionVersion` not forwarded to MPP | `createPayKitClient` passes it to `solana.charge`, so a version-0 signer builds version 0 for a `[0, 1]` charge (`typescript/packages/pay-kit/src/client/index.ts`) |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 | Python `subscription` suite unclaimed (no subscription intent) | `solana_pay_kit.protocols.mpp` subscription intent, activation client, offline activation verifier and active-subscription check, subscriptions program helpers; `subscription` claimed (2026-10-27). The end-to-end server stays open as `python-subscription-server-partial` |
 

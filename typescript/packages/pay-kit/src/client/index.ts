@@ -46,10 +46,10 @@ export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
     /**
-     * Highest Solana transaction message version the signer can sign. x402
-     * payments build the highest version the server advertises up to this one;
-     * set `0` for a signer (such as a wallet) that cannot sign version 1.
-     * Defaults to `1`. Applies to x402 `exact` and `upto`.
+     * Highest Solana transaction message version the signer can sign.
+     * Payments build the highest version the server advertises up to this
+     * one; set `0` for a signer (such as a wallet) that cannot sign version 1.
+     * Defaults to `1`. Applies to x402 `exact` and `upto` and to MPP `charge`.
      */
     readonly maxTransactionVersion?: 0 | 1;
     /** Solana cluster used to pin default permissions. Defaults to `mainnet`. */
@@ -190,12 +190,12 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     // are pinned to `rpcUrl` — otherwise they derive their RPC from the
     // challenge's network (which for localnet is tagged as devnet's CAIP-2),
     // building a transfer with a blockhash the settlement RPC would reject.
+    const maxTransactionVersion = options.maxTransactionVersion ?? 1;
+    if (maxTransactionVersion !== 0 && maxTransactionVersion !== 1) {
+        throw new ConfigurationError(`maxTransactionVersion must be 0 or 1, got ${String(maxTransactionVersion)}`);
+    }
     let http: x402HTTPClient | undefined;
     if (acceptsX402) {
-        const maxTransactionVersion = options.maxTransactionVersion ?? 1;
-        if (maxTransactionVersion !== 0 && maxTransactionVersion !== 1) {
-            throw new ConfigurationError(`maxTransactionVersion must be 0 or 1, got ${String(maxTransactionVersion)}`);
-        }
         const svm = {
             rpcUrl: options.rpcUrl,
             transactionVersions: maxTransactionVersion === 0 ? ([0] as const) : ([0, 1] as const),
@@ -274,6 +274,7 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                         const method = solana.charge({
                             expectedNetwork: challengeNetwork,
                             maxAmount: authorization.maxAmountAtomic,
+                            maxTransactionVersion,
                             onProgress: forward,
                             rpcUrl: options.rpcUrl,
                             signer: options.signer,
