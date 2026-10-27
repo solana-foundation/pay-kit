@@ -894,6 +894,8 @@
           "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
           "extra": {
             "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "maxClaimChannels": 18,
+            "maxSettleChannels": 13,
             "memo": "invoice-42",
             "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",

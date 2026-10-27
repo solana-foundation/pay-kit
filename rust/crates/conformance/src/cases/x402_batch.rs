@@ -77,7 +77,9 @@ const NO_GRANT: &str = "X402-f882f2074a";
 const OPT_IN: &str = "X402-84916fe051";
 const TOKEN_PROGRAM_OWNER: &str = "X402-23747f44c3";
 const TOKEN_PROGRAM_VERIFY: &str = "X402-1230bb35a3";
-const CLAIMS_ONE_TO_FOUR: &str = "X402-7f4ee54a73";
+const CLAIMS_CAPACITY: &str = "X402-76654742e7";
+const SETTLE_CAPACITY: &str = "X402-c2ca42b7a4";
+const SERVER_COPIES_CAPACITY: &str = "X402-8f57677e36";
 const SEAL_CLOSE_AUTH: &str = "X402-45c411d301";
 const COMMITMENT_ID: &str = "X402-5ebca343d1";
 const STATIC_VALIDATE: &str = "X402-4ea8d1b0d9";
@@ -156,8 +158,12 @@ fn variants_spec() -> SpecRef {
 fn refund_voucher_spec() -> SpecRef {
     s("4.3 Client PaymentPayload Variants", "| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`).")
 }
+fn settle_spec() -> SpecRef {
+    s("4.5 Facilitator Interface", "`channels[]` MUST contain at least one entry and at most `extra.maxSettleChannels` entries, or four when the facilitator advertises no `maxSettleChannels`.")
+}
+
 fn claims_spec() -> SpecRef {
-    s("4.5 Facilitator Interface", "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.")
+    s("4.5 Facilitator Interface", "`claims[]` MUST contain at least one entry and at most `extra.maxClaimChannels` entries, or four when the facilitator advertises no `maxClaimChannels`, so the instruction pairs fit in one transaction without address lookup tables.")
 }
 fn wire_spec() -> SpecRef {
     s(
@@ -1088,35 +1094,53 @@ crate::registry! {
         rej(RejectCode::InvalidPayload),
     ).build();
     batch_wire_redemption_claim_frozen => wire_case(
-        "batch-wire-redemption-claim-frozen", claims_spec(), &[CLAIMS_ONE_TO_FOUR],
+        "batch-wire-redemption-claim-frozen", claims_spec(), &[CLAIMS_CAPACITY],
         "claim payload with two entries, each channelId + full channelConfig + the latest BatchVoucher.",
         wire("redemption", json!({ "type": "claim", "claims": [claim_entry(&cfg(), 5_000), claim_entry(&with(with(cfg(), "salt", json!("43")), "openSlot", json!(341_000_050)), 7_000)] })),
         json_pin(),
     ).build();
     batch_wire_redemption_claim_empty_reject => wire_case(
-        "batch-wire-redemption-claim-empty-reject", claims_spec(), &[CLAIMS_ONE_TO_FOUR],
+        "batch-wire-redemption-claim-empty-reject", claims_spec(), &[CLAIMS_CAPACITY],
         "claims: [] is below the one-entry minimum.",
         wire("redemption", json!({ "type": "claim", "claims": [] })),
         rej(RejectCode::InvalidPayload),
     ).authored(None).build();
-    batch_wire_redemption_claim_five_entries_reject => wire_case(
-        "batch-wire-redemption-claim-five-entries-reject", claims_spec(), &[CLAIMS_ONE_TO_FOUR],
-        "Five claims exceed the four entries one legacy transaction can carry.",
-        wire("redemption", json!({ "type": "claim", "claims": (0..5).map(|i| claim_entry(&with(cfg(), "salt", json!((100 + i).to_string())), 1_000)).collect::<Vec<_>>() })),
+    batch_wire_redemption_claim_eighteen_entries => wire_case(
+        "batch-wire-redemption-claim-eighteen-entries", claims_spec(), &[CLAIMS_CAPACITY],
+        "Eighteen claims, the version-1 capacity (extra.maxClaimChannels 18): the payload parses. More than four is no longer a wire error; a facilitator that builds version 0 rejects it against its own capacity.",
+        wire("redemption", json!({ "type": "claim", "claims": (0..18).map(|i| claim_entry(&with(cfg(), "salt", json!((100 + i).to_string())), 1_000)).collect::<Vec<_>>() })),
+        json_pin(),
+    ).build();
+    batch_wire_redemption_claim_nineteen_entries_reject => wire_case(
+        "batch-wire-redemption-claim-nineteen-entries-reject", claims_spec(), &[CLAIMS_CAPACITY],
+        "Nineteen claims exceed what fits one version-1 transaction, so no facilitator can advertise that capacity: the payload is malformed for every facilitator.",
+        wire("redemption", json!({ "type": "claim", "claims": (0..19).map(|i| claim_entry(&with(cfg(), "salt", json!((100 + i).to_string())), 1_000)).collect::<Vec<_>>() })),
         rej(RejectCode::InvalidPayload),
     ).authored(None).build();
     batch_wire_redemption_claim_entry_without_config_reject => wire_case(
-        "batch-wire-redemption-claim-entry-without-config-reject", s("4.5 Facilitator Interface", "| Claim | `claims[].channelConfig` | `ChannelConfig` | Full channel configuration. |"), &[CLAIMS_ONE_TO_FOUR],
+        "batch-wire-redemption-claim-entry-without-config-reject", s("4.5 Facilitator Interface", "| Claim | `claims[].channelConfig` | `ChannelConfig` | Full channel configuration. |"), &[CLAIMS_CAPACITY],
         "A claim entry without its channelConfig cannot be derived or validated.",
         wire("redemption", json!({ "type": "claim", "claims": [without(claim_entry(&cfg(), 5_000), "channelConfig")] })),
         rej(RejectCode::InvalidPayload),
     ).build();
     batch_wire_redemption_settle_frozen => wire_case(
-        "batch-wire-redemption-settle-frozen", s("4.5 Facilitator Interface", "`channels[]` MUST contain between one and four entries, the same transaction-size bound as `claims[]`."), &[CLAIMS_ONE_TO_FOUR],
+        "batch-wire-redemption-settle-frozen", settle_spec(), &[SETTLE_CAPACITY],
         "settle payload: channels[] of {channelId, channelConfig}.",
         wire("redemption", json!({ "type": "settle", "channels": [{ "channelId": channel(&cfg()), "channelConfig": cfg() }] })),
         json_pin(),
     ).build();
+    batch_wire_redemption_settle_thirteen_channels => wire_case(
+        "batch-wire-redemption-settle-thirteen-channels", settle_spec(), &[SETTLE_CAPACITY],
+        "Thirteen settle channels, the version-1 capacity (extra.maxSettleChannels 13): the payload parses.",
+        wire("redemption", json!({ "type": "settle", "channels": (0..13).map(|i| { let c = with(cfg(), "salt", json!((200 + i).to_string())); json!({ "channelId": channel(&c), "channelConfig": c }) }).collect::<Vec<_>>() })),
+        json_pin(),
+    ).build();
+    batch_wire_redemption_settle_fourteen_channels_reject => wire_case(
+        "batch-wire-redemption-settle-fourteen-channels-reject", settle_spec(), &[SETTLE_CAPACITY],
+        "Fourteen settle channels exceed the largest capacity a facilitator may advertise (13): the payload is malformed for every facilitator.",
+        wire("redemption", json!({ "type": "settle", "channels": (0..14).map(|i| { let c = with(cfg(), "salt", json!((200 + i).to_string())); json!({ "channelId": channel(&c), "channelConfig": c }) }).collect::<Vec<_>>() })),
+        rej(RejectCode::InvalidPayload),
+    ).authored(None).build();
     batch_wire_redemption_seal_frozen => wire_case(
         "batch-wire-redemption-seal-frozen", s("4.5 Facilitator Interface", "| Seal | `closeAuthorization` | `CloseAuthorization` | REQUIRED (section 3)."), &[SEAL_CLOSE_AUTH],
         "seal payload: the tag beside channelId, channelConfig, the latest voucher and closeAuthorization {validBefore, signature}.",
@@ -1139,6 +1163,12 @@ crate::registry! {
         "batch-wire-requirements-transaction-versions", t("4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])", "Transaction message versions the facilitator accepts, as an array of `0` and/or `1`"), &[TX_SERVER_COPIES],
         "Requirements of a route whose facilitator accepts versions 0 and 1 carry extra.transactionVersions [0, 1].",
         wire("requirements", v1_route().requirements()),
+        json_pin(),
+    ).build();
+    batch_wire_requirements_redemption_capacity => wire_case(
+        "batch-wire-requirements-redemption-capacity", s("GET /supported", "The server MUST copy `feePayer`, `transactionVersions`, `maxClaimChannels`, `maxSettleChannels`, and `maxIdleSecs` into `PaymentRequirements.extra`"), &[SERVER_COPIES_CAPACITY],
+        "Requirements of a route whose facilitator builds redemptions as version 1 carry its capacity, extra.maxClaimChannels 18 and extra.maxSettleChannels 13, copied from /supported; the SDK's requirements type keeps both.",
+        wire("requirements", requirements_with(&[("transactionVersions", json!([0, 1])), ("maxClaimChannels", json!(18)), ("maxSettleChannels", json!(13))])),
         json_pin(),
     ).build();
     batch_wire_requirements_unknown_transaction_version_reject => wire_case(

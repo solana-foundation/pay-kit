@@ -1,5 +1,5 @@
 repo = "x402"
-commit = "d587d1bcc3ed07d59722fac6fa9d41ae71f781df"
+commit = "662d8b8f0eefbfe4826ae208b035111d75be5612"
 files = [
   "specs/x402-specification-v2.md",
   "specs/schemes/exact/scheme_exact.md",
@@ -671,9 +671,21 @@ text = "MUST be an integer from 900 through 2592000 (15 minutes through 30 days)
 required = true
 
 [[requirement]]
-id = "X402-7f4ee54a73"
+id = "X402-76654742e7"
 doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
-text = "claims[] MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables."
+text = "claims[] MUST contain at least one entry and at most extra.maxClaimChannels entries, or four when the facilitator advertises no maxClaimChannels, so the instruction pairs fit in one transaction without address lookup tables."
+required = true
+
+[[requirement]]
+id = "X402-c2ca42b7a4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "channels[] MUST contain at least one entry and at most extra.maxSettleChannels entries, or four when the facilitator advertises no maxSettleChannels."
+required = true
+
+[[requirement]]
+id = "X402-8f57677e36"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The server MUST copy feePayer, transactionVersions, maxClaimChannels, maxSettleChannels, and maxIdleSecs into PaymentRequirements.extra, MUST NOT author a claim or settle request with more entries than the copied capacity (four when absent), then set extra.tokenProgram from the selected asset's verified mint owner."
 required = true
 
 [[requirement]]

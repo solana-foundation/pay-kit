@@ -646,12 +646,12 @@
     "mode": "canonical-bytes",
     "provenance": "generated",
     "requirements": [
-      "X402-7f4ee54a73"
+      "X402-76654742e7"
     ],
     "role": "both",
     "spec": {
       "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "quote": "`claims[]` MUST contain at least one entry and at most `extra.maxClaimChannels` entries, or four when the facilitator advertises no `maxClaimChannels`, so the instruction pairs fit in one transaction without address lookup tables.",
       "section": "4.5 Facilitator Interface"
     },
     "tier": "offline"
@@ -677,24 +677,27 @@
     "mode": "canonical-bytes",
     "provenance": "authored",
     "requirements": [
-      "X402-7f4ee54a73"
+      "X402-76654742e7"
     ],
     "role": "both",
     "spec": {
       "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "quote": "`claims[]` MUST contain at least one entry and at most `extra.maxClaimChannels` entries, or four when the facilitator advertises no `maxClaimChannels`, so the instruction pairs fit in one transaction without address lookup tables.",
       "section": "4.5 Facilitator Interface"
     },
     "tier": "offline"
   },
   {
     "bugType": "wire",
-    "description": "Five claims exceed the four entries one legacy transaction can carry.",
+    "description": "Eighteen claims, the version-1 capacity (extra.maxClaimChannels 18): the payload parses. More than four is no longer a wire error; a facilitator that builds version 0 rejects it against its own capacity.",
     "expect": {
-      "outcome": "reject",
-      "rejectCode": "invalid-payload"
+      "exactBytes": {
+        "base64Url": "eyJjbGFpbXMiOlt7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwMCIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiQnI0d1VpOVRwTlRCN3dMOUJYb0NxS0FhSGhMVkFpaWlhV2J4dmUyb2c1RE0iLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkJyNHdVaTlUcE5UQjd3TDlCWG9DcUtBYUhoTFZBaWlpYVdieHZlMm9nNURNIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNXdlYmlENERiaEpwakdqVG9CTFhQb25DQ2NEcDVqSzZLdkphRzZ5OUxaajhSRnN1eFVnZmVINUZMVUtmWnd4Q2toYzJxcHhuOWQ5bm95Tnhwd2U1dmhXbyJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwMSIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiOTZ3aU1wcWRMUXZCSzJ2VEh3MkFMbnpLam9YZUhQZTlVSEw4R1BNNlZCSDMiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6Ijk2d2lNcHFkTFF2QksydlRIdzJBTG56S2pvWGVIUGU5VUhMOEdQTTZWQkgzIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMjNlZDd1MXNXVkw2N0RnUDJYUzVTNmE4UU5TTkROang0Nk4zV3JEalFjWU1rZFRLd0p4U292akx2RVNSRXdpbnFhWDdxRkd3WmlINEtoWDh3aHZLZHlybSJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwMiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiOTE4dWpMeGl5cVpBMldteHpudnRIc0VrMzFuRG1QcjZHczhuQTczb1kyeW4iLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjkxOHVqTHhpeXFaQTJXbXh6bnZ0SHNFazMxbkRtUHI2R3M4bkE3M29ZMnluIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNU0xRXdUNlNzaHlVS1JodjZxS2ZTams3cWpqc3c3cnFaMXExYmpmcEhuZnFBVW02UFVkenhNVnNwRFFYMXB0dlF3amR3QjR4ZDZ4ZHBLSjlRQzhna3NkSiJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwMyIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiMjdQMlZNNXN3U1NSR0s4M0FxTWhHTmc5WmZUTlZYdHg3NE1rS2V2VjhQcEgiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjI3UDJWTTVzd1NTUkdLODNBcU1oR05nOVpmVE5WWHR4NzRNa0tldlY4UHBIIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMnl5anFhSHNkaUJLS0h2alI4dmRxcUhlUTM2QUZydXVHZHNhem1EQk1FYnRQaVhqYkRxQTNxNnM5Rnl1Z2ViV3B6TVdSZXNpTFBjTmZrVUJYMm9uVmR5USJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwNCIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiQkp0a3FZczljV2Z1eVAxeDlWR3NkVTJibWpRWVRyMnNEelBFMVdxNnZGWHMiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkJKdGtxWXM5Y1dmdXlQMXg5VkdzZFUyYm1qUVlUcjJzRHpQRTFXcTZ2RlhzIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNTNKdmJkQ3RCVW1EZ1Z3ZFBEYnZ3eVdYTXRYYVpCdlhSN3VVc1FxOEVQTFl0bUI4SEZTYWR0N0xkaHFKMm9Hd1M0aUNjWW0xV2RDQnUzUFRVNDdZRFI0aCJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwNSIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiNEFOTlZZeExmak52amdSNmtxRDdXN3dhQWZOR1pRM2l6QXFyUHVvbnZzd04iLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjRBTk5WWXhMZmpOdmpnUjZrcUQ3Vzd3YUFmTkdaUTNpekFxclB1b252c3dOIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNU0zSGtHdGNZaHVnY0Vod2d1RW4za011azNvUDF0Q2VMMWlVS1hjRmpyNVYyRTVlMlFySzQ4cno3ZUVmWks2NnlvNDRnQ0dFRVBQQ0MxVzNWUnprcUdLOSJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwNiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiNHE5akVucUFNcDhodkJpc3VYaDlIdWl0V0JIUk5LdGhIbWRKMWJoQnk3cE4iLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjRxOWpFbnFBTXA4aHZCaXN1WGg5SHVpdFdCSFJOS3RoSG1kSjFiaEJ5N3BOIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMkdpUG5ZR1JrOGZqcVJmNFRucGlYVTN4VjFIeXJTZnlLZ1EySlhKVktLM1I2OGFodmRmVTExRnJjYzVITTJTZVNMUHJIRHJaZG5hWEw5ZXQxaHdIdlF0dCJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwNyIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiOEY1eHd6cktjZ3JNS0xhVFlHY0tNWmRjdURoaXE3UHhTR25IdVd0Nk1kOUYiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjhGNXh3enJLY2dyTUtMYVRZR2NLTVpkY3VEaGlxN1B4U0duSHVXdDZNZDlGIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMk5IcGN0NkVZdFBMY1g3cHZWOUNHNmFCM3RXdVc5a3BuOUpEcVBraUhaWVp2ZlpVYVVDbXF4V3pZU25SZzVaTkNUVXpTc1hjdm5STUR5TGFvS1JVV2plNCJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwOCIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiR1VOc0twYzV5YkI3dGo3U1VGOFVhc3VCeUhTN1N4czNhcHR0NWVSaWNBVEMiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkdVTnNLcGM1eWJCN3RqN1NVRjhVYXN1QnlIUzdTeHMzYXB0dDVlUmljQVRDIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMmFGMVJkYTJoOGVjdnBqNkRnOTlyQlhkM1oxVEFLdGtvcThMUG53Unc0VU1iVFl1cWhWSGpVbjZoclBibnV6UVRRaVVqNFZ2RXdUdTgxM2V1N2R5ekNoMyJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjEwOSIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiRm13NzVESms4Zmk4aTZ5amYzSEE5b3l4ano1UUw2Z3M4U1JYWVY0aGt4UTMiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkZtdzc1REprOGZpOGk2eWpmM0hBOW95eGp6NVFMNmdzOFNSWFlWNGhreFEzIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNUxFSlR6ZXNVdE1ndmFZMjVLU1VvMVRBUVBRZWh0N1JCcHFZUnlFYzF2UmlqSER6djJQMnRDWUFYS3FLVlU3a2U4Ulp1TW14Y3BhakxBWFhjcVdXWkNxZSJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExMCIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiQnBkNHN5dmc1QlNCeXQ3eFhiTlZTenRDcGd3SHNDRHJ6U201NHBtNDlWalEiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkJwZDRzeXZnNUJTQnl0N3hYYk5WU3p0Q3Bnd0hzQ0RyelNtNTRwbTQ5VmpRIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNWp1NVJoQXp2S1k5djF0dWI1dFVSNWFCY0JSSmppb3lmZW9KcVhTbzZXRWQxeXdDYzFudzd0UHBkQWRKQ2pjNEs0czlYRlpQSDlQNlUyRkNKSDhXdURDNyJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExMSIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiRU1KRlB4U2tDSzhRenR2S0FqUG5pTmJnZXZBdTNUY3g4V3BxRGh3M3pIeEUiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkVNSkZQeFNrQ0s4UXp0dktBalBuaU5iZ2V2QXUzVGN4OFdwcURodzN6SHhFIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNTdyN281U1J4dExzSnI5d01qOHdFaEI3NGluVmFKRndWQXFFcUFxWTZxcXF0RlptcFdwclVFM0NkQkJqaUNaeW02WmI2ampzWkI0aUw1dXlOdFNIb2Q5VSJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExMiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiOVpaTDJOU0Nhb1FSbUtxQkpqdEM1QXlodW9uZ0FMUmNwaUtpOG9QNWZaM3QiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjlaWkwyTlNDYW9RUm1LcUJKanRDNUF5aHVvbmdBTFJjcGlLaThvUDVmWjN0IiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiM0RyM2Y0akZhTVJRcjhDVzUyeWpOd3NVTVlla29hUlhzV2Q5M3JtdHNnbzVRN2tHRktzRXQ1YkxLRGRqdzUzTFM5RzJTZUN2VnRiSktueUZkR3hnSGU0SCJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExMyIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiM2JxcVI0V252dFRNSnhiQ2hLWUpIVGt0SHlha3p5VXZZWmJERXl0VDh1bVYiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjNicXFSNFdudnRUTUp4YkNoS1lKSFRrdEh5YWt6eVV2WVpiREV5dFQ4dW1WIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiM0dVTFltRXFiQkVYVk5WUHZoVUFuS0c5TUhvbjU1a3RrQkFHQ2l4VVNMd0tkb0tQMUNNRFJ0V2lDeVhOOTYzTEh6bUJRNFY0bnhVV2ZKR1BRZ1lvcThxaSJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExNCIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiQXpBQldodkpmUnBadTljUGZvQUdrZlNnQTduNkNMTjdMMVRzejRrU3NQdEEiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkF6QUJXaHZKZlJwWnU5Y1Bmb0FHa2ZTZ0E3bjZDTE43TDFUc3o0a1NzUHRBIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMkNXMmlQb2VKeDNFZGVFZ0o2OGJSRWhLaFZSZkdjeXJic1E5TFdXb0tNNHNTTFNGMkdtM3k3QksyQ2FHUnk5aFg1OFFEN1JkaTFwVU05WnY2c1gyNHZRUiJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExNSIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiNkd3eFhWUk5UUkcxck1udkNzNEFneTVUdzI0QWc3Sm5QZ1pvNXpEUDZhY3YiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IjZHd3hYVlJOVFJHMXJNbnZDczRBZ3k1VHcyNEFnN0puUGdabzV6RFA2YWN2IiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMzdITndSUlY2Mm1uVkJnMVgzRjdUNHB1bWoxQjc0aTVUejhZelhqdndFeTZvVTZjY3hpYXd5U0ROaThFeno5Y0NUeXlaSGtXSjdKNGJlYVhoQzZKS1lidCJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExNiIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiQmhnWGZQWXZOdE1aRmhyS0YzTXBhdFhqVk1NOUttcHBaZ0J1Z3lmVldzbVkiLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkJoZ1hmUFl2TnRNWkZocktGM01wYXRYalZNTTlLbXBwWmdCdWd5ZlZXc21ZIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiNUN6V3AyTWZZb2pUODNUdTE5dmRwWTZNdVRGVzlnNVZwaGEyNU44dTFSdzU2MXhBRGVhb1JjRUs2ZmV2SGJvMzV5YkFDbjNpVDl4WGY3eHFSdWlLS3dTdyJ9fSx7ImNoYW5uZWxDb25maWciOnsib3BlblNsb3QiOjM0MTAwMDAwMCwicGF5ZXIiOiJHbWFEcnBwQkM3UDVBUktWOGczZGppd1A4OXZ6MWpMSzIzVjJHQmp1QUVHQiIsInBheWVyQXV0aG9yaXplciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicmVjZWl2ZXIiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwic2FsdCI6IjExNyIsInRva2VuIjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwiY2hhbm5lbElkIjoiRjJjVGRqSGM3SkFmQ29nSnp4aXoyWWlUc3Z0RzRrNTVxdkxld0hSUDZ3dlciLCJ2b3VjaGVyIjp7ImNoYW5uZWxJZCI6IkYyY1RkakhjN0pBZkNvZ0p6eGl6MllpVHN2dEc0azU1cXZMZXdIUlA2d3ZXIiwiZXhwaXJlc0F0IjowLCJtYXhDbGFpbWFibGVBbW91bnQiOiIxMDAwIiwic2lnbmF0dXJlIjoiMktwTUtKNGRvTkpydFZra1JteEZUcm43QlVHY1JYOGEyRjVvU1g1cE4yR2ZVVVdXOVhOdWVVZHljWU1MTW9pOXRZb3BuMWlxblFmSjc3b1F6Q3FQc3F1TSJ9fV0sInR5cGUiOiJjbGFpbSJ9",
+        "canonicalJson": "{\"claims\":[{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"100\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM\",\"voucher\":{\"channelId\":\"Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5webiD4DbhJpjGjToBLXPonCCcDp5jK6KvJaG6y9LZj8RFsuxUgfeH5FLUKfZwxCkhc2qpxn9d9noyNxpwe5vhWo\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"101\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3\",\"voucher\":{\"channelId\":\"96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"23ed7u1sWVL67DgP2XS5S6a8QNSNDNjx46N3WrDjQcYMkdTKwJxSovjLvESREwinqaX7qFGwZiH4KhX8whvKdyrm\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"102\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn\",\"voucher\":{\"channelId\":\"918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5M1EwT6SshyUKRhv6qKfSjk7qjjsw7rqZ1q1bjfpHnfqAUm6PUdzxMVspDQX1ptvQwjdwB4xd6xdpKJ9QC8gksdJ\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"103\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH\",\"voucher\":{\"channelId\":\"27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2yyjqaHsdiBKKHvjR8vdqqHeQ36AFruuGdsazmDBMEbtPiXjbDqA3q6s9FyugebWpzMWResiLPcNfkUBX2onVdyQ\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"104\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs\",\"voucher\":{\"channelId\":\"BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"53JvbdCtBUmDgVwdPDbvwyWXMtXaZBvXR7uUsQq8EPLYtmB8HFSadt7LdhqJ2oGwS4iCcYm1WdCBu3PTU47YDR4h\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"105\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN\",\"voucher\":{\"channelId\":\"4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5M3HkGtcYhugcEhwguEn3kMuk3oP1tCeL1iUKXcFjr5V2E5e2QrK48rz7eEfZK66yo44gCGEEPPCC1W3VRzkqGK9\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"106\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN\",\"voucher\":{\"channelId\":\"4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2GiPnYGRk8fjqRf4TnpiXU3xV1HyrSfyKgQ2JXJVKK3R68ahvdfU11Frcc5HM2SeSLPrHDrZdnaXL9et1hwHvQtt\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"107\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F\",\"voucher\":{\"channelId\":\"8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2NHpct6EYtPLcX7pvV9CG6aB3tWuW9kpn9JDqPkiHZYZvfZUaUCmqxWzYSnRg5ZNCTUzSsXcvnRMDyLaoKRUWje4\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"108\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC\",\"voucher\":{\"channelId\":\"GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2aF1Rda2h8ecvpj6Dg99rBXd3Z1TAKtkoq8LPnwRw4UMbTYuqhVHjUn6hrPbnuzQTQiUj4VvEwTu813eu7dyzCh3\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"109\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3\",\"voucher\":{\"channelId\":\"Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5LEJTzesUtMgvaY25KSUo1TAQPQeht7RBpqYRyEc1vRijHDzv2P2tCYAXKqKVU7ke8RZuMmxcpajLAXXcqWWZCqe\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"110\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ\",\"voucher\":{\"channelId\":\"Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5ju5RhAzvKY9v1tub5tUR5aBcBRJjioyfeoJqXSo6WEd1ywCc1nw7tPpdAdJCjc4K4s9XFZPH9P6U2FCJH8WuDC7\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"111\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE\",\"voucher\":{\"channelId\":\"EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"57r7o5SRxtLsJr9wMj8wEhB74inVaJFwVAqEqAqY6qqqtFZmpWprUE3CdBBjiCZym6Zb6jjsZB4iL5uyNtSHod9U\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"112\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t\",\"voucher\":{\"channelId\":\"9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"3Dr3f4jFaMRQr8CW52yjNwsUMYekoaRXsWd93rmtsgo5Q7kGFKsEt5bLKDdjw53LS9G2SeCvVtbJKnyFdGxgHe4H\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"113\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV\",\"voucher\":{\"channelId\":\"3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"3GULYmEqbBEXVNVPvhUAnKG9MHon55ktkBAGCixUSLwKdoKP1CMDRtWiCyXN963LHzmBQ4V4nxUWfJGPQgYoq8qi\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"114\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA\",\"voucher\":{\"channelId\":\"AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2CW2iPoeJx3EdeEgJ68bREhKhVRfGcyrbsQ9LWWoKM4sSLSF2Gm3y7BK2CaGRy9hX58QD7Rdi1pUM9Zv6sX24vQR\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"115\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv\",\"voucher\":{\"channelId\":\"6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"37HNwRRV62mnVBg1X3F7T4pumj1B74i5Tz8YzXjvwEy6oU6ccxiawySDNi8Ezz9cCTyyZHkWJ7J4beaXhC6JKYbt\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"116\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY\",\"voucher\":{\"channelId\":\"BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"5CzWp2MfYojT83Tu19vdpY6MuTFW9g5Vpha25N8u1Rw561xADeaoRcEK6fevHbo35ybACn3iT9xXf7xqRuiKKwSw\"}},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"117\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW\",\"voucher\":{\"channelId\":\"F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW\",\"expiresAt\":0,\"maxClaimableAmount\":\"1000\",\"signature\":\"2KpMKJ4doNJrtVkkRmxFTrn7BUGcRX8a2F5oSX5pN2GfUUWW9XNueUdycYMLMoi9tYopn1iqnQfJ77oQzCqPsquM\"}}],\"type\":\"claim\"}"
+      },
+      "outcome": "accept"
     },
-    "id": "batch-wire-redemption-claim-five-entries-reject",
+    "id": "batch-wire-redemption-claim-eighteen-entries",
     "input": {
       "batchWire": {
         "shape": "redemption",
@@ -794,6 +797,646 @@
                 "maxClaimableAmount": "1000",
                 "signature": "53JvbdCtBUmDgVwdPDbvwyWXMtXaZBvXR7uUsQq8EPLYtmB8HFSadt7LdhqJ2oGwS4iCcYm1WdCBu3PTU47YDR4h"
               }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "105",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN",
+              "voucher": {
+                "channelId": "4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5M3HkGtcYhugcEhwguEn3kMuk3oP1tCeL1iUKXcFjr5V2E5e2QrK48rz7eEfZK66yo44gCGEEPPCC1W3VRzkqGK9"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "106",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN",
+              "voucher": {
+                "channelId": "4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2GiPnYGRk8fjqRf4TnpiXU3xV1HyrSfyKgQ2JXJVKK3R68ahvdfU11Frcc5HM2SeSLPrHDrZdnaXL9et1hwHvQtt"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "107",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F",
+              "voucher": {
+                "channelId": "8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2NHpct6EYtPLcX7pvV9CG6aB3tWuW9kpn9JDqPkiHZYZvfZUaUCmqxWzYSnRg5ZNCTUzSsXcvnRMDyLaoKRUWje4"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "108",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC",
+              "voucher": {
+                "channelId": "GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2aF1Rda2h8ecvpj6Dg99rBXd3Z1TAKtkoq8LPnwRw4UMbTYuqhVHjUn6hrPbnuzQTQiUj4VvEwTu813eu7dyzCh3"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "109",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3",
+              "voucher": {
+                "channelId": "Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5LEJTzesUtMgvaY25KSUo1TAQPQeht7RBpqYRyEc1vRijHDzv2P2tCYAXKqKVU7ke8RZuMmxcpajLAXXcqWWZCqe"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "110",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ",
+              "voucher": {
+                "channelId": "Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5ju5RhAzvKY9v1tub5tUR5aBcBRJjioyfeoJqXSo6WEd1ywCc1nw7tPpdAdJCjc4K4s9XFZPH9P6U2FCJH8WuDC7"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "111",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE",
+              "voucher": {
+                "channelId": "EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "57r7o5SRxtLsJr9wMj8wEhB74inVaJFwVAqEqAqY6qqqtFZmpWprUE3CdBBjiCZym6Zb6jjsZB4iL5uyNtSHod9U"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "112",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t",
+              "voucher": {
+                "channelId": "9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "3Dr3f4jFaMRQr8CW52yjNwsUMYekoaRXsWd93rmtsgo5Q7kGFKsEt5bLKDdjw53LS9G2SeCvVtbJKnyFdGxgHe4H"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "113",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV",
+              "voucher": {
+                "channelId": "3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "3GULYmEqbBEXVNVPvhUAnKG9MHon55ktkBAGCixUSLwKdoKP1CMDRtWiCyXN963LHzmBQ4V4nxUWfJGPQgYoq8qi"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "114",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA",
+              "voucher": {
+                "channelId": "AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2CW2iPoeJx3EdeEgJ68bREhKhVRfGcyrbsQ9LWWoKM4sSLSF2Gm3y7BK2CaGRy9hX58QD7Rdi1pUM9Zv6sX24vQR"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "115",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv",
+              "voucher": {
+                "channelId": "6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "37HNwRRV62mnVBg1X3F7T4pumj1B74i5Tz8YzXjvwEy6oU6ccxiawySDNi8Ezz9cCTyyZHkWJ7J4beaXhC6JKYbt"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "116",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY",
+              "voucher": {
+                "channelId": "BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5CzWp2MfYojT83Tu19vdpY6MuTFW9g5Vpha25N8u1Rw561xADeaoRcEK6fevHbo35ybACn3iT9xXf7xqRuiKKwSw"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "117",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW",
+              "voucher": {
+                "channelId": "F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2KpMKJ4doNJrtVkkRmxFTrn7BUGcRX8a2F5oSX5pN2GfUUWW9XNueUdycYMLMoi9tYopn1iqnQfJ77oQzCqPsquM"
+              }
+            }
+          ],
+          "type": "claim"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-76654742e7"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`claims[]` MUST contain at least one entry and at most `extra.maxClaimChannels` entries, or four when the facilitator advertises no `maxClaimChannels`, so the instruction pairs fit in one transaction without address lookup tables.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Nineteen claims exceed what fits one version-1 transaction, so no facilitator can advertise that capacity: the payload is malformed for every facilitator.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-redemption-claim-nineteen-entries-reject",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "claims": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "100",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM",
+              "voucher": {
+                "channelId": "Br4wUi9TpNTB7wL9BXoCqKAaHhLVAiiiaWbxve2og5DM",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5webiD4DbhJpjGjToBLXPonCCcDp5jK6KvJaG6y9LZj8RFsuxUgfeH5FLUKfZwxCkhc2qpxn9d9noyNxpwe5vhWo"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "101",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3",
+              "voucher": {
+                "channelId": "96wiMpqdLQvBK2vTHw2ALnzKjoXeHPe9UHL8GPM6VBH3",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "23ed7u1sWVL67DgP2XS5S6a8QNSNDNjx46N3WrDjQcYMkdTKwJxSovjLvESREwinqaX7qFGwZiH4KhX8whvKdyrm"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "102",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn",
+              "voucher": {
+                "channelId": "918ujLxiyqZA2WmxznvtHsEk31nDmPr6Gs8nA73oY2yn",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5M1EwT6SshyUKRhv6qKfSjk7qjjsw7rqZ1q1bjfpHnfqAUm6PUdzxMVspDQX1ptvQwjdwB4xd6xdpKJ9QC8gksdJ"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "103",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH",
+              "voucher": {
+                "channelId": "27P2VM5swSSRGK83AqMhGNg9ZfTNVXtx74MkKevV8PpH",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2yyjqaHsdiBKKHvjR8vdqqHeQ36AFruuGdsazmDBMEbtPiXjbDqA3q6s9FyugebWpzMWResiLPcNfkUBX2onVdyQ"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "104",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs",
+              "voucher": {
+                "channelId": "BJtkqYs9cWfuyP1x9VGsdU2bmjQYTr2sDzPE1Wq6vFXs",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "53JvbdCtBUmDgVwdPDbvwyWXMtXaZBvXR7uUsQq8EPLYtmB8HFSadt7LdhqJ2oGwS4iCcYm1WdCBu3PTU47YDR4h"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "105",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN",
+              "voucher": {
+                "channelId": "4ANNVYxLfjNvjgR6kqD7W7waAfNGZQ3izAqrPuonvswN",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5M3HkGtcYhugcEhwguEn3kMuk3oP1tCeL1iUKXcFjr5V2E5e2QrK48rz7eEfZK66yo44gCGEEPPCC1W3VRzkqGK9"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "106",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN",
+              "voucher": {
+                "channelId": "4q9jEnqAMp8hvBisuXh9HuitWBHRNKthHmdJ1bhBy7pN",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2GiPnYGRk8fjqRf4TnpiXU3xV1HyrSfyKgQ2JXJVKK3R68ahvdfU11Frcc5HM2SeSLPrHDrZdnaXL9et1hwHvQtt"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "107",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F",
+              "voucher": {
+                "channelId": "8F5xwzrKcgrMKLaTYGcKMZdcuDhiq7PxSGnHuWt6Md9F",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2NHpct6EYtPLcX7pvV9CG6aB3tWuW9kpn9JDqPkiHZYZvfZUaUCmqxWzYSnRg5ZNCTUzSsXcvnRMDyLaoKRUWje4"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "108",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC",
+              "voucher": {
+                "channelId": "GUNsKpc5ybB7tj7SUF8UasuByHS7Sxs3aptt5eRicATC",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2aF1Rda2h8ecvpj6Dg99rBXd3Z1TAKtkoq8LPnwRw4UMbTYuqhVHjUn6hrPbnuzQTQiUj4VvEwTu813eu7dyzCh3"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "109",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3",
+              "voucher": {
+                "channelId": "Fmw75DJk8fi8i6yjf3HA9oyxjz5QL6gs8SRXYV4hkxQ3",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5LEJTzesUtMgvaY25KSUo1TAQPQeht7RBpqYRyEc1vRijHDzv2P2tCYAXKqKVU7ke8RZuMmxcpajLAXXcqWWZCqe"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "110",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ",
+              "voucher": {
+                "channelId": "Bpd4syvg5BSByt7xXbNVSztCpgwHsCDrzSm54pm49VjQ",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5ju5RhAzvKY9v1tub5tUR5aBcBRJjioyfeoJqXSo6WEd1ywCc1nw7tPpdAdJCjc4K4s9XFZPH9P6U2FCJH8WuDC7"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "111",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE",
+              "voucher": {
+                "channelId": "EMJFPxSkCK8QztvKAjPniNbgevAu3Tcx8WpqDhw3zHxE",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "57r7o5SRxtLsJr9wMj8wEhB74inVaJFwVAqEqAqY6qqqtFZmpWprUE3CdBBjiCZym6Zb6jjsZB4iL5uyNtSHod9U"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "112",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t",
+              "voucher": {
+                "channelId": "9ZZL2NSCaoQRmKqBJjtC5AyhuongALRcpiKi8oP5fZ3t",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "3Dr3f4jFaMRQr8CW52yjNwsUMYekoaRXsWd93rmtsgo5Q7kGFKsEt5bLKDdjw53LS9G2SeCvVtbJKnyFdGxgHe4H"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "113",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV",
+              "voucher": {
+                "channelId": "3bqqR4WnvtTMJxbChKYJHTktHyakzyUvYZbDEytT8umV",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "3GULYmEqbBEXVNVPvhUAnKG9MHon55ktkBAGCixUSLwKdoKP1CMDRtWiCyXN963LHzmBQ4V4nxUWfJGPQgYoq8qi"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "114",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA",
+              "voucher": {
+                "channelId": "AzABWhvJfRpZu9cPfoAGkfSgA7n6CLN7L1Tsz4kSsPtA",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2CW2iPoeJx3EdeEgJ68bREhKhVRfGcyrbsQ9LWWoKM4sSLSF2Gm3y7BK2CaGRy9hX58QD7Rdi1pUM9Zv6sX24vQR"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "115",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv",
+              "voucher": {
+                "channelId": "6GwxXVRNTRG1rMnvCs4Agy5Tw24Ag7JnPgZo5zDP6acv",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "37HNwRRV62mnVBg1X3F7T4pumj1B74i5Tz8YzXjvwEy6oU6ccxiawySDNi8Ezz9cCTyyZHkWJ7J4beaXhC6JKYbt"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "116",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY",
+              "voucher": {
+                "channelId": "BhgXfPYvNtMZFhrKF3MpatXjVMM9KmppZgBugyfVWsmY",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "5CzWp2MfYojT83Tu19vdpY6MuTFW9g5Vpha25N8u1Rw561xADeaoRcEK6fevHbo35ybACn3iT9xXf7xqRuiKKwSw"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "117",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW",
+              "voucher": {
+                "channelId": "F2cTdjHc7JAfCogJzxiz2YiTsvtG4k55qvLewHRP6wvW",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2KpMKJ4doNJrtVkkRmxFTrn7BUGcRX8a2F5oSX5pN2GfUUWW9XNueUdycYMLMoi9tYopn1iqnQfJ77oQzCqPsquM"
+              }
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "118",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "CutmAqgrNnmJq5uptvRKB691MVM1eWSLJX7ThpUi9iSp",
+              "voucher": {
+                "channelId": "CutmAqgrNnmJq5uptvRKB691MVM1eWSLJX7ThpUi9iSp",
+                "expiresAt": 0,
+                "maxClaimableAmount": "1000",
+                "signature": "2YSMAb1267LSdqmqEwKrucL5Tpcpcgg43cpjJy8qL8BwKZwcwQDLqCsdowxXavMgDjsb4favobzMpqfPQrxLxYpV"
+              }
             }
           ],
           "type": "claim"
@@ -804,12 +1447,12 @@
     "mode": "canonical-bytes",
     "provenance": "authored",
     "requirements": [
-      "X402-7f4ee54a73"
+      "X402-76654742e7"
     ],
     "role": "both",
     "spec": {
       "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`claims[]` MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables.",
+      "quote": "`claims[]` MUST contain at least one entry and at most `extra.maxClaimChannels` entries, or four when the facilitator advertises no `maxClaimChannels`, so the instruction pairs fit in one transaction without address lookup tables.",
       "section": "4.5 Facilitator Interface"
     },
     "tier": "offline"
@@ -845,7 +1488,7 @@
     "mode": "canonical-bytes",
     "provenance": "generated",
     "requirements": [
-      "X402-7f4ee54a73"
+      "X402-76654742e7"
     ],
     "role": "both",
     "spec": {
@@ -893,12 +1536,430 @@
     "mode": "canonical-bytes",
     "provenance": "generated",
     "requirements": [
-      "X402-7f4ee54a73"
+      "X402-c2ca42b7a4"
     ],
     "role": "both",
     "spec": {
       "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
-      "quote": "`channels[]` MUST contain between one and four entries, the same transaction-size bound as `claims[]`.",
+      "quote": "`channels[]` MUST contain at least one entry and at most `extra.maxSettleChannels` entries, or four when the facilitator advertises no `maxSettleChannels`.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Thirteen settle channels, the version-1 capacity (extra.maxSettleChannels 13): the payload parses.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJjaGFubmVscyI6W3siY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjAwIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJDS2tzUHlMazRDaWV3UG83YTNYZVNMVDY3c1J3c253WGc3OVJycFNzMktQdyJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjAxIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiI2Q0pBdWRBTGcycEVmdU5VODZ3YmV3Vm1TUTFTYmJxZ3hBYkt5dXlvcW9aWiJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjAyIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiI1c1BOSllaYzVkam45UHQ3czJmWGp3em1OUkNWVHJTdGZVbnltaFQxd25KZCJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjAzIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiI3d3lHQXU4VVhRYXA4V2hqVVA3ajNwVFRRMzcxTmJkVDZxTVVQdGV6c1phNyJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA0IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiIzN2o4eHppYjd2enFjdVo5MmlQUTZlNGI3OHRuOWttNzdDZTJCZXA1NmZENCJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA1IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiIzRUNWN1E3ZUF0bVhIOU5CSzRLaU44RUtvZ2tZV2E0SG1Wck1rcGJaajZyaiJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA2IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJBcEFjbmRja0I3Ukh5M0g2dFJVUzR2QnlVb3VDVkthZXZVcXpHZFZVdUdGZiJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA3IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJIR0FOblJEVGVHQ1A3YWRmZFByc2hxUlBwWTREcnVKbU5XMWVkWlZtTDE5QSJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA4IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJHdDRNVlVDRzM5M0VRM3JnNFBxYk5YTjQ4OHNFdGVaSEVIOFQ5aVNmejVieiJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjA5IiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJGdHY2SnFQamtMcWtyWXZMc1ViS1JONW9oRGRDM0FGUzlGeWNQV2I0YnhmbSJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjEwIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJFb3FmTEFCZDFQemN2MUc0Tm5tWGt4QUxXUGVxUXc3Y2FUTHI1a1Y3UTQ4ZyJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjExIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiJFNXRBS3g4WHNmN1U4ZXpZeUdlMWZINjNrNnFpRm5yemdlUG0zZDZYelBlbyJ9LHsiY2hhbm5lbENvbmZpZyI6eyJvcGVuU2xvdCI6MzQxMDAwMDAwLCJwYXllciI6IkdtYURycHBCQzdQNUFSS1Y4ZzNkaml3UDg5dnoxakxLMjNWMkdCanVBRUdCIiwicGF5ZXJBdXRob3JpemVyIjoiR21hRHJwcEJDN1A1QVJLVjhnM2RqaXdQODl2ejFqTEsyM1YyR0JqdUFFR0IiLCJyZWNlaXZlciI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwicmVjZWl2ZXJBdXRob3JpemVyIjoiQW9Wc0dhajhNU0o2eHdLeGZGeG85aVpXSDNlbkM4UlJUWEtIMmZ4MkY4b3MiLCJzYWx0IjoiMjEyIiwidG9rZW4iOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIndpdGhkcmF3RGVsYXkiOjM2MDB9LCJjaGFubmVsSWQiOiIydzRtTGFFM2VYTEtwNDZGWldBUXZxYjJpVWdIQldOODg5QnhKcWE3YXFhUyJ9XSwidHlwZSI6InNldHRsZSJ9",
+        "canonicalJson": "{\"channels\":[{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"200\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"CKksPyLk4CiewPo7a3XeSLT67sRwsnwXg79RrpSs2KPw\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"201\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"6CJAudALg2pEfuNU86wbewVmSQ1SbbqgxAbKyuyoqoZZ\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"202\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"5sPNJYZc5djn9Pt7s2fXjwzmNRCVTrStfUnymhT1wnJd\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"203\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"7wyGAu8UXQap8WhjUP7j3pTTQ371NbdT6qMUPtezsZa7\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"204\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"37j8xzib7vzqcuZ92iPQ6e4b78tn9km77Ce2Bep56fD4\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"205\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"3ECV7Q7eAtmXH9NBK4KiN8EKogkYWa4HmVrMkpbZj6rj\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"206\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"ApAcndckB7RHy3H6tRUS4vByUouCVKaevUqzGdVUuGFf\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"207\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"HGANnRDTeGCP7adfdPrshqRPpY4DruJmNW1edZVmL19A\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"208\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Gt4MVUCG393EQ3rg4PqbNXN488sEteZHEH8T9iSfz5bz\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"209\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"Ftv6JqPjkLqkrYvLsUbKRN5ohDdC3AFS9FycPWb4bxfm\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"210\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"EoqfLABd1Pzcv1G4NnmXkxALWPeqQw7caTLr5kV7Q48g\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"211\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"E5tAKx8Xsf7U8ezYyGe1fH63k6qiFnrzgePm3d6XzPeo\"},{\"channelConfig\":{\"openSlot\":341000000,\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"payerAuthorizer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"receiver\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"salt\":\"212\",\"token\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"withdrawDelay\":3600},\"channelId\":\"2w4mLaE3eXLKp46FZWAQvqb2iUgHBWN889BxJqa7aqaS\"}],\"type\":\"settle\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-redemption-settle-thirteen-channels",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "channels": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "200",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "CKksPyLk4CiewPo7a3XeSLT67sRwsnwXg79RrpSs2KPw"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "201",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "6CJAudALg2pEfuNU86wbewVmSQ1SbbqgxAbKyuyoqoZZ"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "202",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "5sPNJYZc5djn9Pt7s2fXjwzmNRCVTrStfUnymhT1wnJd"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "203",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "7wyGAu8UXQap8WhjUP7j3pTTQ371NbdT6qMUPtezsZa7"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "204",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "37j8xzib7vzqcuZ92iPQ6e4b78tn9km77Ce2Bep56fD4"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "205",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "3ECV7Q7eAtmXH9NBK4KiN8EKogkYWa4HmVrMkpbZj6rj"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "206",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "ApAcndckB7RHy3H6tRUS4vByUouCVKaevUqzGdVUuGFf"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "207",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "HGANnRDTeGCP7adfdPrshqRPpY4DruJmNW1edZVmL19A"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "208",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Gt4MVUCG393EQ3rg4PqbNXN488sEteZHEH8T9iSfz5bz"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "209",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Ftv6JqPjkLqkrYvLsUbKRN5ohDdC3AFS9FycPWb4bxfm"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "210",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "EoqfLABd1Pzcv1G4NnmXkxALWPeqQw7caTLr5kV7Q48g"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "211",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "E5tAKx8Xsf7U8ezYyGe1fH63k6qiFnrzgePm3d6XzPeo"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "212",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "2w4mLaE3eXLKp46FZWAQvqb2iUgHBWN889BxJqa7aqaS"
+            }
+          ],
+          "type": "settle"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-c2ca42b7a4"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`channels[]` MUST contain at least one entry and at most `extra.maxSettleChannels` entries, or four when the facilitator advertises no `maxSettleChannels`.",
+      "section": "4.5 Facilitator Interface"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Fourteen settle channels exceed the largest capacity a facilitator may advertise (13): the payload is malformed for every facilitator.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "batch-wire-redemption-settle-fourteen-channels-reject",
+    "input": {
+      "batchWire": {
+        "shape": "redemption",
+        "value": {
+          "channels": [
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "200",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "CKksPyLk4CiewPo7a3XeSLT67sRwsnwXg79RrpSs2KPw"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "201",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "6CJAudALg2pEfuNU86wbewVmSQ1SbbqgxAbKyuyoqoZZ"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "202",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "5sPNJYZc5djn9Pt7s2fXjwzmNRCVTrStfUnymhT1wnJd"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "203",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "7wyGAu8UXQap8WhjUP7j3pTTQ371NbdT6qMUPtezsZa7"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "204",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "37j8xzib7vzqcuZ92iPQ6e4b78tn9km77Ce2Bep56fD4"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "205",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "3ECV7Q7eAtmXH9NBK4KiN8EKogkYWa4HmVrMkpbZj6rj"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "206",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "ApAcndckB7RHy3H6tRUS4vByUouCVKaevUqzGdVUuGFf"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "207",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "HGANnRDTeGCP7adfdPrshqRPpY4DruJmNW1edZVmL19A"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "208",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Gt4MVUCG393EQ3rg4PqbNXN488sEteZHEH8T9iSfz5bz"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "209",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "Ftv6JqPjkLqkrYvLsUbKRN5ohDdC3AFS9FycPWb4bxfm"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "210",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "EoqfLABd1Pzcv1G4NnmXkxALWPeqQw7caTLr5kV7Q48g"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "211",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "E5tAKx8Xsf7U8ezYyGe1fH63k6qiFnrzgePm3d6XzPeo"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "212",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "2w4mLaE3eXLKp46FZWAQvqb2iUgHBWN889BxJqa7aqaS"
+            },
+            {
+              "channelConfig": {
+                "openSlot": 341000000,
+                "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "payerAuthorizer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+                "receiver": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+                "salt": "213",
+                "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                "withdrawDelay": 3600
+              },
+              "channelId": "C9s2aCByGGsp78EWjAqDirgZdKpcXPtQPGcjotGMKXCB"
+            }
+          ],
+          "type": "settle"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "authored",
+    "requirements": [
+      "X402-c2ca42b7a4"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "`channels[]` MUST contain at least one entry and at most `extra.maxSettleChannels` entries, or four when the facilitator advertises no `maxSettleChannels`.",
       "section": "4.5 Facilitator Interface"
     },
     "tier": "offline"
@@ -1073,8 +2134,8 @@
     "description": "Requirements of a route whose facilitator accepts versions 0 and 1 carry extra.transactionVersions [0, 1].",
     "expect": {
       "exactBytes": {
-        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwibWF4VGltZW91dFNlY29uZHMiOjMwMCwibmV0d29yayI6InNvbGFuYTpFdFdUUkFCWmFZcTZpTWZlWUtvdVJ1MTY2VlUyeHFhMSIsInBheVRvIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJzY2hlbWUiOiJiYXRjaC1zZXR0bGVtZW50In0",
-        "canonicalJson": "{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1],\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}"
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtYXhDbGFpbUNoYW5uZWxzIjoxOCwibWF4U2V0dGxlQ2hhbm5lbHMiOjEzLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwibWF4VGltZW91dFNlY29uZHMiOjMwMCwibmV0d29yayI6InNvbGFuYTpFdFdUUkFCWmFZcTZpTWZlWUtvdVJ1MTY2VlUyeHFhMSIsInBheVRvIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJzY2hlbWUiOiJiYXRjaC1zZXR0bGVtZW50In0",
+        "canonicalJson": "{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"maxClaimChannels\":18,\"maxSettleChannels\":13,\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1],\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}"
       },
       "outcome": "accept"
     },
@@ -1087,6 +2148,8 @@
           "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
           "extra": {
             "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "maxClaimChannels": 18,
+            "maxSettleChannels": 13,
             "memo": "invoice-42",
             "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -1114,6 +2177,57 @@
       "doc": "x402-txv1/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
       "quote": "Transaction message versions the facilitator accepts, as an array of `0` and/or `1`",
       "section": "4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[])"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "Requirements of a route whose facilitator builds redemptions as version 1 carry its capacity, extra.maxClaimChannels 18 and extra.maxSettleChannels 13, copied from /supported; the SDK's requirements type keeps both.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsImV4dHJhIjp7ImZlZVBheWVyIjoiSjJ4Y2NSdHVHNDNkckVTTFl6bkhoTGhRa0xUZGZlcGNLWWJpUTlCc0pWYWYiLCJtYXhDbGFpbUNoYW5uZWxzIjoxOCwibWF4U2V0dGxlQ2hhbm5lbHMiOjEzLCJtZW1vIjoiaW52b2ljZS00MiIsInJlY2VpdmVyQXV0aG9yaXplciI6IkFvVnNHYWo4TVNKNnh3S3hmRnhvOWlaV0gzZW5DOFJSVFhLSDJmeDJGOG9zIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInRyYW5zYWN0aW9uVmVyc2lvbnMiOlswLDFdLCJ3aXRoZHJhd0RlbGF5IjozNjAwfSwibWF4VGltZW91dFNlY29uZHMiOjMwMCwibmV0d29yayI6InNvbGFuYTpFdFdUUkFCWmFZcTZpTWZlWUtvdVJ1MTY2VlUyeHFhMSIsInBheVRvIjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJzY2hlbWUiOiJiYXRjaC1zZXR0bGVtZW50In0",
+        "canonicalJson": "{\"amount\":\"1000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"extra\":{\"feePayer\":\"J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf\",\"maxClaimChannels\":18,\"maxSettleChannels\":13,\"memo\":\"invoice-42\",\"receiverAuthorizer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"transactionVersions\":[0,1],\"withdrawDelay\":3600},\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"scheme\":\"batch-settlement\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "batch-wire-requirements-redemption-capacity",
+    "input": {
+      "batchWire": {
+        "shape": "requirements",
+        "value": {
+          "amount": "1000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "extra": {
+            "feePayer": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "maxClaimChannels": 18,
+            "maxSettleChannels": 13,
+            "memo": "invoice-42",
+            "receiverAuthorizer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "transactionVersions": [
+              0,
+              1
+            ],
+            "withdrawDelay": 3600
+          },
+          "maxTimeoutSeconds": 300,
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "scheme": "batch-settlement"
+        }
+      }
+    },
+    "intent": "x402-batch-settlement",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "X402-8f57677e36"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "x402/specs/schemes/batch-settlement/scheme_batch_settlement_svm.md",
+      "quote": "The server MUST copy `feePayer`, `transactionVersions`, `maxClaimChannels`, `maxSettleChannels`, and `maxIdleSecs` into `PaymentRequirements.extra`",
+      "section": "GET /supported"
     },
     "tier": "offline"
   },

@@ -420,6 +420,7 @@ ids = [
   "vector/batch-wire-payment-payload-frozen",
   "vector/batch-wire-requirements-frozen",
   "vector/batch-wire-requirements-transaction-versions",
+  "vector/batch-wire-requirements-redemption-capacity",
   "vector/batch-wire-requirements-unknown-transaction-version-reject",
   "vector/batch-wire-settlement-response-voucher-acceptance",
 ]
