@@ -419,7 +419,18 @@ Use MPP when:
 | `charge/pull`  | ✅     | ✅     |
 | `charge/push`  | —      | ✅     |
 | `session`      | ✅     | ✅     |
-| `subscription` | —      | —      |
+| `subscription` | ✅     | ✅¹    |
+
+¹ `subscription` (draft-solana-subscription-00): the client
+(`build_subscription_activation_credential`) reads and checks the on-chain
+`Plan` against the challenge before it signs, initializes a missing
+`SubscriptionAuthority` in its own transaction, and binds the reusable bearer
+proof to the delegation. The server (`SubscriptionServer`) issues challenges,
+verifies an activation offline (challenge binding, route terms, bearer proof,
+`source`, activation scope, fee-payer co-signature) and returns the
+transaction to broadcast, and checks on-chain that a subscriber's delegation
+is live and paid (`verify_active_subscription`). Broadcasting the activation
+and storing the proof binding for later `type="proof"` access are the host's.
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =
