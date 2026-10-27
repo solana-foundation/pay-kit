@@ -3,9 +3,7 @@ language = "python"
 # Suites and vector intents this SDK claims. Unclaimed ones are shown
 # as "unclaimed" in the coverage table; they are never silently skipped.
 [capabilities]
-vector = ["charge", "x402-exact", "session", "subscription"]
-vector = ["charge", "x402-exact", "session", "x402-upto"]
-vector = ["charge", "x402-exact", "session", "x402-batch-settlement"]
+vector = ["charge", "x402-exact", "session", "subscription", "x402-upto", "x402-batch-settlement"]
 protocol = true
 flow = false
 # Offline cross-verification: this SDK verifies every other SDK's saved builds
@@ -16,13 +14,3 @@ interop = ["x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:u
 # Whether the testee drives the SDK at the clock a vector pins; the runner drives the session voucher verifier at sessionVoucherVerify.nowSeconds.
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
-
-[[unsupported]]
-reason = "unsupported-mode: canonical-bytes"
-ids = [
-  "vector/x402-wire-transaction-versions-golden",
-  "vector/x402-wire-transaction-versions-v1-only-golden",
-]
-
-
-

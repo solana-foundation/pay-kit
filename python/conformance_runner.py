@@ -369,6 +369,36 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
         exact["canonicalJson"] = canonical.decode("utf-8")
         exact["base64Url"] = base64url_encode(canonical)
 
+    xw = inp.get("x402Wire")
+    if xw:
+        # One x402 accepts[] entry. The SDK keeps an offer as its JSON object,
+        # so the round trip is the client's strict read of
+        # extra.transactionVersions written back in place. Mirrors the Rust
+        # PaymentRequirements and TS PaymentRequirementsV2Schema round trips.
+        from solana_pay_kit._paycore.txv1 import parse_transaction_versions
+
+        try:
+            value = xw.get("value")
+            if not isinstance(value, dict):
+                raise ValueError("payment requirements must be an object")
+            decoded_offer = dict(value)
+            extra = decoded_offer.get("extra")
+            if extra is not None:
+                if not isinstance(extra, dict):
+                    raise ValueError("extra must be an object")
+                extra = dict(extra)
+                versions = parse_transaction_versions(
+                    extra.get("transactionVersions"), field_name="extra.transactionVersions"
+                )
+                if versions is not None:
+                    extra["transactionVersions"] = versions
+                decoded_offer["extra"] = extra
+        except Exception as exc:
+            raise ValueError(f"invalid payload: payment requirements: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded_offer)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
+
     return exact
 
 
@@ -554,6 +584,9 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     if mode == "verify-transaction":
         shape = asyncio.run(_x402_verify(vector))
         return {"id": vector_id, "outcome": "accept", "x402EnvelopeShape": shape}
+
+    if mode == "canonical-bytes":
+        return {"id": vector_id, "outcome": "accept", "exactBytes": _run_canonical_bytes(vector)}
 
     # Any other mode for the x402 intent has no Python equivalent.
     raise ValueError(f"unsupported-mode: {mode}")
