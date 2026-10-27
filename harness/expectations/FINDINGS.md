@@ -557,9 +557,6 @@ regression tests, against [RULINGS.md](RULINGS.md):
   vectors.
 - `@solana/pay-kit` exposes no upto distribution-hash or channel-PDA helper,
   so those two wire goldens are unsupported for TypeScript.
-- `@solana/mpp` has no stateless subscription usability check and no
-  subscriptions instruction encoder, so the `subscription-active-*` and
-  `subscription-instruction-*` vectors are unsupported for TypeScript.
 - The vendored `@x402/svm` exact, upto and batch facilitators accept a fixed
   transaction-version set (legacy, 0 and 1) with no option to narrow it, so
   the vectors that configure a sponsor with `[0]`
@@ -594,6 +591,7 @@ the vectors or adapters instead:
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
+| `subscription-ts-route-binding-in-mppx`, the `subscription-active-*` and `subscription-instruction-*` limitations | `@solana/mpp` `subscription().verify` checks the HMAC (optional `secretKey`), method, intent, realm, mint, recipient, program, Plan, network and the route's amount and period itself, as the Rust server does; new stateless `verifyActiveSubscription` (`@solana/mpp/server`) and `encodeSubscribeInstructionData` / `encodeTransferSubscriptionInstructionData` (`@solana/mpp`) |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
 
@@ -676,24 +674,6 @@ The client reads the Plan and checks its mint, amount and period
 (`typescript/packages/mpp/src/client/Subscription.ts:329`), but not that the
 puller is `plan.owner` or in `plan.pullers`, nor that `plan.destinations` is
 exactly the recipient.
-
-## subscription-ts-route-binding-in-mppx
-
-**Cases:** `vector/subscription-verify-forged-challenge-id-reject`,
-`-other-method-reject`, `-charge-intent-reject`, `-other-realm-reject`,
-`-cheaper-route-reject`, `-shorter-period-route-reject`,
-`-other-plan-reject`, `-other-recipient-reject`, `-other-currency-reject`,
-`-other-network-reject`, `-no-network-on-devnet-reject`
-**SDKs:** typescript
-
-`subscription().verify` trusts the echoed challenge
-(`typescript/packages/mpp/src/server/Subscription.ts:230`). The HMAC (tier 1)
-and route binding (tier 2, `stableBinding`) live in mppx's `Mppx.create`
-handler, which turns every SDK error into a generic `VerificationFailedError`
-the testee cannot classify, so the testee drives `verify` directly. A host
-that calls `verify` outside `Mppx.create` gets no binding. Either bind inside
-the method (as the Rust server does) or have mppx surface the reason so the
-testee can drive the handler.
 
 ## subscription-ts-push-mode
 
