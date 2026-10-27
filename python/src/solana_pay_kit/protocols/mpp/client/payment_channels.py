@@ -17,7 +17,7 @@ from __future__ import annotations
 import base64
 import secrets
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Protocol, cast
 
 from solana_keychain import MemorySigner, TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -25,7 +25,13 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
-from solana_pay_kit._paycore.solana import default_token_program_for_currency
+from solana_pay_kit._paycore.paymentchannels import PROGRAM_ID
+from solana_pay_kit._paycore.solana import (
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+    default_token_program_for_currency,
+    validate_network,
+)
 from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     Distribution,
@@ -56,6 +62,8 @@ __all__ = [
     "derive_payment_channel_open",
     "generate_authorized_signer",
     "unique_salt",
+    "validate_session_challenge",
+    "verify_open_blockhash",
 ]
 
 #: Default payment-channel close grace period, in seconds, applied to a derived
@@ -63,6 +71,12 @@ __all__ = [
 DEFAULT_GRACE_PERIOD_SECONDS = 900
 
 _U64_MAX = 2**64 - 1
+
+
+class BlockhashValidator(Protocol):
+    """The RPC surface :func:`verify_open_blockhash` needs."""
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = ...) -> bool: ...
 
 
 def unique_salt() -> int:
@@ -262,6 +276,7 @@ def derive_payment_channel_open(
     enforces the same bound).
     """
     options = options if options is not None else PaymentChannelOpenOptions()
+    validate_session_challenge(request)
     details = request.method_details
     network = details.network
     resolved_mint = resolve_stablecoin_mint(request.currency, network)
@@ -275,6 +290,8 @@ def derive_payment_channel_open(
     deposit = (
         options.deposit if options.deposit is not None else _parse_u64_string(cast("str", requested_deposit), "deposit")
     )
+    if request.minimum_deposit is not None and deposit < _parse_u64_string(request.minimum_deposit, "minimumDeposit"):
+        raise ValueError("deposit is below minimumDeposit")
     grace_period = (
         options.grace_period
         if options.grace_period is not None
@@ -327,6 +344,54 @@ def derive_payment_channel_open(
         token_program=token_program,
         program_id=program_id,
     )
+
+
+def validate_session_challenge(request: SessionRequest) -> None:
+    """The method-details rules a client checks before it signs an open
+    (draft-solana-session-00 Method Details): ``network`` is one of the three
+    clusters, ``decimals`` is present (session currencies are always mints)
+    and within 0 through 9, ``tokenProgram`` (when present) is SPL Token or
+    Token-2022, ``gracePeriodSeconds`` is greater than zero, and
+    ``channelProgram`` is the payment-channels deployment this client builds
+    for."""
+    details = request.method_details
+    validate_network(details.network)
+    if details.decimals is None:
+        raise ValueError("session challenge is missing decimals for its mint")
+    if isinstance(details.decimals, bool) or not 0 <= details.decimals <= 9:
+        raise ValueError(f"session challenge decimals {details.decimals} is outside 0 through 9")
+    if details.token_program is not None and details.token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        raise ValueError(f"session challenge tokenProgram {details.token_program} is neither SPL Token nor Token-2022")
+    if details.grace_period_seconds is not None and details.grace_period_seconds <= 0:
+        raise ValueError("session challenge gracePeriodSeconds must be greater than zero")
+    if _parse_pubkey(details.channel_program, "channelProgram") != PROGRAM_ID:
+        raise ValueError(f"session challenge names an unknown channel program {details.channel_program}")
+
+
+async def verify_open_blockhash(rpc: BlockhashValidator, request: SessionRequest) -> Hash:
+    """The challenge's ``recentBlockhash``, once ``rpc`` (which serves the
+    cluster the client means to pay on) confirms it is live there.
+
+    A transaction is bound to a cluster only by its blockhash, and the server
+    requires the open to use the challenged one. That value is untrusted: a
+    hash from another cluster would make the signed open valid there rather
+    than on the network the deposit was approved for. Pass the result to the
+    openers as ``recent_blockhash``.
+    """
+    challenged = request.method_details.recent_blockhash
+    if not challenged:
+        raise ValueError("session challenge is missing recentBlockhash; a new-channel challenge must provide it")
+    try:
+        blockhash = Hash.from_string(challenged)
+    except Exception as exc:  # noqa: BLE001 - solders raises its own parse error type
+        raise ValueError(f"invalid challenged recentBlockhash: {exc}") from exc
+    try:
+        live = await rpc.is_blockhash_valid(str(blockhash))
+    except Exception as exc:  # noqa: BLE001 - any RPC failure leaves the hash unproven
+        raise ValueError(f"could not check the challenged recentBlockhash: {exc}") from exc
+    if not live:
+        raise ValueError(f"challenge recentBlockhash {blockhash} is not a live blockhash on the client's cluster")
+    return blockhash
 
 
 def _resolve_open_blockhash(override: Hash | str | None, request: SessionRequest) -> Hash:
@@ -402,8 +467,10 @@ async def create_payment_channel_session_opener(
     :class:`PaymentChannelOpenOptions`).
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
-    if request.method_details.voucher_signer == "operator" and options.authentication is None:
-        raise ValueError("operator voucher signing requires authentication")
+    if request.method_details.voucher_signer == "operator":
+        _require_string(request.method_details.operator, "operator")
+        if options.authentication is None:
+            raise ValueError("operator voucher signing requires authentication")
     if options.idle_timeout_seconds is not None:
         from solana_pay_kit.protocols.mpp.intents.session import resolve_idle_timeout_seconds
 
