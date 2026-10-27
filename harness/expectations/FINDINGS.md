@@ -424,40 +424,6 @@ with `getOpenInstructionDataDecoder().decode`
 (`typescript/external/x402/typescript/packages/mechanisms/svm/src/payment-channels/open.ts:969`),
 which ignores bytes past the arguments. The fix belongs in the x402 fork.
 
-## txv1-ts-mpp-no-transaction-versions
-
-**Cases:** `vector/charge-wire-transaction-versions-*`, `vector/session-wire-transaction-versions-*`
-**SDKs:** typescript
-
-`@solana/mpp`'s charge and session request schemas
-(`typescript/packages/mpp/src/Methods.ts`) have no
-`methodDetails.transactionVersions`. zod strips the field, so a server's
-advertisement is lost in a round trip and malformed values (`["legacy"]`,
-`[0, 2]`, `["1"]`, `1`) parse. Tracks the mpp-specs
-feat/solana-transaction-versions draft (`77aa6a1`).
-
-## txv1-ts-mpp-client-v0-only
-
-**Cases:** `vector/charge-build-v1-*`, `vector/charge-build-duplicate-advertisement`, `vector/charge-build-empty-advertisement-reject`
-**SDKs:** typescript
-
-The `@solana/mpp` charge client never reads `transactionVersions` and always
-builds a version-0 message with the ComputeBudget prefix
-(`typescript/packages/mpp/src/client/Charge.ts`). For a `[1]`-only challenge
-the build is a version the server never advertised; for the 1.9 KB
-large-memo charge it exceeds the version-0 limit instead of using version 1.
-
-## txv1-ts-mpp-server-no-version-admission
-
-**Cases:** `vector/charge-verify-v1-*`, `vector/charge-verify-v0-to-v1-only-reject`, `vector/charge-verify-legacy-*`, `vector/charge-verify-v0-oversize-reject`
-**SDKs:** typescript
-
-`verifyChargeTransaction` has no version admission: a version-1 transaction
-throws while decoding (`Cannot read properties of undefined (reading
-'entries')`: the compiled version-1 message has no `instructions` array), a
-version-0 transaction is accepted for a challenge that advertises `[1]` only,
-legacy is accepted, and the version-0 size limit is not applied.
-
 ## txv1-ts-x402-v1-policy
 
 **Cases:** `vector/x402-verify-v1-compute-limit-over-cap-reject`
@@ -593,6 +559,7 @@ the vectors or adapters instead:
 | --- | --- |
 | `ts-batch-setup-reason-code` (codes), `ts-batch-refund-cooperative` (sealed refund), `ts-batch-accepted-not-checked`, `batch-ts-receiver-authorizer-missing-code` | `@x402/svm` batch facilitator reports the spec 7 codes and compares `accepted` with the requirements (x402-foundation/x402 PR 3971, vendored at `d411aea1`) |
 | `ts-charge-client-split-cap`, `charge-client-sol-token-program-ignored`, `charge-client-unknown-network`, `charge-client-amount-not-u64-validated`, `ts-charge-ata-empty-data-crash`, `session-open-initial-voucher-accepted`, the 1232-byte case of `txv1-ts-mpp-server-no-version-admission` | `@solana/mpp` charge client and server, session open schema |
+| `txv1-ts-mpp-no-transaction-versions`, `txv1-ts-mpp-client-v0-only`, `txv1-ts-mpp-server-no-version-admission` (with the `cross/charge-build-*/*/typescript` cases) | `@solana/mpp` charge and session request schemas parse `methodDetails.transactionVersions` strictly; the charge client negotiates the version (`maxTransactionVersion` for the signer's highest) and builds version 1 with the budget in the header; `verifyChargeTransaction` admits by the advertised set, refuses legacy, applies each version's size limits and the version-1 header caps (`typescript/packages/mpp/src/utils/transaction-versions.ts`) |
 | `subscription-ts-program-not-pinned`, `subscription-ts-currency-not-mint`, `subscription-ts-request-format`, `subscription-ts-plan-pullers-destinations`, `subscription-ts-recipient-ata`, `subscription-ts-push-mode`, `subscription-source-not-verified`, `subscription-ts-scope-accounts` | `@solana/mpp` subscription client and server |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)

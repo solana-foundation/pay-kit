@@ -91,6 +91,11 @@ async function buildTransactionForVector(
     ...(input.request.computeUnitPrice !== undefined
       ? { computeUnitPrice: BigInt(input.request.computeUnitPrice) }
       : {}),
+    // The highest message version the signer can sign (e.g. a hardware
+    // wallet on version 0): the SDK negotiates against the advertisement.
+    ...(input.signerMaxTransactionVersion !== undefined
+      ? { maxTransactionVersion: input.signerMaxTransactionVersion }
+      : {}),
     request,
     rpcUrl: rpcUrlOf(vector),
     signer,
@@ -245,8 +250,6 @@ type X402VerifyInput = ConformanceVector["input"];
 
 // Transaction-version knobs the TypeScript SDKs do not expose. The runner
 // cannot express them, so it reports unsupported-mode instead of guessing.
-const SIGNER_VERSION_UNSUPPORTED =
-  "unsupported-mode: @solana/mpp buildChargeTransaction takes no highest signable transaction version (input.signerMaxTransactionVersion)";
 const SPONSOR_VERSIONS_UNSUPPORTED =
   "unsupported-mode: the @x402/svm exact facilitator's accepted transaction-version set is fixed at [0, 1] (legacy tolerated), with no option to narrow it (input.x402ServerTransactionVersions other than absent or [0, 1])";
 
@@ -423,9 +426,6 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.intent === "subscription") return runSubscription(vector);
   if (vector.intent === "x402-exact" && vector.mode !== "canonical-bytes") {
     return runX402Vector(vector);
-  }
-  if (vector.mode === "build-transaction" && vector.input.signerMaxTransactionVersion !== undefined) {
-    return { error: SIGNER_VERSION_UNSUPPORTED, id: vector.id, outcome: "unsupported-mode" };
   }
   if (vector.intent === "session" && vector.mode === "build-transaction") {
     return {
