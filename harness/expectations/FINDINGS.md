@@ -598,26 +598,6 @@ leaving that to simulation, which the offline runner stubs.
 `invalid_batch_settlement_svm_receiver_authorizer_mismatch` (both MUST be
 present and equal). The payment is still refused; only the reason differs.
 
-## x402-upto-ts-treasury-not-configurable
-
-**Cases:** `interop/x402-upto-basic/rust/typescript`, `interop/x402-upto-v1/rust/typescript`
-**SDKs:** typescript
-
-`distribute` checks the treasury token account against the treasury owner
-baked into the payment-channels build it runs on. The interop validator runs a
-locally built program whose treasury owner is the mainnet constant
-(`.github/actions/build-payment-channels`), while the scenarios label the
-network devnet. The Rust upto server is told the program id
-(`PAYMENT_CHANNELS_PROGRAM_ID`) and then uses the program's own treasury
-constant; `@x402/svm`'s `getPaymentChannelsTreasuryOwner(network)` has no such
-override, and pay-kit's TypeScript server exposes none either. The upto
-facilitator's readiness simulation (open + `settle_and_seal` + `distribute`,
-built as version 1 for the version-1 open: `distribute` is instruction 3, with
-no ComputeBudget prefix) therefore fails with `TreasuryAccountMismatch`
-(0x961) and the open is refused. A deployment on real devnet or mainnet is
-unaffected; the fix is a program-id or treasury-owner option on the
-`@x402/svm` upto facilitator, surfaced through pay-kit's config.
-
 ## txv1-go
 
 **Cases:** the charge and x402 transaction-version vectors listed in `go.toml`

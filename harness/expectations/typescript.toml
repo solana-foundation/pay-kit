@@ -110,14 +110,6 @@ tracking = "FINDINGS.md#charge-client-request-not-verified"
 
 [[known_failing]]
 ids = [
-  "interop/x402-upto-basic/rust/typescript",
-  "interop/x402-upto-v1/rust/typescript",
-]
-reason = "the @x402/svm upto facilitator infers the payment-channels treasury owner from the network label and takes no program-id or treasury override, so against the harness's locally built program (mainnet treasury constant, devnet label) its open + settle + distribute readiness simulation fails distribute with TreasuryAccountMismatch (0x961) and the open is refused as invalid_upto_svm_settlement_simulation"
-tracking = "FINDINGS.md#x402-upto-ts-treasury-not-configurable"
-
-[[known_failing]]
-ids = [
   "interop/x402-exact-cross-route-replay/rust/typescript",
 ]
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"

@@ -21,6 +21,8 @@ import type { AddressInfo } from "node:net";
 import { createPayKit, Signer, usage, usd } from "@solana/pay-kit";
 import { readX402ServerEnvironment } from "./exact-shared";
 
+const MAINNET_PATCHED_TREASURY_OWNER = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
+
 function readRequiredEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.trim() === "") throw new Error(`${name} is required`);
@@ -62,6 +64,11 @@ async function main(): Promise<void> {
     operator: { recipient: env.payTo, signer: operator },
     pricing: { usage: usage(usd(env.price, "USDC")) },
     rpcUrl: env.rpcUrl,
+    // The local validator's payment-channels build has its treasury-owner
+    // sentinel patched to the *mainnet* constant
+    // (.github/actions/build-payment-channels) while the scenario labels the
+    // network devnet, so name that treasury instead of devnet's.
+    x402: { paymentChannelsTreasuryOwner: MAINNET_PATCHED_TREASURY_OWNER },
   });
 
   const route = pay.fetch("usage", (request) => {

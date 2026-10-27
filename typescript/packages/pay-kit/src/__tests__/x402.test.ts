@@ -1,4 +1,5 @@
 import type { ExactSvmSchemeOptions } from '@x402/svm';
+import type { UptoSvmFacilitatorConfig } from '@x402/svm/upto/facilitator';
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type { X402Options } from '../config.js';
@@ -6,10 +7,13 @@ import type { X402Options } from '../config.js';
 // Compile-time drift guard: X402Options must equal the full vendored
 // @x402/svm option surface modulo readonly (our config is frozen). Key drift
 // in either direction — including upstream adding an option we don't expose —
-// optionality drift, and per-key widening/narrowing all fail typecheck.
+// optionality drift, and per-key widening/narrowing all fail typecheck. The
+// upto facilitator's treasury owner is the one upto-only option on top.
 type ImmutableValue<V> = V extends readonly (infer E)[] ? readonly E[] : V;
 type Immutable<T> = { readonly [K in keyof T]: ImmutableValue<T[K]> };
-expectTypeOf<Immutable<ExactSvmSchemeOptions>>().toEqualTypeOf<X402Options>();
+expectTypeOf<
+    Immutable<ExactSvmSchemeOptions & Pick<UptoSvmFacilitatorConfig, 'paymentChannelsTreasuryOwner'>>
+>().toEqualTypeOf<X402Options>();
 
 // The upto challenge requires a server-fetched recentBlockhash + recentSlot
 // (one getLatestBlockhash call); stub the RPC so the enriched requirement is
@@ -404,6 +408,18 @@ describe('x402 smart-wallet options', () => {
         uptoCtorCalls.length = 0;
         new X402Upto(bare);
         expect(uptoCtorCalls.at(-1)?.[1]).toEqual({});
+    });
+
+    it('forwards a configured treasury owner to the upto facilitator only when set', async () => {
+        const owner = 'Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP';
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_devnet',
+            x402: { paymentChannelsTreasuryOwner: owner },
+        });
+        uptoCtorCalls.length = 0;
+        new X402Upto(config);
+        expect(uptoCtorCalls.at(-1)?.[1]).toEqual({ paymentChannelsTreasuryOwner: owner });
     });
 
     it('copies the allowlist so callers cannot mutate verification policy', async () => {

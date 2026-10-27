@@ -115,6 +115,9 @@ export class X402Upto {
                 ...(config.x402.pendingSettlementStore && {
                     pendingSettlementStore: config.x402.pendingSettlementStore,
                 }),
+                ...(config.x402.paymentChannelsTreasuryOwner && {
+                    paymentChannelsTreasuryOwner: config.x402.paymentChannelsTreasuryOwner,
+                }),
             },
         );
         this.#facilitator = new x402Facilitator().register(this.#network, scheme);

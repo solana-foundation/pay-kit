@@ -49,6 +49,12 @@ export type X402Options = {
      */
     readonly maxRequiredSignatures?: number;
     /**
+     * Owner of the payment-channels treasury that `upto` settlement's
+     * `distribute` pays. Default: the deployed program's owner for the
+     * network. Set it only for a program built with another treasury constant.
+     */
+    readonly paymentChannelsTreasuryOwner?: string;
+    /**
      * Lets a retried settle for the same transaction reconcile against an
      * already-broadcast signature instead of re-verifying and re-sending.
      * Forwarded to both the `exact` and `upto` facilitators. Default: an
