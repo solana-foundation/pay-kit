@@ -66,48 +66,17 @@ ids = [
 reason = "rejects the cross-route payment with payment_invalid (sdkCode accepted_mismatch) instead of the canonical charge_request_mismatch"
 tracking = "FINDINGS.md#x402-canonical-codes"
 
-# subscription (draft-solana-subscription-00) vectors
 [[known_failing]]
 ids = [
-  "vector/subscription-verify-forged-challenge-id-reject",
-  "vector/subscription-verify-other-method-reject",
-  "vector/subscription-verify-charge-intent-reject",
-  "vector/subscription-verify-other-realm-reject",
-  "vector/subscription-verify-cheaper-route-reject",
-  "vector/subscription-verify-shorter-period-route-reject",
-  "vector/subscription-verify-other-plan-reject",
-  "vector/subscription-verify-other-recipient-reject",
-  "vector/subscription-verify-other-currency-reject",
-  "vector/subscription-verify-other-network-reject",
-  "vector/subscription-verify-no-network-on-devnet-reject",
 ]
-reason = "subscription().verify trusts the echoed challenge (typescript/packages/mpp/src/server/Subscription.ts:230); the HMAC and route binding live in mppx's Mppx.create handler, which reports a generic error the testee cannot classify"
-tracking = "FINDINGS.md#subscription-ts-route-binding-in-mppx"
 
 [[unsupported]]
 ids = [
-  "vector/subscription-active-live",
-  "vector/subscription-active-cancellation-scheduled",
-  "vector/subscription-active-cancelled-now-reject",
-  "vector/subscription-active-last-second-of-period",
-  "vector/subscription-active-period-ended-reject",
-  "vector/subscription-active-unpaid-period-reject",
-  "vector/subscription-active-authority-reinitialized-reject",
-  "vector/subscription-active-authority-missing-reject",
-  "vector/subscription-active-authority-foreign-owner-reject",
-  "vector/subscription-active-delegation-missing-reject",
-  "vector/subscription-active-delegation-foreign-owner-reject",
-  "vector/subscription-active-delegation-other-plan-reject",
-  "vector/subscription-active-delegation-wrong-version-reject",
 ]
-reason = "@solana/mpp has no stateless active-subscription check: delegation usability is only re-checked inside verify of a type=\"proof\" credential bound in the server's store by a confirmed activation"
 
 [[unsupported]]
 ids = [
-  "vector/subscription-instruction-subscribe-data",
-  "vector/subscription-instruction-transfer-data",
 ]
-reason = "@solana/mpp exposes no subscriptions instruction-data encoder (it builds instructions with @solana/subscriptions); the layouts are judged through the build vectors' instruction multiset"
 # Transaction versions (SIMD-0385; mpp-specs-txv1, x402-txv1).
 [[unsupported]]
 ids = [

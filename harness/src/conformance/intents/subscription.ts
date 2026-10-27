@@ -17,6 +17,8 @@ import { address, createKeyPairSignerFromBytes } from "@solana/kit";
 import {
   deriveSubscriptionAuthorityPda,
   deriveSubscriptionPda,
+  encodeSubscribeInstructionData,
+  encodeTransferSubscriptionInstructionData,
   mapSubscriptionPeriodToHours,
   subscription as subscriptionMethod,
 } from "@solana/mpp";
@@ -25,7 +27,10 @@ import {
   subscriptionAuthenticationMessage,
   verifySubscriptionAuthentication,
 } from "@solana/mpp/client";
-import { subscription as subscriptionServer } from "@solana/mpp/server";
+import {
+  subscription as subscriptionServer,
+  verifyActiveSubscription,
+} from "@solana/mpp/server";
 import { Credential } from "mppx";
 import { base64UrlFromUtf8, canonicalizeJson } from "../jcs";
 import type { ConformanceVector, RejectCode, RunnerResult } from "../schema";
@@ -118,10 +123,41 @@ async function canonical(vector: ConformanceVector): Promise<RunnerResult> {
     return exactJson(vector.id, { address: derived });
   }
   if (input.subscriptionInstruction) {
-    return unsupported(
-      vector.id,
-      "@solana/mpp exposes no subscriptions instruction-data encoder (it delegates to @solana/subscriptions)",
-    );
+    const ix = input.subscriptionInstruction as {
+      kind: "subscribe" | "transfer";
+      amount: string;
+      mint: string;
+      authorityInitId?: number;
+      createdAt?: number;
+      delegator?: string;
+      periodHours?: number;
+      planBump?: number;
+      planId?: number;
+    };
+    const bytes =
+      ix.kind === "subscribe"
+        ? encodeSubscribeInstructionData({
+            amount: ix.amount,
+            authorityInitId: ix.authorityInitId!,
+            createdAt: ix.createdAt!,
+            mint: ix.mint,
+            periodHours: ix.periodHours!,
+            planBump: ix.planBump!,
+            planId: ix.planId!,
+          })
+        : encodeTransferSubscriptionInstructionData({
+            amount: ix.amount,
+            delegator: ix.delegator!,
+            mint: ix.mint,
+          });
+    return {
+      exactBytes: {
+        base64Url: Buffer.from(bytes).toString("base64url"),
+        bytes: Array.from(bytes),
+      },
+      id: vector.id,
+      outcome: "accept",
+    };
   }
   if (input.subscriptionWire) {
     const { shape, value } = input.subscriptionWire;
@@ -217,8 +253,10 @@ async function verifyActivation(
     periodUnit: route.periodUnit as "day" | "week",
     planId: route.planAddress,
     puller: route.puller,
+    realm: route.realm,
     recipient: route.recipient,
     rpcUrl: rpcUrlOf(vector),
+    secretKey: route.secretKey,
     ...(signer ? { signer } : {}),
     subscriptionProgram: route.subscriptionProgram,
     tokenProgram: route.tokenProgram,
@@ -230,12 +268,18 @@ async function verifyActivation(
     return rejected(vector.id, error, "invalid-payload");
   }
   try {
-    await withClock(input.nowSeconds!, () =>
-      method.verify!({
+    await withClock(input.nowSeconds!, async () => {
+      // The route's request, as Mppx.create hands it to verify: the method's
+      // defaults and this route's amount through the method's request hook.
+      const request = await method.request!({
         credential: credential as never,
-        request: credential.challenge.request as never,
-      } as never),
-    );
+        request: { ...method.defaults, amount: route.amount } as never,
+      });
+      return method.verify!({
+        credential: credential as never,
+        request: request as never,
+      } as never);
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (NETWORK_STEP.test(message)) return { id: vector.id, outcome: "accept" };
@@ -263,17 +307,35 @@ async function verifyProof(vector: ConformanceVector): Promise<RunnerResult> {
       );
 }
 
+async function verifyActive(vector: ConformanceVector): Promise<RunnerResult> {
+  const input = vector.input;
+  const route = input.subscriptionServer!;
+  const active = input.subscriptionActive!;
+  try {
+    await withClock(input.nowSeconds!, () =>
+      verifyActiveSubscription({
+        amount: active.amount,
+        mint: route.mint,
+        periodCount: route.periodCount,
+        periodUnit: route.periodUnit as "day" | "week",
+        planId: route.planAddress,
+        rpcUrl: rpcUrlOf(vector),
+        subscriber: active.subscriber,
+        subscriptionProgram: route.subscriptionProgram,
+      }),
+    );
+  } catch (error) {
+    return rejected(vector.id, error);
+  }
+  return { id: vector.id, outcome: "accept" };
+}
+
 export async function run(vector: ConformanceVector): Promise<RunnerResult> {
   if (vector.mode === "canonical-bytes") return canonical(vector);
   if (vector.mode === "build-transaction") return build(vector);
   if (vector.input.subscriptionAuthorization) return verifyActivation(vector);
   if (vector.input.subscriptionProof) return verifyProof(vector);
-  if (vector.input.subscriptionActive) {
-    return unsupported(
-      vector.id,
-      '@solana/mpp has no stateless active-subscription check; delegation usability is only re-checked inside verify of a bound type="proof" credential',
-    );
-  }
+  if (vector.input.subscriptionActive) return verifyActive(vector);
   return unsupported(
     vector.id,
     "subscription verify input carries no credential",

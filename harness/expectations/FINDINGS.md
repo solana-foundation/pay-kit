@@ -380,9 +380,6 @@ regression tests, against [RULINGS.md](RULINGS.md):
   payment-identifier id.
 - The Kotlin conformance runner implements only the session voucher preimage
   vectors.
-- `@solana/mpp` has no stateless subscription usability check and no
-  subscriptions instruction encoder, so the `subscription-active-*` and
-  `subscription-instruction-*` vectors are unsupported for TypeScript.
 
 ## Reclassified on 2026-10-27
 
@@ -436,6 +433,7 @@ delegation matches the payer, plan and terms with a current authority), the
 binding store, `verify_access_credential` for `type="proof"` access, and the
 receipt. `verify_activation` refuses `type="proof"` credentials rather than
 returning an unverified result; `python/README.md` marks the server ◐.
+| `subscription-ts-route-binding-in-mppx`, the `subscription-active-*` and `subscription-instruction-*` limitations | `@solana/mpp` `subscription().verify` checks the HMAC and realm (`secretKey`/`realm`, falling back to `MPP_SECRET_KEY`/`MPP_REALM`; fails closed when neither gives them), method, intent, mint, recipient, program, Plan, network and the route's amount and period itself, as the Rust server does; new stateless `verifyActiveSubscription` (`@solana/mpp/server`) and `encodeSubscribeInstructionData` / `encodeTransferSubscriptionInstructionData` (`@solana/mpp`) |
 
 ## Subscription findings (`subscription-*.json`, 2026-10-21)
 
@@ -518,24 +516,6 @@ The client reads the Plan and checks its mint, amount and period
 (`typescript/packages/mpp/src/client/Subscription.ts:329`), but not that the
 puller is `plan.owner` or in `plan.pullers`, nor that `plan.destinations` is
 exactly the recipient.
-
-## subscription-ts-route-binding-in-mppx
-
-**Cases:** `vector/subscription-verify-forged-challenge-id-reject`,
-`-other-method-reject`, `-charge-intent-reject`, `-other-realm-reject`,
-`-cheaper-route-reject`, `-shorter-period-route-reject`,
-`-other-plan-reject`, `-other-recipient-reject`, `-other-currency-reject`,
-`-other-network-reject`, `-no-network-on-devnet-reject`
-**SDKs:** typescript
-
-`subscription().verify` trusts the echoed challenge
-(`typescript/packages/mpp/src/server/Subscription.ts:230`). The HMAC (tier 1)
-and route binding (tier 2, `stableBinding`) live in mppx's `Mppx.create`
-handler, which turns every SDK error into a generic `VerificationFailedError`
-the testee cannot classify, so the testee drives `verify` directly. A host
-that calls `verify` outside `Mppx.create` gets no binding. Either bind inside
-the method (as the Rust server does) or have mppx surface the reason so the
-testee can drive the handler.
 
 ## subscription-ts-push-mode
 
