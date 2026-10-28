@@ -2573,11 +2573,11 @@ packages:
     resolution: {integrity: sha512-Q3awXrwOfEV+qc3WmO5ONyE0yO7Q1gQ9/oyHxGLZ/pl7N3NO/ZztqQwKLuwMkV+CA1JYSIeO3gkHnRDIo4AVaA==}
 
   '@x402/core@file:.x402-vendor/x402-core-2.28.0.tgz':
-    resolution: {integrity: sha512-JTAUxpX4/tP+RisHPqUgAAPcCK+Jbz5unISBD7XJhR060b0kF9HWhpk0Da0341SztzX5x6lMpqMwkjvsnQEg5A==, tarball: file:.x402-vendor/x402-core-2.28.0.tgz}
+    resolution: {integrity: sha512-7HVY6AvIqUDBsfsAscpHM8xTKhCGiNBJfOdP8fHBIktJjPaDhem335nd/0IX+k/TWN83uvY7GHJpg0oFflxDjg==, tarball: file:.x402-vendor/x402-core-2.28.0.tgz}
     version: 2.28.0
 
   '@x402/svm@file:.x402-vendor/x402-svm-2.28.0.tgz':
-    resolution: {integrity: sha512-x+/IMZCgarfiRopIRhMHvrleX42RQEX6OjZqSbKiUTpZ9nGxiCEQycIQT9JbFik686ebmsG43B6lQwo+bWOkDA==, tarball: file:.x402-vendor/x402-svm-2.28.0.tgz}
+    resolution: {integrity: sha512-XodbU2gHV8DIuErx+yEQXShJkae0m1tInb1B3C10+lhIHA7PGE2/o+tPEPXUxycFQQ2GP9coMdzHx+5AJVg0Pw==, tarball: file:.x402-vendor/x402-svm-2.28.0.tgz}
     version: 2.28.0
     peerDependencies:
       '@solana/kit': '>=8.0.0'
