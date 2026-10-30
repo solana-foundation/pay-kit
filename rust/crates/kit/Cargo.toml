@@ -85,25 +85,26 @@ otel = [
 # `VersionedTransaction`; see core::signing for how the kit adapts. `sdk-v4` is
 # what signs and wire-encodes Transaction V1 (SIMD-0385).
 # solana-keychain 2.0.0-beta.1 on crates.io compiles `sdk-v4` against wincode
-# 0.4; solana-message/-transaction 4.1+ (Transaction V1) use wincode 0.5.
-# keychain main carries the bump but has no release yet, so depend on that
-# commit directly: path and git consumers of the kit inherit it (a workspace
-# `[patch]` would not reach them). `cargo publish` strips the git source and
-# resolves beta.1, which does not compile; publishing waits for beta.2.
-solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "44b479df245167ca3b3a4e04d6d907146306d342", default-features = false, features = ["memory", "sdk-v4"] }
+# 0.4; solana-message 4.5 / solana-transaction 4.2 use wincode 0.6. keychain
+# main carries the bump (solana-sdk 4.1, wincode 0.6) but has no release yet,
+# so depend on that commit directly: path and git consumers of the kit
+# inherit it (a workspace `[patch]` would not reach them). `cargo publish`
+# strips the git source and resolves beta.1, which does not compile;
+# publishing waits for beta.2.
+solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "ed68ba3232c99fa3ed3b57344e0b6e496aa08777", default-features = false, features = ["memory", "sdk-v4"] }
 
 # Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
 # which solana-keypair/solana-signature rely on.
 five8_core = { version = "=0.1.2", features = ["std"] }
 
 # Solana — atomic crates only. solana-message/-transaction/-hash are on the 4.x
-# line that carries Transaction V1; message stays below 4.5 because 4.5+ needs
-# solana-address 2.7 while litesvm 0.16 pins ~2.6. Interface crates
+# line that carries Transaction V1, kept on the minor lines litesvm 0.18 and
+# surfpool 1.7 resolve to (message 4.5, transaction 4.2). Interface crates
 # (instruction, pubkey, signature, system-interface) are unchanged on 3.x/2.x —
 # message 4.x still consumes solana-instruction 3.x.
 solana-hash = { version = "4.4", default-features = false }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-message = { version = "~4.5", default-features = false, features = ["wincode"] }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-commitment-config = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4.1", default-features = false }
@@ -115,9 +116,9 @@ solana-rpc-client-api = { version = "4.1", default-features = false }
 solana-account-decoder-client-types = { version = "4.1", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+solana-transaction = { version = "~4.2", default-features = false, features = ["wincode", "serde"] }
 # Canonical wire codec for every message version: bincode cannot encode V1.
-wincode = "0.5"
+wincode = "0.6"
 # transaction-status 4.0 gates its whole lib behind `agave-unstable-api`; the
 # wire types we use live in the stable client-types crate.
 solana-transaction-status-client-types = { version = "4.1", default-features = false }
@@ -205,10 +206,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 thiserror = "2"
 
 [dev-dependencies]
-# litesvm 0.16 shares the kit's solana-address pins, so it can be a plain
+# litesvm 0.18 shares the kit's solana-address pins, so it can be a plain
 # dev-dependency; it executes version-1 transactions and the ZK ElGamal Proof
 # program, which the `litesvm-tests` confidential tests rely on.
-litesvm = { version = "0.16", features = ["precompiles"] }
+litesvm = { version = "0.18", features = ["precompiles"] }
 solana-account = "4"
 tokio = { version = "1", features = ["full"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server"] }
@@ -221,11 +222,11 @@ ed25519-dalek = "2"
 base64 = "0.22"
 # Atomic solana crates the in-tree examples / unit tests import directly.
 solana-hash = { version = "4.4", default-features = false }
-solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-message = { version = "~4.5", default-features = false, features = ["wincode"] }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+solana-transaction = { version = "~4.2", default-features = false, features = ["wincode", "serde"] }
 
 [[example]]
 name = "axum_quickstart"

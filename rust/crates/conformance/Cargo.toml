@@ -17,7 +17,7 @@ path = "src/main.rs"
 interop = ["dep:surfpool-sdk", "dep:axum", "dep:reqwest"]
 
 [dependencies]
-surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "30242a4fe3b87557f3d6f1629f548e2515718242", optional = true }
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "9be726da6456b58a3b39c099885c6c5904da4543", optional = true }
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
 reqwest = { version = "0.12.28", optional = true, default-features = false, features = ["json"] }
 solana-pay-kit ={ path = "../kit", features = ["mpp", "x402", "client", "server", "testkit"] }
@@ -33,12 +33,12 @@ toml = "0.8"
 async-trait = "0.1"
 solana-hash = { version = "4.4", default-features = false }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
+solana-message = { version = "~4.5", default-features = false, features = ["wincode"] }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4.1", default-features = false }
 solana-rpc-client-api = { version = "4.1", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
-solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+solana-transaction = { version = "~4.2", default-features = false, features = ["wincode", "serde"] }
 # Subscription fixture accounts are encoded with the kit's generated (borsh)
 # account types.
 solana-address = { version = "2", default-features = false }
