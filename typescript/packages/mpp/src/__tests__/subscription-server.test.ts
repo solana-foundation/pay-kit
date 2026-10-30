@@ -1056,13 +1056,15 @@ describe('subscription().verify()', () => {
         const authorityB64 = Buffer.from(buildAuthorityData()).toString('base64');
 
         const rpcMethods: string[] = [];
+        const sendOptions: unknown[] = [];
         globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string] };
+            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string, unknown?] };
             if (body.method) rpcMethods.push(body.method);
             switch (body.method) {
                 case 'simulateTransaction':
                     return rpcSuccess({ value: { err: null, logs: [] } });
                 case 'sendTransaction':
+                    sendOptions.push(body.params?.[1]);
                     return rpcSuccess(txSignature);
                 case 'getSignatureStatuses':
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
@@ -1126,6 +1128,7 @@ describe('subscription().verify()', () => {
         expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
         expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
         expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+        expect(sendOptions).toEqual([{ encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }]);
 
         const accessCredential = {
             challenge: credential.challenge,

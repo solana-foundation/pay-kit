@@ -1930,6 +1930,23 @@ test('pull: accepts valid native SOL transfer', async () => {
     expect(receipt.reference).toBe(transactionSignatureFromBase64(transaction));
 });
 
+test('pull: broadcasts with preflight at confirmed commitment', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const mockFetch = globalThis.fetch;
+    const sendOptions: unknown[] = [];
+    globalThis.fetch = async (input, init) => {
+        const body = JSON.parse(init?.body as string);
+        if (body.method === 'sendTransaction') sendOptions.push(body.params[1]);
+        return await mockFetch(input, init);
+    };
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    await method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any });
+
+    expect(sendOptions).toEqual([{ encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }]);
+});
+
 test('pull: rejects when the RPC reports the broadcast transaction as legacy', async () => {
     const method = charge({
         recipient: RECIPIENT,
