@@ -1540,7 +1540,9 @@ async function broadcastTransaction(rpcUrl: string, base64Tx: string): Promise<s
             id: 1,
             jsonrpc: '2.0',
             method: 'sendTransaction',
-            params: [base64Tx, { encoding: 'base64', skipPreflight: false }],
+            // Preflight at the commitment the simulation above used: the node default
+            // (`finalized`) rejects a fresh `confirmed` blockhash as not found.
+            params: [base64Tx, { encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
