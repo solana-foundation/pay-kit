@@ -217,4 +217,106 @@ final class JsonCanonicalTest extends TestCase
         self::assertSame('100', Json::canonicalize(100.0));
         self::assertSame('1000', Json::canonicalize(1000.0));
     }
+
+    public function testDecodePreservingObjectRoundTripsEmptyObjects(): void
+    {
+        // PHP's json_decode($x, true) collapses `{}` and `[]` into the
+        // same empty array, so the harness runner can't tell them apart
+        // when the canonical encoder needs to round-trip them as `{}` vs
+        // `[]`. decodePreservingObject walks the JSON text directly and
+        // returns a \stdClass instance for a `{}`; the encoder recognizes
+        // it and emits `{}`. (issue #110 / PR #302; cyberphone
+        // testdata/structures is the cross-SDK oracle.)
+        self::assertSame('{}', Json::canonicalize(Json::decodePreservingObject('{}')));
+        self::assertSame('[]', Json::canonicalize(Json::decodePreservingObject('[]')));
+        self::assertSame(
+            '{"a":1,"b":{}}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": {}}'))
+        );
+        self::assertSame(
+            '{"a":1,"b":[]}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": []}'))
+        );
+        // Empty object nested inside an array, the structures.json shape.
+        self::assertSame(
+            '{"a":1,"b":[{},1]}',
+            Json::canonicalize(Json::decodePreservingObject('{"a": 1, "b": [{}, 1]}'))
+        );
+    }
+
+    public function testDecodePreservingObjectSurvivesSentinelShapedKeys(): void
+    {
+        // The empty-object tag used to be a magic array key
+        // ("💣__object__💣"); any JSON object holding that key collided
+        // with the tag and the key was silently dropped at encode time.
+        // Empty objects now decode to a \stdClass instance, so ordinary
+        // string keys survive verbatim. (issue #110 / PR #302.)
+        self::assertSame(
+            '{"💣__object__💣":"x"}',
+            Json::canonicalize(Json::decodePreservingObject('{"💣__object__💣": "x"}'))
+        );
+    }
+
+    public function testDecodeStringCombinesSurrogatePairs(): void
+    {
+        // RFC 8785 sec 3.2.2.2 / I-JSON: a \uD800-\uDBFF escape must pair
+        // with a following \uDC00-\uDFFF. The decoder used to feed each
+        // half into mb_chr on its own, producing a broken string; it now
+        // combines the pair into one code point. (issue #110 / PR #302.)
+        self::assertSame('😂', Json::decodePreservingObject('"\ud83d\ude02"'));
+        // U+1D11E MUSICAL SYMBOL G CLEF, the non-BMP pair shape.
+        self::assertSame('𝄞', Json::decodePreservingObject('"\uD834\uDD1E"'));
+        // The combined string re-encodes byte-identically through the
+        // canonical encoder.
+        self::assertSame(
+            '"😂"',
+            Json::canonicalize(Json::decodePreservingObject('"\\ud83d\\ude02"'))
+        );
+    }
+
+    public function testDecodeStringRejectsLoneHighSurrogate(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('"\ud83d"');
+    }
+
+    public function testDecodeStringRejectsHighSurrogateFollowedByRegularChar(): void
+    {
+        // A high surrogate whose next token is not a \uDC00-\uDFFF escape
+        // is still lone and must not decode as an invalid scalar.
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('"\ud83dA"');
+    }
+
+    public function testDecodeStringRejectsLoneLowSurrogate(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('"\ude02"');
+    }
+
+    public function testDecodeNumberKeepsPlatformIntsExact(): void
+    {
+        // Integer literals within the 64-bit platform range decode to
+        // PHP ints, including the exact endpoints of the range.
+        // (issue #110 / PR #302.)
+        self::assertSame(17, Json::decodePreservingObject('17'));
+        self::assertSame(PHP_INT_MAX, Json::decodePreservingObject((string)PHP_INT_MAX));
+        self::assertSame(PHP_INT_MIN, Json::decodePreservingObject((string)PHP_INT_MIN));
+    }
+
+    public function testDecodeNumberFallsBackToFloatBeyondIntRange(): void
+    {
+        // `(int)` used to saturate larger integer literals to PHP_INT_MAX.
+        // Past the platform range the decoder now yields the IEEE 754
+        // double the ES6 number serialization is defined over, so the
+        // canonical output stays JS-comparable instead of clamping.
+        // (issue #110 / PR #302.)
+        self::assertSame(
+            9223372036854775808.0,
+            Json::decodePreservingObject('9223372036854775808')
+        );
+        $decoded = Json::decodePreservingObject('100000000000000000000');
+        self::assertIsFloat($decoded);
+        self::assertSame('100000000000000000000', Json::canonicalize($decoded));
+    }
 }

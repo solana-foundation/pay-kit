@@ -43,6 +43,19 @@ final class Json
         if (is_string($value)) {
             return self::encodeString($value);
         }
+        if ($value instanceof \stdClass) {
+            // Only an EMPTY stdClass is meaningful here: it is the shape
+            // {@see self::decodePreservingObject()} produces for a JSON
+            // `{}` so the value round-trips as `{}` (PHP's assoc decode
+            // maps `{}` to the same zero-length array as `[]`, which RFC
+            // 8785 sec 3.2.2 distinguishes). Populated stdClass never
+            // comes out of this decoder and stays an unsupported payload
+            // shape, matching the base JSON-narrowing contract.
+            if ((array) $value !== []) {
+                throw new InvalidArgumentException('unsupported JSON value');
+            }
+            return '{}';
+        }
         if (is_array($value)) {
             if (array_is_list($value)) {
                 $parts = array_map(fn ($item) => self::encodeValue($item), $value);
@@ -58,23 +71,277 @@ final class Json
      */
     private static function encodeObject(array $value): string
     {
-        $stringKeyed = [];
+        // PHP coerces numeric strings back to ints when used as array
+        // keys, so $stringKeyed[1] = $item is the same as
+        // $stringKeyed['1'] = $item. We need to keep the keys as strings
+        // for both the comparison (usort typed parameter) and the encoder
+        // (encodeString requires string). Two parallel arrays preserve
+        // the (key, value) pairing across the sort: pair-index `i` always
+        // means the i-th pair in original iteration order.
+        $pairs = [];
+        $seen = [];
         foreach ($value as $key => $item) {
             $stringKey = (string)$key;
-            if (array_key_exists($stringKey, $stringKeyed)) {
+            if (array_key_exists($stringKey, $seen)) {
                 throw new InvalidArgumentException('duplicate object key');
             }
-            $stringKeyed[$stringKey] = $item;
+            $seen[$stringKey] = true;
+            $pairs[] = [$stringKey, $item];
         }
-        $keys = array_keys($stringKeyed);
-        usort($keys, static function (string $a, string $b): int {
-            return self::compareUtf16($a, $b);
+        usort($pairs, static function (array $a, array $b): int {
+            return self::compareUtf16($a[0], $b[0]);
         });
         $parts = [];
-        foreach ($keys as $key) {
-            $parts[] = self::encodeString($key) . ':' . self::encodeValue($stringKeyed[$key]);
+        foreach ($pairs as [$key, $item]) {
+            $parts[] = self::encodeString($key) . ':' . self::encodeValue($item);
         }
         return '{' . implode(',', $parts) . '}';
+    }
+
+    /**
+     * Decode JSON into a structure that preserves the `{}` vs `[]`
+     * distinction. PHP's `json_decode($x, true)` collapses both into a
+     * zero-length array; callers need to know which one crossed the wire
+     * because canonical RFC 8785 round-trips them as `{}` and `[]`
+     * respectively. A JSON `{}` decodes to a `\stdClass` instance (the
+     * encoder recognizes stdClass and emits `{}`), so no array key is
+     * overloaded as an internal marker and ordinary user keys can never
+     * collide with the representation. Every other JSON value decodes
+     * exactly like `json_decode($x, true)`.
+     *
+     * @return mixed
+     */
+    public static function decodePreservingObject(string $json)
+    {
+        $pos = 0;
+        $len = strlen($json);
+        return self::decodeValuePreserving($json, $len, $pos);
+    }
+
+    private static function decodeValuePreserving(string $json, int $len, int &$pos)
+    {
+        self::skipWsPreserving($json, $len, $pos);
+        if ($pos >= $len) {
+            throw new InvalidArgumentException('unexpected end of input');
+        }
+        $c = $json[$pos];
+        if ($c === '{') {
+            return self::decodeObjectPreserving($json, $len, $pos);
+        }
+        if ($c === '[') {
+            return self::decodeArrayPreserving($json, $len, $pos);
+        }
+        if ($c === '"') {
+            return self::decodeStringPreserving($json, $len, $pos);
+        }
+        if ($c === 't' || $c === 'f') {
+            return self::decodeBoolPreserving($json, $len, $pos);
+        }
+        if ($c === 'n') {
+            self::consumeKeywordPreserving($json, $len, $pos, 'null');
+            return null;
+        }
+        return self::decodeNumberPreserving($json, $len, $pos);
+    }
+
+    private static function skipWsPreserving(string $json, int $len, int &$pos): void
+    {
+        while ($pos < $len && in_array($json[$pos], [' ', "\t", "\n", "\r"], true)) {
+            $pos++;
+        }
+    }
+
+    private static function consumeKeywordPreserving(string $json, int $len, int &$pos, string $kw): void
+    {
+        if (substr($json, $pos, strlen($kw)) !== $kw) {
+            throw new InvalidArgumentException("expected keyword $kw at position $pos");
+        }
+        $pos += strlen($kw);
+    }
+
+    private static function decodeStringPreserving(string $json, int $len, int &$pos): string
+    {
+        if ($json[$pos] !== '"') {
+            throw new InvalidArgumentException("expected string at position $pos");
+        }
+        $pos++;
+        $buf = '';
+        while ($pos < $len) {
+            $c = $json[$pos];
+            if ($c === '\\') {
+                $pos++;
+                if ($pos >= $len) {
+                    throw new InvalidArgumentException('unterminated escape');
+                }
+                $esc = $json[$pos];
+                if ($esc === '"') $buf .= '"';
+                elseif ($esc === '\\') $buf .= '\\';
+                elseif ($esc === '/') $buf .= '/';
+                elseif ($esc === 'b') $buf .= "\x08";
+                elseif ($esc === 'f') $buf .= "\x0C";
+                elseif ($esc === 'n') $buf .= "\n";
+                elseif ($esc === 'r') $buf .= "\r";
+                elseif ($esc === 't') $buf .= "\t";
+                elseif ($esc === 'u') {
+                    if ($pos + 4 >= $len) {
+                        throw new InvalidArgumentException('truncated \\u escape');
+                    }
+                    $hex = substr($json, $pos + 1, 4);
+                    if (!preg_match('/^[0-9a-fA-F]{4}$/', $hex)) {
+                        throw new InvalidArgumentException("invalid \\u hex: $hex");
+                    }
+                    $pos += 4;
+                    $code = hexdec($hex);
+                    if ($code >= 0xD800 && $code <= 0xDBFF) {
+                        // High surrogate: I-JSON and RFC 8785 require the
+                        // matching \uDC00-\uDFFF escape to follow; combine
+                        // the pair into a single code point instead of
+                        // yielding an invalid scalar.
+                        if ($pos + 6 >= $len || substr($json, $pos + 1, 2) !== '\\u') {
+                            throw new InvalidArgumentException('lone high surrogate \\uD800-\\uDBFF without a following low surrogate');
+                        }
+                        $lowHex = substr($json, $pos + 3, 4);
+                        if (!preg_match('/^[0-9a-fA-F]{4}$/', $lowHex)) {
+                            throw new InvalidArgumentException("invalid \\u hex: $lowHex");
+                        }
+                        $low = hexdec($lowHex);
+                        if ($low < 0xDC00 || $low > 0xDFFF) {
+                            throw new InvalidArgumentException('unpaired high surrogate: expected \\uDC00-\\uDFFF');
+                        }
+                        $code = 0x10000 + (($code - 0xD800) << 10) + ($low - 0xDC00);
+                        // Consume the second \uXXXX; the tail `$pos++` below
+                        // steps past its final hex digit.
+                        $pos += 6;
+                    } elseif ($code >= 0xDC00 && $code <= 0xDFFF) {
+                        throw new InvalidArgumentException('lone low surrogate \\uDC00-\\uDFFF without a preceding high surrogate');
+                    }
+                    $buf .= mb_chr($code, 'UTF-8');
+                } else {
+                    throw new InvalidArgumentException("invalid escape: \\$esc");
+                }
+                $pos++;
+                continue;
+            }
+            if ($c === '"') {
+                $pos++;
+                return $buf;
+            }
+            $buf .= $c;
+            $pos++;
+        }
+        throw new InvalidArgumentException('unterminated string');
+    }
+
+    private static function decodeBoolPreserving(string $json, int $len, int &$pos): bool
+    {
+        if (substr($json, $pos, 4) === 'true') {
+            $pos += 4;
+            return true;
+        }
+        if (substr($json, $pos, 5) === 'false') {
+            $pos += 5;
+            return false;
+        }
+        throw new InvalidArgumentException('invalid bool literal at position ' . $pos);
+    }
+
+    private static function decodeNumberPreserving(string $json, int $len, int &$pos): int|float
+    {
+        $start = $pos;
+        if ($json[$pos] === '-') {
+            $pos++;
+        }
+        while ($pos < $len && preg_match('/[0-9.eE+\-]/', $json[$pos]) === 1) {
+            $pos++;
+        }
+        $text = substr($json, $start, $pos - $start);
+        if (str_contains($text, '.') || stripos($text, 'e') !== false) {
+            return (float)$text;
+        }
+        // `(int)` saturates silently beyond the platform range (PHP casts
+        // "100000000000000000000" to PHP_INT_MAX). Compare the digit string
+        // against the exact boundaries first; integers past the range fall
+        // back to a float, which is what RFC 8785 needs anyway: its ES6
+        // Number serialization is defined for the IEEE 754 double, and the
+        // section 3.1 I-JSON constraint makes oversized integer literals a
+        // values-beyond-2^53 edge, not an error this decoder can upgrade.
+        $negative = str_starts_with($text, '-');
+        $digits = $negative ? substr($text, 1) : $text;
+        $limit = $negative ? substr((string)PHP_INT_MIN, 1) : (string)PHP_INT_MAX;
+        $digitLen = strlen($digits);
+        $limitLen = strlen($limit);
+        if ($digitLen < $limitLen
+            || ($digitLen === $limitLen && strcmp($digits, $limit) <= 0)) {
+            return (int)$text;
+        }
+        return (float)$text;
+    }
+
+    private static function decodeObjectPreserving(string $json, int $len, int &$pos): array|\stdClass
+    {
+        if ($json[$pos] !== '{') {
+            throw new InvalidArgumentException("expected { at position $pos");
+        }
+        $pos++;
+        self::skipWsPreserving($json, $len, $pos);
+        $obj = [];
+        if ($pos < $len && $json[$pos] === '}') {
+            $pos++;
+            // An empty JSON object decodes as a stdClass instance so it
+            // stays distinct from the empty array an empty JSON array
+            // decodes to; encodeObject serializes the instance as `{}`.
+            return new \stdClass();
+        }
+        while (true) {
+            self::skipWsPreserving($json, $len, $pos);
+            if ($pos >= $len || $json[$pos] !== '"') {
+                throw new InvalidArgumentException("expected string key at position $pos");
+            }
+            $key = self::decodeStringPreserving($json, $len, $pos);
+            self::skipWsPreserving($json, $len, $pos);
+            if ($pos >= $len || $json[$pos] !== ':') {
+                throw new InvalidArgumentException("expected : at position $pos");
+            }
+            $pos++;
+            $obj[$key] = self::decodeValuePreserving($json, $len, $pos);
+            self::skipWsPreserving($json, $len, $pos);
+            if ($pos < $len && $json[$pos] === ',') {
+                $pos++;
+                continue;
+            }
+            if ($pos < $len && $json[$pos] === '}') {
+                $pos++;
+                return $obj;
+            }
+            throw new InvalidArgumentException("expected , or } at position $pos");
+        }
+    }
+
+    private static function decodeArrayPreserving(string $json, int $len, int &$pos): array
+    {
+        if ($json[$pos] !== '[') {
+            throw new InvalidArgumentException("expected [ at position $pos");
+        }
+        $pos++;
+        $arr = [];
+        self::skipWsPreserving($json, $len, $pos);
+        if ($pos < $len && $json[$pos] === ']') {
+            $pos++;
+            return $arr;
+        }
+        while (true) {
+            $arr[] = self::decodeValuePreserving($json, $len, $pos);
+            self::skipWsPreserving($json, $len, $pos);
+            if ($pos < $len && $json[$pos] === ',') {
+                $pos++;
+                continue;
+            }
+            if ($pos < $len && $json[$pos] === ']') {
+                $pos++;
+                return $arr;
+            }
+            throw new InvalidArgumentException("expected , or ] at position $pos");
+        }
     }
 
     /**
