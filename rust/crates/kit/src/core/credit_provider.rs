@@ -8,18 +8,23 @@ use serde::{Deserialize, Serialize};
 /// A recognized credit provider a merchant wants to accept alongside currency.
 ///
 /// Recognition is not availability: validate the policy before starting payment
-/// handlers. Coinflow has no registered issuer integration yet.
+/// handlers. Coinflow and Musebook have no registered issuer integration yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CreditProvider {
     /// Reserved for the future reviewed Coinflow issuer integration.
     Coinflow,
+    /// Reserved for a future reviewed musebook.trade integration. Musebook
+    /// currently operates an x402 `exact` facilitator, not a credit issuer
+    /// program; no deployment, hook or account resolver is registered.
+    Musebook,
 }
 
 impl std::fmt::Display for CreditProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Coinflow => f.write_str("coinflow"),
+            Self::Musebook => f.write_str("musebook"),
         }
     }
 }
@@ -49,9 +54,11 @@ pub enum CreditProviderError {
 /// a reviewed integration is added; none are implied by recognizing a name.
 pub fn validate_credit_providers(providers: &[CreditProvider]) -> Result<(), CreditProviderError> {
     providers.iter().try_for_each(|provider| match provider {
-        CreditProvider::Coinflow => Err(CreditProviderError::Unavailable {
-            provider: *provider,
-        }),
+        CreditProvider::Coinflow | CreditProvider::Musebook => {
+            Err(CreditProviderError::Unavailable {
+                provider: *provider,
+            })
+        }
     })
 }
 
@@ -69,7 +76,19 @@ mod tests {
             serde_json::from_str::<CreditProvider>("\"coinflow\"").unwrap(),
             CreditProvider::Coinflow
         );
-        for name in ["\"Coinflow\"", "\"unknown\"", "\"\"", "null"] {
+        assert_eq!(
+            serde_json::from_str::<CreditProvider>("\"musebook\"").unwrap(),
+            CreditProvider::Musebook
+        );
+        assert_eq!(CreditProvider::Musebook.to_string(), "musebook");
+        for name in [
+            "\"Coinflow\"",
+            "\"Musebook\"",
+            "\"musebook.trade\"",
+            "\"unknown\"",
+            "\"\"",
+            "null",
+        ] {
             assert!(serde_json::from_str::<CreditProvider>(name).is_err());
         }
     }
@@ -91,6 +110,22 @@ mod tests {
         assert_eq!(
             validate_credit_providers(&[CreditProvider::Coinflow; 2]),
             Err(error)
+        );
+    }
+
+    #[test]
+    fn credit_provider_policy_fails_closed_for_musebook() {
+        let error = CreditProviderError::Unavailable {
+            provider: CreditProvider::Musebook,
+        };
+        assert_eq!(
+            validate_credit_providers(&[CreditProvider::Musebook]),
+            Err(error.clone())
+        );
+        // Mixing with another unavailable provider still fails closed.
+        assert!(
+            validate_credit_providers(&[CreditProvider::Musebook, CreditProvider::Coinflow])
+                .is_err()
         );
     }
 }
