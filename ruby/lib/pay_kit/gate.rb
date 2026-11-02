@@ -86,12 +86,18 @@ module PayKit
       !fees.empty?
     end
 
+    def accepts?(protocol)
+      accept.include?(protocol.to_sym)
+    end
+
     def x402_accepted?
-      accept.include?(:x402)
+      Kernel.warn("PayKit::Gate#x402_accepted? is deprecated; use accepts?(:x402)", uplevel: 1, category: :deprecated)
+      accepts?(:x402)
     end
 
     def mpp_accepted?
-      accept.include?(:mpp)
+      Kernel.warn("PayKit::Gate#mpp_accepted? is deprecated; use accepts?(:mpp)", uplevel: 1, category: :deprecated)
+      accepts?(:mpp)
     end
 
     # Format a BigDecimal as a fixed-point decimal string, trimming
