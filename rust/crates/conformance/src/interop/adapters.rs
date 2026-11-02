@@ -217,6 +217,14 @@ const TS_EXACT_SERVER: &[&str] = &[
     "tsx",
     "src/fixtures/typescript/exact-server.ts",
 ];
+const PY_CHARGE_CLIENT: &[&str] = &[
+    "uv",
+    "run",
+    "--project",
+    "../python",
+    "python",
+    "python-charge-client/main.py",
+];
 const PY_SERVER: &[&str] = &[
     "uv",
     "run",
@@ -301,6 +309,7 @@ pub const ADAPTERS: &[Adapter] = &[
     ),
     a("rust", "rust", C, Charge, "rust", N(RUST_MPP_CLIENT)),
     a("go", "go", C, Charge, "go", N(GO_CLIENT)),
+    a("python", "python", C, Charge, "python", S(PY_CHARGE_CLIENT)),
     a("swift", "swift", C, Charge, "swift", N(SWIFT_CLIENT)),
     a("kotlin", "kotlin", C, Charge, "kotlin", N(KOTLIN_CLIENT)),
     // MPP charge servers.
