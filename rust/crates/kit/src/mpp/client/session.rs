@@ -651,6 +651,7 @@ pub fn derive_payment_channel_open(
         program_id,
     };
     let channel_id = derive_channel_addresses(&open_params).channel;
+    let channel_hooks = credit_channel_hooks(details, &open_params)?;
 
     Ok(PaymentChannelOpen {
         channel_id,
@@ -666,8 +667,41 @@ pub fn derive_payment_channel_open(
         token_program: open_params.token_program,
         program_id: open_params.program_id,
         channel_version: details.channel_version,
-        channel_hooks: details.channel_hooks.clone(),
+        channel_hooks,
     })
+}
+
+/// Hooks for a new channel: the challenge's static hooks, or, when it names a
+/// credit provider, the provider's per-payer hooks. Fails closed on any
+/// mismatch with the pinned deployment.
+fn credit_channel_hooks(
+    details: &crate::mpp::protocol::intents::session::SessionMethodDetails,
+    open: &OpenChannelParams,
+) -> Result<Option<crate::core::payment_channels_v2::ChannelHooks>> {
+    use crate::core::credit_provider::{musebook, CreditProvider};
+    let Some(provider) = details.credit_provider else {
+        return Ok(details.channel_hooks.clone());
+    };
+    let refuse = |why: &str| Err(Error::Other(format!("credit provider {provider}: {why}")));
+    if provider != CreditProvider::Musebook {
+        return refuse("unavailable");
+    }
+    let Some(deployment) = musebook::deployment(&details.network) else {
+        return refuse("unavailable on this network");
+    };
+    if details.channel_hooks.is_some() {
+        return refuse("challenge must not also carry channelHooks");
+    }
+    if details.channel_version != Some(2) || open.program_id != deployment.channel_program() {
+        return refuse("challenge does not name the pinned V2 channel program");
+    }
+    if open.token_program != parse_pubkey(musebook::TOKEN_PROGRAM_ID, "tokenProgram")? {
+        return refuse("token program must be SPL Token");
+    }
+    if details.fee_payer == Some(true) {
+        return refuse("sponsored opens are not supported");
+    }
+    Ok(Some(deployment.hooks(&open.payer, &open.mint)))
 }
 
 pub struct BuildOpenPaymentChannelTransactionParams<'a> {
@@ -753,7 +787,15 @@ pub async fn build_open_payment_channel_transaction(
                 .as_deref(),
             params.options.max_tx_version,
         )?,
-        compute_budget: params.options.compute_budget,
+        // Hooked credit opens exceed the default 200k CU budget.
+        compute_budget: params.options.compute_budget.or_else(|| {
+            params.request.method_details.credit_provider.map(|_| {
+                crate::core::tx::ComputeBudget::new(
+                    crate::core::credit_provider::musebook::COMPUTE_UNIT_LIMIT,
+                    0,
+                )
+            })
+        }),
         ..Default::default()
     };
     let advertised_fee_payer = if params.request.method_details.fee_payer == Some(true) {
@@ -805,12 +847,7 @@ pub async fn build_open_payment_channel_transaction(
                 &fee_payer,
                 recent_blockhash,
                 &tx_options,
-                &params
-                    .request
-                    .method_details
-                    .channel_hooks
-                    .clone()
-                    .unwrap_or_default(),
+                &open.channel_hooks.clone().unwrap_or_default(),
             )
             .await?,
         );
@@ -1060,6 +1097,7 @@ mod tests {
                 channel_program: PAYMENT_CHANNELS_PROGRAM_ID.to_string(),
                 channel_version: None,
                 channel_hooks: None,
+                credit_provider: None,
                 channel_id: None,
                 recent_blockhash: Some(test_blockhash().to_string()),
                 recent_slot: Some(42),
@@ -1077,6 +1115,78 @@ mod tests {
                 distribution_splits: vec![],
                 transaction_versions: None,
             },
+        }
+    }
+
+    fn musebook_request(recipient: Pubkey) -> SessionRequest {
+        let mut request = request(recipient);
+        request.method_details.network = "devnet".into();
+        request.method_details.channel_program =
+            pubkey_string(&crate::core::credit_provider::musebook::DEVNET.channel_program());
+        request.method_details.channel_version = Some(2);
+        request.method_details.credit_provider =
+            Some(crate::core::credit_provider::CreditProvider::Musebook);
+        request
+    }
+
+    #[test]
+    fn musebook_challenge_derives_per_payer_hooks_and_fails_closed() {
+        use crate::core::credit_provider::{musebook, CreditProvider};
+        let payer = Pubkey::new_unique();
+        let derive = |request: &SessionRequest| {
+            derive_payment_channel_open(DerivePaymentChannelOpenParams {
+                request,
+                payer,
+                authorized_signer: Pubkey::new_unique(),
+                authorization: &auth(),
+                options: PaymentChannelOpenOptions {
+                    salt: Some(7),
+                    ..Default::default()
+                },
+            })
+        };
+        let open = derive(&musebook_request(Pubkey::new_unique())).unwrap();
+        assert_eq!(
+            open.channel_hooks,
+            Some(musebook::DEVNET.hooks(&payer, &open.mint))
+        );
+        type Mutation = Box<dyn Fn(&mut SessionRequest)>;
+        let broken: Vec<(&str, Mutation)> = vec![
+            (
+                "mainnet",
+                Box::new(|r| r.method_details.network = "mainnet".into()),
+            ),
+            (
+                "coinflow",
+                Box::new(|r| r.method_details.credit_provider = Some(CreditProvider::Coinflow)),
+            ),
+            (
+                "static hooks too",
+                Box::new(|r| r.method_details.channel_hooks = Some(Default::default())),
+            ),
+            ("v1", Box::new(|r| r.method_details.channel_version = None)),
+            (
+                "other program",
+                Box::new(|r| r.method_details.channel_program = Pubkey::new_unique().to_string()),
+            ),
+            (
+                "token-2022",
+                Box::new(|r| {
+                    r.method_details.token_program = Some(programs::TOKEN_2022_PROGRAM.to_string())
+                }),
+            ),
+            (
+                "sponsored",
+                Box::new(|r| {
+                    r.method_details.fee_payer = Some(true);
+                    r.method_details.fee_payer_key = Some(Pubkey::new_unique().to_string());
+                }),
+            ),
+        ];
+        for (label, mutate) in broken {
+            let mut request = musebook_request(Pubkey::new_unique());
+            mutate(&mut request);
+            assert!(derive(&request).is_err(), "{label}");
         }
     }
 
