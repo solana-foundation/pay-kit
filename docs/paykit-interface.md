@@ -293,7 +293,6 @@ conformant.
   functions over the request attribute) so non-middleware code paths exist,
   matching Ruby and Python.
 - Add `Config::fromEnv()`.
-- Add `accepts(Protocol $p): bool` on `Gate`.
 - Add `payer` to `Payment`.
 - Simplify `MppConfig::resolveExpiresIn` (plain int + dedicated
   `EXPIRES_NEVER = 0` constant).
