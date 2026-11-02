@@ -29,6 +29,76 @@ fn pk(k: &Keypair) -> Pubkey {
     v1::from_address(&k.pubkey())
 }
 
+/// Sweeps every throwaway wallet's lamports back to the deployer when
+/// dropped, including when the test panics. Runs on its own thread with its
+/// own blocking client so it works from sync and async tests alike.
+struct Sweeper {
+    to: Pubkey,
+    wallets: Vec<Vec<u8>>,
+}
+
+impl Sweeper {
+    fn new(to: &Keypair, wallets: &[&Keypair]) -> Self {
+        Self {
+            to: pk(to),
+            wallets: wallets.iter().map(|k| k.to_bytes().to_vec()).collect(),
+        }
+    }
+}
+
+impl Drop for Sweeper {
+    fn drop(&mut self) {
+        let (to, wallets) = (self.to, std::mem::take(&mut self.wallets));
+        let joined = std::thread::spawn(move || {
+            let rpc = RpcClient::new_with_commitment(
+                DEVNET_RPC.to_string(),
+                solana_commitment_config::CommitmentConfig::confirmed(),
+            );
+            for bytes in wallets {
+                let kp = Keypair::try_from(bytes.as_slice()).expect("wallet");
+                for _ in 0..3 {
+                    let Ok(left) = rpc.get_balance(&kp.pubkey()) else {
+                        continue;
+                    };
+                    if left <= 5_000 {
+                        break;
+                    }
+                    let Ok(hash) = rpc.get_latest_blockhash() else {
+                        continue;
+                    };
+                    let tx = Transaction::new_signed_with_payer(
+                        &[system_ix(
+                            2,
+                            &pk(&kp),
+                            &to,
+                            &(left - 5_000).to_le_bytes(),
+                            None,
+                        )],
+                        Some(&kp.pubkey()),
+                        &[&kp],
+                        hash,
+                    );
+                    match send_and_confirm_transaction(&rpc, &VersionedTransaction::from(tx)) {
+                        Ok(sig) => {
+                            println!(
+                                "SWEEP {} -> deployer {} lamports: {sig}",
+                                kp.pubkey(),
+                                left - 5_000
+                            );
+                            break;
+                        }
+                        Err(e) => println!("sweep {} retry: {e}", kp.pubkey()),
+                    }
+                }
+            }
+        })
+        .join();
+        if joined.is_err() {
+            println!("sweep thread panicked");
+        }
+    }
+}
+
 struct Net {
     rpc: RpcClient,
     sigs: Vec<(String, String)>,
@@ -130,6 +200,7 @@ fn musebook_credit_channel_lifecycle_on_devnet() {
     let owner = Keypair::new();
     let payee = Keypair::new();
     let mint_kp = Keypair::new();
+    let _sweep = Sweeper::new(&funder, &[&owner, &payee]);
     let (o, p, mint) = (pk(&owner), pk(&payee), pk(&mint_kp));
     let token = v1::parse_pubkey(musebook::TOKEN_PROGRAM_ID).unwrap();
     let ata = |w: &Pubkey| v1::find_associated_token_address(w, &mint, &token).0;
@@ -335,9 +406,9 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     use solana_pay_kit::core::credit_provider::CreditProvider;
     use solana_pay_kit::core::store::MemoryChannelStore;
     use solana_pay_kit::mpp::client::session::{
-        create_payment_channel_session_opener, derive_payment_channel_open,
-        DerivePaymentChannelOpenParams, OpenBlockhash, PaymentChannelOpenOptions,
-        PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
+        build_credit_authorization_transaction, create_payment_channel_session_opener,
+        derive_payment_channel_open, DerivePaymentChannelOpenParams, OpenBlockhash,
+        PaymentChannelOpenOptions, PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
     };
     use solana_pay_kit::mpp::protocol::intents::session::SessionAction;
     use solana_pay_kit::mpp::server::session::{
@@ -373,6 +444,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     let owner = Keypair::new();
     let payee = Keypair::new();
     let mint_kp = Keypair::new();
+    let _sweep = Sweeper::new(&funder, &[&owner, &payee]);
     let (o, p, mint) = (pk(&owner), pk(&payee), pk(&mint_kp));
     let token = v1::parse_pubkey(musebook::TOKEN_PROGRAM_ID).unwrap();
     let ata = |w: &Pubkey| v1::find_associated_token_address(w, &mint, &token).0;
@@ -460,6 +532,10 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
         channel_program: Some(d.channel_program()),
         channel_version: Some(2),
         credit_provider: Some(CreditProvider::Musebook),
+        credit_issuer_signer: Some(std::sync::Arc::new(
+            MemorySigner::from_bytes(&issuer.to_bytes()).unwrap(),
+        )),
+        credit_max_cap: Some(1_300),
         token_program: Some(token),
         voucher_signer: VoucherSigner::Client,
         grace_period_seconds: GRACE,
@@ -536,12 +612,6 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
             &[&owner, &issuer],
         ));
     };
-    authorize(
-        &mut net,
-        &derived,
-        1,
-        "approve + issuer authorize session channel",
-    );
 
     let opened = create_payment_channel_session_opener(
         &request,
@@ -561,16 +631,55 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
         panic!("open action")
     };
     let blockhash_s = blockhash.to_string();
+    let context = SessionOpenContext {
+        challenge_id: "devnet",
+        expires: None,
+        recent_blockhash: &blockhash_s,
+        recent_slot: slot,
+    };
+    // Issuer step through the session server: owner signs [Approve, authorize],
+    // server checks it against its policy, co-signs as issuer and broadcasts.
+    let ledger_data = blocking!(net.rpc.get_account_data(&v1::to_address(&ledger)).unwrap());
+    let terms = musebook::AuthorizationTerms {
+        nonce: musebook::ledger_next_nonce(&ledger_data).unwrap(),
+        cap: 1_300,
+        expires_at_slot: opened.open.open_slot + 1_000,
+    };
+    let auth_tx = build_credit_authorization_transaction(
+        &request,
+        &payer_signer,
+        &opened.open,
+        terms,
+        OpenBlockhash::from_client_cluster(blockhash),
+    )
+    .await
+    .unwrap();
+    // A cap above the server's credit_max_cap is refused before signing.
+    let greedy = build_credit_authorization_transaction(
+        &request,
+        &payer_signer,
+        &opened.open,
+        musebook::AuthorizationTerms {
+            cap: 1_301,
+            ..terms
+        },
+        OpenBlockhash::from_client_cluster(blockhash),
+    )
+    .await
+    .unwrap();
+    assert!(server
+        .process_credit_authorization(open_payload, &greedy, context)
+        .await
+        .is_err());
+    let sig = server
+        .process_credit_authorization(open_payload, &auth_tx, context)
+        .await
+        .expect("server issuer co-signs + broadcasts authorize");
+    println!("PASS server issuer co-sign authorize (session API): {sig}");
+    net.sigs
+        .push(("session issuer authorize".into(), sig.to_string()));
     let state = server
-        .process_open(
-            open_payload,
-            SessionOpenContext {
-                challenge_id: "devnet",
-                expires: None,
-                recent_blockhash: &blockhash_s,
-                recent_slot: slot,
-            },
-        )
+        .process_open(open_payload, context)
         .await
         .expect("server verifies + broadcasts hooked open");
     println!(
@@ -580,8 +689,39 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     let channel = derived.channel_id;
     let escrow = ata(&channel);
     assert_eq!(blocking!(net.token_balance(&escrow)), 1_000);
+    let escrow_check = escrow;
 
+    // Top-up through the session API: client builds the hooked top-up, the
+    // server verifies hooks + CU policy, broadcasts and credits the deposit.
     let mut session = opened.session;
+    let topup_ix = opened.open.top_up_instruction(300).unwrap();
+    let topup_hash = blocking!(net.rpc.get_latest_blockhash().unwrap());
+    let mut topup_tx = solana_pay_kit::core::tx::build_unsigned(
+        solana_pay_kit::core::tx::TxVersion::V0,
+        &o,
+        &[topup_ix],
+        topup_hash,
+        Some(&solana_pay_kit::core::tx::ComputeBudget::new(
+            musebook::COMPUTE_UNIT_LIMIT,
+            0,
+        )),
+    )
+    .unwrap();
+    solana_pay_kit::core::signing::sign_versioned_transaction_slot(&payer_signer, &mut topup_tx)
+        .await
+        .unwrap();
+    let topup_b64 = solana_pay_kit::core::tx::encode(&topup_tx).unwrap();
+    let SessionAction::TopUp(topup) = session.topup_action(300, &topup_b64) else {
+        panic!("topup")
+    };
+    let after_topup = server.process_topup(&topup).await.expect("server top-up");
+    println!(
+        "PASS session process_topup 300 (TopUpWithHooks via SessionServer): deposit {}",
+        after_topup.deposit
+    );
+    net.sigs
+        .push(("session top-up".into(), topup_tx.signatures[0].to_string()));
+    assert_eq!(after_topup.deposit, 1_300);
     let SessionAction::Voucher(voucher) = session.voucher_action(200).await.unwrap() else {
         panic!("voucher")
     };
@@ -593,6 +733,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     let SessionAction::Close(close) = session.close_action(Some(100)).await.unwrap() else {
         panic!("close")
     };
+    assert_eq!(blocking!(net.token_balance(&escrow_check)), 1_300);
     let seal = server.process_close(&close).await.expect("server close");
     assert_eq!(seal.settled, 300);
     assert_eq!(seal.channel_hooks, Some(d.hooks(&o, &mint)));
@@ -747,28 +888,13 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
         "withdraw emptied the escrow"
     );
 
-    // Return the throwaway wallets' leftover SOL to the deployer.
-    blocking!({
-        for kp in [&owner, &payee] {
-            let left = net.rpc.get_balance(&kp.pubkey()).unwrap();
-            if left > 10_000 {
-                net.send(
-                    "return leftover SOL to deployer",
-                    &[system_ix(
-                        2,
-                        &pk(kp),
-                        &pk(&funder),
-                        &(left - 5_000).to_le_bytes(),
-                        None,
-                    )],
-                    kp,
-                    &[kp],
-                );
-            }
-        }
-    });
+    println!(
+        "SIGNATURES_JSON {}",
+        serde_json::to_string(&net.sigs).unwrap()
+    );
+    drop(_sweep);
     let end = blocking!(net.rpc.get_balance(&funder.pubkey()).unwrap());
-    println!("funder balance {end} (spent {})", start - end);
+    println!("funder balance after sweep {end} (spent {})", start - end);
     println!(
         "SIGNATURES_JSON {}",
         serde_json::to_string(&net.sigs).unwrap()

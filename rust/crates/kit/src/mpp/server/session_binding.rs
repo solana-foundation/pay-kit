@@ -80,6 +80,8 @@ pub struct SessionConfigSnapshot {
     channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credit_provider: Option<crate::core::credit_provider::CreditProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit_issuer: Option<solana_pubkey::Pubkey>,
     token_program: Option<solana_pubkey::Pubkey>,
     min_voucher_delta: u64,
     voucher_signer: VoucherSigner,
@@ -115,6 +117,10 @@ impl SessionConfigSnapshot {
             channel_version: config.channel_version.filter(|version| *version != 1),
             channel_hooks: config.channel_hooks.clone(),
             credit_provider: config.credit_provider,
+            credit_issuer: config
+                .credit_issuer_signer
+                .as_ref()
+                .map(|signer| signer.pubkey()),
             token_program: config.token_program.or_else(|| {
                 super::parse_pubkey_field(
                     crate::mpp::protocol::solana::default_token_program_for_currency(
@@ -179,6 +185,16 @@ impl SessionConfigSnapshot {
         config.channel_program = self.channel_program;
         config.channel_version = self.channel_version;
         config.channel_hooks = self.channel_hooks.clone();
+        if self.credit_issuer
+            != config
+                .credit_issuer_signer
+                .as_ref()
+                .map(|signer| signer.pubkey())
+        {
+            return Err(Error::Other(
+                "session snapshot credit issuer capability mismatch".into(),
+            ));
+        }
         config.credit_provider = self.credit_provider;
         config.token_program = self.token_program;
         config.min_voucher_delta = self.min_voucher_delta;

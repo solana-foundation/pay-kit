@@ -188,6 +188,10 @@ pub struct SessionMethodDetails {
     /// Absent means no credit provider. Exclusive with `channel_hooks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit_provider: Option<crate::core::credit_provider::CreditProvider>,
+    /// Issuer that co-signs the credit `authorize` (base58). Present exactly
+    /// when `credit_provider` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_issuer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
     /// Base58 blockhash the client MUST use as the open transaction's recent

@@ -28,6 +28,12 @@ pub const COMPUTE_UNIT_LIMIT: u32 = 400_000;
 /// The provider custodies classic SPL Token mints only.
 pub const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
+/// Longest authorization window (slots past `open_slot`) an issuer co-signs.
+pub const MAX_AUTHORIZATION_SLOTS: u64 = 9_000;
+/// Byte offset of `authorization.nonce` in the provider's 332-byte ledger.
+const LEDGER_NONCE_OFFSET: usize = 4 + 32 * 4 + 32 * 3 + 8 * 3;
+const LEDGER_LEN: usize = 332;
+
 const INITIALIZE: u8 = 0;
 const DEPOSIT: u8 = 1;
 const AUTHORIZE: u8 = 2;
@@ -231,6 +237,37 @@ impl Deployment {
         }
     }
 
+    /// SPL Token `Approve` making the ledger PDA the owner ATA's delegate for
+    /// exactly `cap`, which the provider's `authorize` requires.
+    pub fn approve_instruction(&self, owner: &Pubkey, mint: &Pubkey, cap: u64) -> Instruction {
+        let mut data = vec![4u8];
+        data.extend(cap.to_le_bytes());
+        Instruction {
+            program_id: v1::to_address(&token_program()),
+            accounts: vec![
+                w(&ata(owner, mint), false),
+                r(&self.ledger_address(owner, mint), false),
+                r(owner, true),
+            ],
+            data,
+        }
+    }
+
+    /// The two instructions an issuer co-signs ahead of a credit `open`:
+    /// `[Approve(cap), authorize(authorization)]`.
+    pub fn authorization_instructions(
+        &self,
+        owner: &Pubkey,
+        mint: &Pubkey,
+        issuer: &Pubkey,
+        authorization: &Authorization,
+    ) -> Vec<Instruction> {
+        vec![
+            self.approve_instruction(owner, mint, authorization.cap),
+            self.authorize_instruction(owner, mint, issuer, authorization),
+        ]
+    }
+
     /// Hooked `open` (`OpenWithHooks`) preceded by the 400k CU request. The
     /// owner is both channel payer and rent payer, because the provider
     /// requires the refund destination to be the owner ATA.
@@ -329,7 +366,50 @@ pub struct Authorization {
     pub expires_at_slot: u64,
 }
 
+/// Issuer-side terms a client proposes for one credit channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorizationTerms {
+    /// Must be the ledger's consumed nonce + 1 ([`ledger_next_nonce`]).
+    pub nonce: u64,
+    /// Total the channel may ever fund (deposit plus top-ups).
+    pub cap: u64,
+    /// Last slot at which the authorization may fund the channel.
+    pub expires_at_slot: u64,
+}
+
+/// Next authorization nonce for a ledger account's data, or `None` when the
+/// data is not a provider ledger.
+pub fn ledger_next_nonce(data: &[u8]) -> Option<u64> {
+    if data.len() != LEDGER_LEN {
+        return None;
+    }
+    let bytes = data[LEDGER_NONCE_OFFSET..LEDGER_NONCE_OFFSET + 8]
+        .try_into()
+        .ok()?;
+    u64::from_le_bytes(bytes).checked_add(1)
+}
+
 impl Authorization {
+    /// Decode the provider `authorize` instruction data (tag + 136 bytes).
+    pub fn decode_instruction_data(data: &[u8]) -> Option<Self> {
+        let (&tag, rest) = data.split_first()?;
+        if tag != AUTHORIZE || rest.len() != 136 {
+            return None;
+        }
+        let key = |i: usize| -> [u8; 32] { rest[i..i + 32].try_into().unwrap() };
+        let num = |i: usize| u64::from_le_bytes(rest[96 + i * 8..104 + i * 8].try_into().unwrap());
+        Some(Self {
+            payee: key(0),
+            authorized_signer: key(32),
+            distribution_hash: key(64),
+            salt: num(0),
+            open_slot: num(1),
+            cap: num(2),
+            nonce: num(3),
+            expires_at_slot: num(4),
+        })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(136);
         out.extend(self.payee);

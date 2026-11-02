@@ -671,6 +671,80 @@ pub fn derive_payment_channel_open(
     })
 }
 
+/// The owner's half of a credit session's issuer step: `[Approve(cap),
+/// authorize]` for `open` under the challenge's issuer. Fails closed for a
+/// challenge without a credit provider or issuer, or a cap below the deposit.
+pub fn credit_authorization_instructions(
+    details: &crate::mpp::protocol::intents::session::SessionMethodDetails,
+    open: &PaymentChannelOpen,
+    terms: crate::core::credit_provider::musebook::AuthorizationTerms,
+) -> Result<Vec<solana_instruction::Instruction>> {
+    use crate::core::credit_provider::musebook;
+    if details.credit_provider.is_none() {
+        return Err(Error::Other("challenge has no credit provider".into()));
+    }
+    let deployment = musebook::deployment(&details.network)
+        .ok_or_else(|| Error::Other("credit provider unavailable on this network".into()))?;
+    let issuer = parse_pubkey(
+        details
+            .credit_issuer
+            .as_deref()
+            .ok_or_else(|| Error::Other("credit challenge is missing creditIssuer".into()))?,
+        "creditIssuer",
+    )?;
+    if terms.cap < open.deposit {
+        return Err(Error::Other(
+            "credit authorization cap is below the deposit".into(),
+        ));
+    }
+    let authorization = deployment.authorization_for_channel(
+        &open.payee,
+        &open.authorized_signer,
+        &open.recipients,
+        open.salt,
+        open.open_slot,
+        terms.cap,
+        terms.nonce,
+        terms.expires_at_slot,
+    );
+    Ok(deployment.authorization_instructions(&open.payer, &open.mint, &issuer, &authorization))
+}
+
+/// Owner-signed (issuer slot empty) credit authorization transaction for
+/// [`crate::mpp::server::session::SessionServer::process_credit_authorization`].
+/// Uses the challenged blockhash, the owner as fee payer and the 400k CU limit.
+pub async fn build_credit_authorization_transaction(
+    request: &SessionRequest,
+    signer: &dyn TransactionSigner,
+    open: &PaymentChannelOpen,
+    terms: crate::core::credit_provider::musebook::AuthorizationTerms,
+    blockhash: OpenBlockhash,
+) -> Result<String> {
+    if signer.pubkey() != open.payer {
+        return Err(Error::Other(
+            "credit authorization signer must be the channel payer".into(),
+        ));
+    }
+    let instructions = credit_authorization_instructions(&request.method_details, open, terms)?;
+    let version =
+        crate::core::tx::negotiate(request.method_details.transaction_versions.as_deref(), None)?;
+    let budget = crate::core::tx::ComputeBudget::new(
+        crate::core::credit_provider::musebook::COMPUTE_UNIT_LIMIT,
+        0,
+    );
+    let mut tx = crate::core::tx::build_unsigned(
+        version,
+        &open.payer,
+        &instructions,
+        blockhash.hash(),
+        Some(&budget),
+    )?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
+        .await
+        .map_err(|error| Error::Other(format!("credit authorization signing failed: {error}")))?;
+    Ok(crate::core::tx::encode(&tx)?)
+}
+
 /// Hooks for a new channel: the challenge's static hooks, or, when it names a
 /// credit provider, the provider's per-payer hooks. Fails closed on any
 /// mismatch with the pinned deployment.
@@ -1098,6 +1172,7 @@ mod tests {
                 channel_version: None,
                 channel_hooks: None,
                 credit_provider: None,
+                credit_issuer: None,
                 channel_id: None,
                 recent_blockhash: Some(test_blockhash().to_string()),
                 recent_slot: Some(42),

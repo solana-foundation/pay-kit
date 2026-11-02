@@ -389,6 +389,15 @@ pub struct SessionConfig {
     /// deployment and the session is unsponsored.
     pub credit_provider: Option<crate::core::credit_provider::CreditProvider>,
 
+    /// Credit issuer that co-signs each credit channel's `authorize` inside
+    /// the client's open transaction. Required with `credit_provider`; it must
+    /// be the provider config's issuer or the open fails on-chain.
+    pub credit_issuer_signer: Option<std::sync::Arc<dyn solana_keychain::TransactionSigner>>,
+
+    /// Highest authorization cap (deposit plus future top-ups, base units)
+    /// the issuer co-signs. `None` allows exactly the opening deposit.
+    pub credit_max_cap: Option<u64>,
+
     /// SPL token program override.
     pub token_program: Option<Pubkey>,
 
@@ -442,6 +451,14 @@ impl std::fmt::Debug for SessionConfig {
             .field("network", &self.network)
             .field("channel_program", &self.channel_program)
             .field("credit_provider", &self.credit_provider)
+            .field(
+                "credit_issuer_signer",
+                &self
+                    .credit_issuer_signer
+                    .as_ref()
+                    .map(|signer| signer.pubkey()),
+            )
+            .field("credit_max_cap", &self.credit_max_cap)
             .field("token_program", &self.token_program)
             .field("min_voucher_delta", &self.min_voucher_delta)
             .field("voucher_signer", &self.voucher_signer)
@@ -508,6 +525,9 @@ impl SessionConfig {
             // The provider refunds to the owner, which must also be the rent payer.
             return invalid("sponsored sessions are not supported");
         }
+        if self.credit_issuer_signer.is_none() {
+            return invalid("credit_issuer_signer is required to co-sign authorizations");
+        }
         Ok(deployment)
     }
 
@@ -563,6 +583,8 @@ impl Default for SessionConfig {
             channel_version: None,
             channel_hooks: None,
             credit_provider: None,
+            credit_issuer_signer: None,
+            credit_max_cap: None,
             token_program: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
@@ -933,6 +955,11 @@ impl<S: ChannelStore> SessionServer<S> {
                 channel_version: self.config.channel_version,
                 channel_hooks: self.config.channel_hooks.clone(),
                 credit_provider: self.config.credit_provider,
+                credit_issuer: self
+                    .config
+                    .credit_provider
+                    .and(self.config.credit_issuer_signer.as_ref())
+                    .map(|signer| signer.pubkey().to_string()),
                 channel_id: None,
                 recent_blockhash: Some(hint.blockhash),
                 recent_slot: Some(hint.slot),
@@ -1146,6 +1173,66 @@ impl<S: ChannelStore> SessionServer<S> {
         } else {
             Ok(payment_channels::build_open_instruction(&params))
         }
+    }
+
+    /// Issuer step of a credit session, run before the client submits its
+    /// `open`. `open` is the open payload the client is about to send (its
+    /// channel terms are validated exactly as `process_open` will);
+    /// `authorization_tx` is the owner-signed `[Approve(cap), authorize]`
+    /// transaction (base64, owner as fee payer, the challenged blockhash).
+    /// The server checks every byte against its policy, co-signs as issuer,
+    /// broadcasts and waits for confirmation. Fails closed when the session
+    /// has no credit provider.
+    #[cfg(feature = "server")]
+    pub async fn process_credit_authorization(
+        &self,
+        open: &OpenPayload,
+        authorization_tx: &str,
+        context: SessionOpenContext<'_>,
+    ) -> Result<solana_signature::Signature> {
+        context.ensure_not_expired()?;
+        if self.config.credit_provider.is_none() {
+            return Err(Error::Other("session has no credit provider".into()));
+        }
+        let params = self.payment_channel_open_params(open)?;
+        let mut tx = payment_channels::decode_transaction(authorization_tx)?;
+        crate::core::tx::check_envelope_without_legacy(&tx, &self.accepted_versions)?;
+        crate::core::tx::check_v1_budget_caps(
+            &tx.message,
+            self.config.max_compute_unit_limit(),
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        )?;
+        if let Some(declared) = crate::core::tx::check_v0_budget_caps(
+            &tx.message,
+            self.config.max_compute_unit_limit(),
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        )? {
+            crate::core::tx::require_budget_prefix(&tx.message, &declared)?;
+        }
+        if tx.message.recent_blockhash().to_string() != context.recent_blockhash {
+            return Err(Error::Other(
+                "credit authorization does not use the challenged recentBlockhash".into(),
+            ));
+        }
+        if tx.message.static_account_keys().first() != Some(&params.payer) {
+            return Err(Error::Other(
+                "credit authorization fee payer must be the channel payer".into(),
+            ));
+        }
+        let (expected, issuer) = verify_credit_authorization(&tx, &params, &self.config)?;
+        verify_channel_privileges_for(&tx, &expected, params.payer)?;
+        // Every content check passed; the issuer signs its own slot only.
+        crate::core::signing::sign_versioned_transaction_slot(issuer.as_ref(), &mut tx)
+            .await
+            .map_err(|error| Error::Other(format!("credit issuer co-sign failed: {error}")))?;
+        verify_client_transaction_signatures(&tx, None)?;
+        let pipeline = self.transaction_pipeline().await?;
+        let confirmed = submit_client_transaction(&pipeline, tx, &self.config)
+            .await
+            .map_err(|error| {
+                Error::Rpc(format!("credit authorization submission failed: {error}"))
+            })?;
+        Ok(confirmed.signature)
     }
 
     /// Process an `open` action: persist the channel state.
@@ -4258,9 +4345,99 @@ async fn submit_and_fetch_open(
 /// Compare transaction-wide privileges to the union of the committed account
 /// metas. Duplicate account keys legitimately merge privileges in Solana.
 #[cfg(feature = "server")]
+/// The owner-signed `[Approve, authorize]` transaction the issuer co-signs
+/// ahead of a credit open, validated against the session policy. Returns the exact expected
+/// instructions and the issuer signer.
+#[cfg(feature = "server")]
+fn verify_credit_authorization(
+    tx: &solana_transaction::versioned::VersionedTransaction,
+    params: &payment_channels::OpenChannelParams,
+    config: &SessionConfig,
+) -> Result<(
+    Vec<solana_instruction::Instruction>,
+    std::sync::Arc<dyn solana_keychain::TransactionSigner>,
+)> {
+    use crate::core::credit_provider::musebook;
+    let deployment = config.credit_deployment()?;
+    let issuer = config
+        .credit_issuer_signer
+        .clone()
+        .ok_or_else(|| Error::InvalidConfig("credit issuer signer missing".into()))?;
+    let refuse = |why: &str| Err(Error::Other(format!("credit authorization: {why}")));
+    let keys = tx.message.static_account_keys();
+    let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
+    let resolve = |ix: &solana_message::compiled_instruction::CompiledInstruction| {
+        let program = *keys.get(ix.program_id_index as usize)?;
+        let accounts = ix
+            .accounts
+            .iter()
+            .map(|index| keys.get(*index as usize).copied())
+            .collect::<Option<Vec<_>>>()?;
+        Some((program, accounts, ix.data.clone()))
+    };
+    let body: Vec<_> = tx
+        .message
+        .instructions()
+        .iter()
+        .filter(|ix| keys.get(ix.program_id_index as usize) != Some(&compute_budget))
+        .collect();
+    let [approve, authorize] = body.as_slice() else {
+        return refuse("transaction must be exactly [Approve, authorize]");
+    };
+    let Some(authorize) = resolve(authorize) else {
+        return refuse("authorize index out of range");
+    };
+    let Some(authorization) = musebook::Authorization::decode_instruction_data(&authorize.2) else {
+        return refuse("second instruction is not a provider authorize");
+    };
+    let max_cap = config.credit_max_cap.unwrap_or(params.deposit);
+    if authorization.payee != params.payee.to_bytes()
+        || authorization.authorized_signer != params.authorized_signer.to_bytes()
+        || authorization.distribution_hash
+            != payment_channels::distribution_hash(&params.recipients)
+        || authorization.salt != params.salt
+        || authorization.open_slot != params.open_slot
+    {
+        return refuse("terms do not bind this channel incarnation");
+    }
+    if authorization.cap < params.deposit || authorization.cap > max_cap {
+        return refuse("cap is outside [deposit, credit_max_cap]");
+    }
+    if authorization.expires_at_slot < params.open_slot
+        || authorization.expires_at_slot - params.open_slot > musebook::MAX_AUTHORIZATION_SLOTS
+    {
+        return refuse("expiry is outside the issuer window");
+    }
+    let expected = deployment.authorization_instructions(
+        &params.payer,
+        &params.mint,
+        &issuer.pubkey(),
+        &authorization,
+    );
+    for (ix, want) in [*approve, body[1]].into_iter().zip(&expected) {
+        let Some((program, accounts, data)) = resolve(ix) else {
+            return refuse("instruction index out of range");
+        };
+        let want_accounts: Vec<_> = want.accounts.iter().map(|m| m.pubkey).collect();
+        if program != want.program_id || accounts != want_accounts || data != want.data {
+            return refuse("instruction does not match the issuer policy");
+        }
+    }
+    Ok((expected, issuer))
+}
+
 fn verify_channel_privileges(
     tx: &solana_transaction::versioned::VersionedTransaction,
     expected: &solana_instruction::Instruction,
+    fee_payer: Pubkey,
+) -> Result<()> {
+    verify_channel_privileges_for(tx, std::slice::from_ref(expected), fee_payer)
+}
+
+/// [`verify_channel_privileges`] over every committed instruction.
+fn verify_channel_privileges_for(
+    tx: &solana_transaction::versioned::VersionedTransaction,
+    committed: &[solana_instruction::Instruction],
     fee_payer: Pubkey,
 ) -> Result<()> {
     let header = tx.message.header();
@@ -4277,16 +4454,11 @@ fn verify_channel_privileges(
         } else {
             index < writable_unsigned_end
         };
-        let expected_signer = *key == fee_payer
-            || expected
-                .accounts
-                .iter()
-                .any(|meta| meta.pubkey == *key && meta.is_signer);
-        let expected_writable = *key == fee_payer
-            || expected
-                .accounts
-                .iter()
-                .any(|meta| meta.pubkey == *key && meta.is_writable);
+        let metas = || committed.iter().flat_map(|ix| ix.accounts.iter());
+        let expected_signer =
+            *key == fee_payer || metas().any(|meta| meta.pubkey == *key && meta.is_signer);
+        let expected_writable =
+            *key == fee_payer || metas().any(|meta| meta.pubkey == *key && meta.is_writable);
         if signer != expected_signer || writable != expected_writable {
             return Err(Error::Other(
                 "channel transaction account privileges do not match committed policy".into(),
@@ -4473,7 +4645,167 @@ mod tests {
         cfg.channel_program = Some(musebook::DEVNET.channel_program());
         cfg.channel_version = Some(2);
         cfg.credit_provider = Some(CreditProvider::Musebook);
+        cfg.credit_issuer_signer = Some(shared_signer(11));
+        cfg.credit_max_cap = Some(5_000);
         cfg
+    }
+
+    fn credit_open_tx(
+        cfg: &SessionConfig,
+        params: &payment_channels::OpenChannelParams,
+        authorization: &crate::core::credit_provider::musebook::Authorization,
+        tamper: impl FnOnce(&mut Vec<solana_instruction::Instruction>),
+    ) -> solana_transaction::versioned::VersionedTransaction {
+        let d = cfg.credit_deployment().unwrap();
+        let issuer = cfg.credit_issuer_signer.as_ref().unwrap().pubkey();
+        let mut ixs =
+            d.authorization_instructions(&params.payer, &params.mint, &issuer, authorization);
+        tamper(&mut ixs);
+        crate::core::tx::build_unsigned(
+            crate::core::tx::TxVersion::V0,
+            &params.payer,
+            &ixs,
+            test_blockhash(),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn musebook_issuer_cosigns_only_policy_bound_authorizations() {
+        use crate::core::credit_provider::musebook;
+        let cfg = musebook_config();
+        let d = cfg.credit_deployment().unwrap();
+        let params = payment_channels::OpenChannelParams {
+            payer: Pubkey::new_unique(),
+            rent_payer: Pubkey::new_unique(),
+            payee: Pubkey::new_unique(),
+            mint: Pubkey::new_unique(),
+            authorized_signer: Pubkey::new_unique(),
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: 60,
+            recipients: vec![],
+            token_program: Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap(),
+            program_id: d.channel_program(),
+        };
+        let good = d.authorization_for_channel(
+            &params.payee,
+            &params.authorized_signer,
+            &params.recipients,
+            7,
+            42,
+            1_500,
+            1,
+            42 + 1_000,
+        );
+        let tx = credit_open_tx(&cfg, &params, &good, |_| {});
+        let (expected, issuer) = verify_credit_authorization(&tx, &params, &cfg).unwrap();
+        assert_eq!(expected.len(), 2);
+        assert_eq!(
+            issuer.pubkey(),
+            cfg.credit_issuer_signer.as_ref().unwrap().pubkey()
+        );
+        assert_eq!(
+            musebook::Authorization::decode_instruction_data(&expected[1].data),
+            Some(good)
+        );
+
+        let bad_terms: Vec<(&str, musebook::Authorization)> = vec![
+            (
+                "cap below deposit",
+                musebook::Authorization { cap: 999, ..good },
+            ),
+            (
+                "cap above max",
+                musebook::Authorization { cap: 5_001, ..good },
+            ),
+            ("other salt", musebook::Authorization { salt: 8, ..good }),
+            (
+                "other open slot",
+                musebook::Authorization {
+                    open_slot: 41,
+                    ..good
+                },
+            ),
+            (
+                "other payee",
+                musebook::Authorization {
+                    payee: [1; 32],
+                    ..good
+                },
+            ),
+            (
+                "other signer",
+                musebook::Authorization {
+                    authorized_signer: [1; 32],
+                    ..good
+                },
+            ),
+            (
+                "other distribution",
+                musebook::Authorization {
+                    distribution_hash: [1; 32],
+                    ..good
+                },
+            ),
+            (
+                "expired before open",
+                musebook::Authorization {
+                    expires_at_slot: 41,
+                    ..good
+                },
+            ),
+            (
+                "window too long",
+                musebook::Authorization {
+                    expires_at_slot: 42 + musebook::MAX_AUTHORIZATION_SLOTS + 1,
+                    ..good
+                },
+            ),
+        ];
+        for (label, auth) in bad_terms {
+            let tx = credit_open_tx(&cfg, &params, &auth, |_| {});
+            assert!(
+                verify_credit_authorization(&tx, &params, &cfg).is_err(),
+                "{label}"
+            );
+        }
+        type Tamper = Box<dyn FnOnce(&mut Vec<solana_instruction::Instruction>)>;
+        let shapes: Vec<(&str, Tamper)> = vec![
+            (
+                "missing approve",
+                Box::new(|ixs| {
+                    ixs.remove(0);
+                }),
+            ),
+            ("approve wrong amount", Box::new(|ixs| ixs[0].data[1] ^= 1)),
+            (
+                "authorize wrong issuer",
+                Box::new(|ixs| {
+                    ixs[1].accounts[1].pubkey = Pubkey::new_unique();
+                }),
+            ),
+            (
+                "extra instruction",
+                Box::new(|ixs| {
+                    let extra = ixs[0].clone();
+                    ixs.insert(0, extra);
+                }),
+            ),
+        ];
+        for (label, tamper) in shapes {
+            let tx = credit_open_tx(&cfg, &params, &good, tamper);
+            assert!(
+                verify_credit_authorization(&tx, &params, &cfg).is_err(),
+                "{label}"
+            );
+        }
+        let mut no_issuer = musebook_config();
+        no_issuer.credit_issuer_signer = None;
+        assert!(no_issuer.channel_deployment().is_err());
     }
 
     #[test]
@@ -4603,6 +4935,16 @@ mod tests {
         let json = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(json["credit_provider"], "musebook");
         let mut restored = config(VoucherSigner::Client);
+        assert!(
+            snapshot.apply_to(&mut restored).is_err(),
+            "issuer capability required"
+        );
+        restored.credit_issuer_signer = Some(shared_signer(12));
+        assert!(
+            snapshot.apply_to(&mut restored).is_err(),
+            "issuer must match"
+        );
+        restored.credit_issuer_signer = Some(shared_signer(11));
         snapshot.apply_to(&mut restored).unwrap();
         assert_eq!(restored.credit_provider, cfg.credit_provider);
         assert!(restored.channel_deployment().is_ok());
