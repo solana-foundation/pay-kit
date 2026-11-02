@@ -13,11 +13,16 @@ export type { ProtocolAdapter } from './adapter.js';
 export {
     assertX402AcceptedMatchesRoute,
     assertX402FeePayerIsolated,
+    assertX402V1EnvelopeMatchesRoute,
+    bindX402ExactCredential,
     verifyX402ExactCredential,
     X402_ACCEPTED_MISMATCH,
     X402_FEE_PAYER_IN_INSTRUCTION_ACCOUNTS,
+    X402_NETWORK_MISMATCH,
+    type X402ExactBoundCredential,
     type X402ExactCredential,
     type X402ExactRouteRequirements,
+    x402V1Network,
 } from './adapters/x402-exact-verify.js';
 export { Charge } from './adapters/x402-upto.js';
 export type { AcceptsEntry, Challenge } from './challenge.js';

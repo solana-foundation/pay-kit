@@ -15,17 +15,29 @@
 
 import {
     address,
+    appendTransactionMessageInstructions,
+    type Blockhash,
+    compileTransaction,
+    createTransactionMessage,
     generateKeyPairSigner,
+    getBase64EncodedWireTransaction,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
     getCompiledTransactionMessageEncoder,
     getTransactionDecoder,
     getTransactionEncoder,
     type KeyPairSigner,
+    partiallySignTransaction,
+    pipe,
+    setTransactionMessageFeePayer,
+    setTransactionMessageLifetimeUsingBlockhash,
+    verifySignature,
 } from '@solana/kit';
 import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { describe, expect, test } from 'vitest';
+
+import { reencodeAsV1, VALID_SESSION_V1_CONFIG } from './reencode-v1.js';
 
 import { ActiveSession, signSessionAuthentication } from '../client/Session.js';
 import { ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM } from '../constants.js';
@@ -267,20 +279,50 @@ async function buildTopUpWire(
     return await buildAndSignWireTransaction(rpc as never, payer, [...prefix, instruction]);
 }
 
-/** Re-encode a v0 wire transaction as a legacy (unversioned) wire transaction. */
-function reencodeAsLegacy(transactionBase64: string): string {
+/** Re-encode a v0 wire transaction as a legacy (unversioned) wire transaction, re-signed by `signer`. */
+async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner): Promise<string> {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
     const legacyMessageBytes = getCompiledTransactionMessageEncoder().encode({
         ...compiled,
         version: 'legacy',
     } as never);
+    const [signature] = await signer.signMessages([{ content: legacyMessageBytes as Uint8Array } as never]);
     const legacyTx = getTransactionEncoder().encode({
         messageBytes: legacyMessageBytes as never,
-        signatures: tx.signatures,
+        signatures: { ...tx.signatures, ...signature } as never,
     });
     return getBase64Codec().decode(legacyTx);
 }
+
+// ── request() — transactionVersions ─────────────────────────────────────
+
+describe('session() advertises transactionVersions', () => {
+    const methodDetails = async (transactionVersions?: ReadonlyArray<0 | 1>) => {
+        const f = await makeFixture();
+        const method = makeMethod(f, mockRpc().rpc, transactionVersions ? { transactionVersions } : {});
+        // A credential skips the blockhash prefetch.
+        const built = await (
+            method as unknown as {
+                request: (args: unknown) => Promise<{ methodDetails: Record<string, unknown> }>;
+            }
+        ).request({ credential: {}, request: {} });
+        return built.methodDetails;
+    };
+
+    test('omits the default [0] and lists any other set', async () => {
+        expect(await methodDetails()).not.toHaveProperty('transactionVersions');
+        expect(await methodDetails([0])).not.toHaveProperty('transactionVersions');
+        expect((await methodDetails([1, 0])).transactionVersions).toEqual([0, 1]);
+        expect((await methodDetails([1])).transactionVersions).toEqual([1]);
+    });
+
+    test('refuses an empty or unknown set at construction', async () => {
+        const f = await makeFixture();
+        expect(() => makeMethod(f, mockRpc().rpc, { transactionVersions: [] })).toThrow('at least one');
+        expect(() => makeMethod(f, mockRpc().rpc, { transactionVersions: [2] })).toThrow('must be 0 or 1');
+    });
+});
 
 // ── verify() — topUp ────────────────────────────────────────────────────
 
@@ -434,26 +476,69 @@ describe('session() verify() topUp', () => {
         expect(state?.processedTopUpSignatures).toHaveLength(1);
     });
 
-    test('topUp accepts a legacy-encoded wire transaction under the version-0 rules', async () => {
+    test('topUp rejects a legacy-encoded wire transaction before broadcasting it', async () => {
         const f = await makeFixture();
         const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
-        const method = makeMethod(f, rpc);
+        const method = makeMethod(f, rpc, { transactionVersions: [0, 1] });
         await seedChannel(f);
 
-        // A pre-cutover client's legacy (unversioned) top-up is verified and
-        // broadcast exactly like a v0 one.
-        const wire = reencodeAsLegacy(await buildTopUpWire(f, rpc, 4_000n));
-        const receipt = await verify(
-            method,
-            makeCred(f, {
-                action: 'topUp',
-                additionalAmount: '4000',
-                channelId: f.channel.address,
-                transaction: wire,
-            }),
+        // MPP refuses legacy messages whatever the accepted set.
+        const wire = await reencodeAsLegacy(await buildTopUpWire(f, rpc, 4_000n), f.payer);
+        await expect(
+            verify(
+                method,
+                makeCred(f, {
+                    action: 'topUp',
+                    additionalAmount: '4000',
+                    channelId: f.channel.address,
+                    transaction: wire,
+                }),
+            ),
+        ).rejects.toThrow('legacy transaction version is not accepted; accepted versions: 0, 1');
+        expect(sent).toHaveLength(0);
+    });
+
+    test('topUp admits a version-1 wire transaction only when transactionVersions lists 1', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        await seedChannel(f);
+        const wire = await reencodeAsV1(await buildTopUpWire(f, rpc, 4_000n), f.payer, VALID_SESSION_V1_CONFIG);
+        const cred = makeCred(f, {
+            action: 'topUp',
+            additionalAmount: '4000',
+            channelId: f.channel.address,
+            transaction: wire,
+        });
+
+        await expect(verify(makeMethod(f, rpc), cred)).rejects.toThrow(
+            'transaction version 1 is not accepted; accepted versions: 0',
         );
+        expect(sent).toHaveLength(0);
+
+        const receipt = await verify(makeMethod(f, rpc, { transactionVersions: [0, 1] }), cred);
         expect(receipt.status).toBe('success');
         expect(sent).toHaveLength(1);
+    });
+
+    test('topUp holds a version-1 header budget to the session caps', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc, { transactionVersions: [1] });
+        await seedChannel(f);
+        const { computeUnitLimit: _limit, ...withoutLimit } = VALID_SESSION_V1_CONFIG;
+        const wire = await reencodeAsV1(await buildTopUpWire(f, rpc, 4_000n), f.payer, withoutLimit);
+        await expect(
+            verify(
+                method,
+                makeCred(f, {
+                    action: 'topUp',
+                    additionalAmount: '4000',
+                    channelId: f.channel.address,
+                    transaction: wire,
+                }),
+            ),
+        ).rejects.toThrow('version 1 transaction config must set computeUnitLimit');
+        expect(sent).toHaveLength(0);
     });
 
     test('topUp rejects an unknown channel before touching the network', async () => {
@@ -542,7 +627,8 @@ describe('session() verify() topUp', () => {
         const intruder = await generateKeyPairSigner();
 
         // Self-consistent transaction, but funded by a different payer than
-        // the one recorded at open.
+        // the one recorded at open: it pays its own fee, so the fee payer is
+        // not the channel payer the policy requires.
         const wire = await buildTopUpWire(f, rpc, 4_000n, intruder);
         await expect(
             verify(
@@ -554,7 +640,7 @@ describe('session() verify() topUp', () => {
                     transaction: wire,
                 }),
             ),
-        ).rejects.toThrow(/payer or channel does not match persisted channel state/);
+        ).rejects.toThrow(/top-up transaction fee payer does not match the challenge policy/);
         expect(sent).toHaveLength(0);
         expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
     });
@@ -600,6 +686,116 @@ describe('session() verify() topUp', () => {
             ),
         ).rejects.toThrow(/failed on-chain/);
         expect(sent).toHaveLength(1);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
+    });
+});
+
+// ── verify() — sponsored topUp ──────────────────────────────────────────
+
+/**
+ * A top-up whose fee payer is the channel's sponsor, signed by the channel
+ * payer only: the sponsor's slot is left for the server to co-sign.
+ */
+async function buildSponsoredTopUpWire(f: Fixture, sponsor: KeyPairSigner, amount: bigint): Promise<string> {
+    const instruction = await buildTopUpInstruction({
+        amount,
+        channelId: f.channel.address,
+        mint: USDC_DEVNET_MINT,
+        payer: f.payer,
+        tokenProgram: TOKEN_PROGRAM,
+    });
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        m => setTransactionMessageFeePayer(sponsor.address, m),
+        m =>
+            setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: BLOCKHASH as Blockhash, lastValidBlockHeight: 100n },
+                m,
+            ),
+        m => appendTransactionMessageInstructions([instruction], m),
+    );
+    const signed = await partiallySignTransaction([f.payer.keyPair], compileTransaction(message));
+    return getBase64EncodedWireTransaction(signed);
+}
+
+describe('session() verify() sponsored topUp', () => {
+    async function sponsoredFixture() {
+        const f = await makeFixture();
+        const sponsor = await generateKeyPairSigner();
+        const mock = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, mock.rpc, { feePayer: true, feePayerSigner: sponsor });
+        await seedChannel(f, { rentPayer: sponsor.address });
+        const credential = (transaction: string) =>
+            makeCred(f, { action: 'topUp', additionalAmount: '4000', channelId: f.channel.address, transaction });
+        return { ...mock, credential, f, method, sponsor };
+    }
+
+    test('the sponsor co-signs the client top-up before broadcast', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+        const clientTx = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        expect(clientTx.signatures[sponsor.address]).toBeNull();
+
+        const receipt = await verify(method, credential(wire));
+        expect(receipt.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const broadcast = getTransactionDecoder().decode(getBase64Codec().encode(sent[0]!));
+        // Same message, now carrying a valid sponsor signature next to the payer's.
+        expect(broadcast.messageBytes).toEqual(clientTx.messageBytes);
+        const sponsorSignature = broadcast.signatures[sponsor.address];
+        expect(sponsorSignature).toBeTruthy();
+        expect(
+            await verifySignature(sponsor.keyPair.publicKey, sponsorSignature as never, broadcast.messageBytes),
+        ).toBe(true);
+        expect(
+            await verifySignature(
+                f.payer.keyPair.publicKey,
+                broadcast.signatures[f.payer.address] as never,
+                broadcast.messageBytes,
+            ),
+        ).toBe(true);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(5_000n);
+    });
+
+    test('a resubmitted sponsored top-up credits the deposit exactly once', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+
+        await verify(method, credential(wire));
+        const replay = await verify(method, credential(wire));
+        expect(replay.status).toBe('success');
+        expect(sent).toHaveLength(1);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.deposit).toBe(5_000n);
+        expect(state?.processedTopUpSignatures).toHaveLength(1);
+    });
+
+    test('a pre-filled sponsor signature slot is refused before broadcast', async () => {
+        const { credential, f, method, sent, sponsor } = await sponsoredFixture();
+        const wire = await buildSponsoredTopUpWire(f, sponsor, 4_000n);
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        const prefilled = getBase64Codec().decode(
+            getTransactionEncoder().encode({
+                messageBytes: tx.messageBytes,
+                signatures: { ...tx.signatures, [sponsor.address]: new Uint8Array(64).fill(7) } as never,
+            }),
+        );
+
+        await expect(verify(method, credential(prefilled))).rejects.toThrow(
+            /fee-payer signature slot must be empty before server co-signing/,
+        );
+        expect(sent).toHaveLength(0);
+        expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
+    });
+
+    test('a top-up the client paid for itself under a sponsored channel is refused', async () => {
+        const { credential, f, method, rpc, sent } = await sponsoredFixture();
+        const selfPaid = await buildTopUpWire(f, rpc, 4_000n);
+
+        await expect(verify(method, credential(selfPaid))).rejects.toThrow(
+            /fee payer does not match the challenge policy/,
+        );
+        expect(sent).toHaveLength(0);
         expect((await f.store.getChannel(f.channel.address))?.deposit).toBe(1_000n);
     });
 });
@@ -1134,7 +1330,7 @@ describe('session() verify() close authorization', () => {
 
         await expect(
             verify(method, makeCred(f, { action: 'close', authentication: mismatched, channelId: f.channel.address })),
-        ).rejects.toThrow(/invalid close authentication signature/);
+        ).rejects.toThrow(/close authentication does not match the proof bound at open/);
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.closeRequestedAt).toBeUndefined();
         expect(sent).toHaveLength(0);

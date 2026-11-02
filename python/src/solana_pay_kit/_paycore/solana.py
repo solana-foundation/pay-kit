@@ -320,6 +320,10 @@ class MethodDetails:
     fee_payer_key: str = ""
     recent_blockhash: str = ""
     splits: list[Split] = field(default_factory=list)
+    #: Advertised ``transactionVersions`` (mpp-specs-txv1): the message
+    #: versions the server accepts. ``None`` when absent, which means ``[0]``;
+    #: a present empty list accepts nothing.
+    transaction_versions: list[int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict, omitting empty fields."""
@@ -338,11 +342,20 @@ class MethodDetails:
             d["recentBlockhash"] = self.recent_blockhash
         if self.splits:
             d["splits"] = [s.to_dict() for s in self.splits]
+        if self.transaction_versions is not None:
+            d["transactionVersions"] = list(self.transaction_versions)
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MethodDetails:
-        """Deserialize from a JSON-compatible dict."""
+        """Deserialize from a JSON-compatible dict.
+
+        ``transactionVersions`` is parsed strictly: every entry must be the
+        integer 0 or 1 (``"legacy"``, strings and a non-array are refused
+        with :class:`~solana_pay_kit._paycore.txv1.TransactionVersionError`).
+        """
+        from solana_pay_kit._paycore.txv1 import parse_transaction_versions
+
         splits = [Split.from_dict(s) for s in data.get("splits", [])]
         return cls(
             network=_canonical_network(data.get("network", "mainnet")),
@@ -352,6 +365,7 @@ class MethodDetails:
             fee_payer_key=data.get("feePayerKey", ""),
             recent_blockhash=data.get("recentBlockhash", ""),
             splits=splits,
+            transaction_versions=parse_transaction_versions(data.get("transactionVersions")),
         )
 
 

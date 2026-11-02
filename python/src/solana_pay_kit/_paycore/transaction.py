@@ -17,6 +17,8 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
+from solana_pay_kit._paycore.txv1 import MessageV1, TransactionConfig, TransactionV1
+
 
 def _message_offset(raw: bytes) -> int | None:
     """Offset of the first message byte on the wire, or ``None`` when truncated.
@@ -86,7 +88,9 @@ class SignatureCheckError(ValueError):
     """A wire transaction whose signatures do not authorize its message."""
 
 
-def verify_required_signatures(transaction: VersionedTransaction, *, unsigned: Pubkey | None = None) -> None:
+def verify_required_signatures(
+    transaction: VersionedTransaction | TransactionV1, *, unsigned: Pubkey | None = None
+) -> None:
     """Refuse a transaction unless every required signer has signed its message.
 
     The signature list must hold exactly ``header.num_required_signatures``
@@ -106,7 +110,7 @@ def verify_required_signatures(transaction: VersionedTransaction, *, unsigned: P
     Raises :class:`SignatureCheckError`; callers map it to their protocol's
     reject code.
     """
-    from solders.message import to_bytes_versioned  # type: ignore[import-untyped]
+    from solana_pay_kit._paycore.txv1 import signed_message_bytes
 
     message = transaction.message
     required = int(message.header.num_required_signatures)
@@ -118,7 +122,7 @@ def verify_required_signatures(transaction: VersionedTransaction, *, unsigned: P
     account_keys = list(message.account_keys)
     if len(account_keys) < required:
         raise SignatureCheckError("transaction message lists fewer account keys than required signers")
-    signed_bytes = bytes(to_bytes_versioned(message))
+    signed_bytes = signed_message_bytes(message)
     placeholder = Signature.default()
     for key, signature in zip(account_keys[:required], signatures, strict=True):
         if unsigned is not None and key == unsigned and signature == placeholder:
@@ -150,3 +154,35 @@ async def build_partially_signed_v0_transaction(
     transaction = VersionedTransaction.populate(message, signatures)
     result = await signer.sign_transaction(transaction)
     return bytes(result.transaction)
+
+
+async def build_partially_signed_transaction(
+    instructions: Sequence[Instruction],
+    fee_payer: Pubkey,
+    blockhash: Hash,
+    signer: TransactionSigner,
+    *,
+    version: int = 0,
+    config: TransactionConfig | None = None,
+) -> bytes:
+    """Compile a version-0 or version-1 transaction and sign it.
+
+    Version 0 is :func:`build_partially_signed_v0_transaction`. Version 1
+    (SIMD-0385) carries its compute budget in ``config`` instead of
+    ComputeBudget instructions, so ``instructions`` must not include any;
+    it is signed over the raw message bytes through ``sign_message``, since
+    solders (and so ``sign_transaction``) cannot represent it. Every other
+    required-signer slot is left as a zero placeholder.
+    """
+    if version == 0:
+        return await build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, signer)
+    if version != 1:
+        raise ValueError(f"solana_pay_kit: cannot build transaction version {version}")
+    message = MessageV1.try_compile(fee_payer, instructions, blockhash, config or TransactionConfig())
+    num_required = int(message.header.num_required_signatures)
+    signer_keys = message.account_keys[:num_required]
+    if signer.pubkey not in signer_keys:
+        raise ValueError("solana_pay_kit: signer is not a required signer of the transaction")
+    signatures = [Signature.default() for _ in range(num_required)]
+    signatures[signer_keys.index(signer.pubkey)] = await signer.sign_message(bytes(message))
+    return bytes(TransactionV1.populate(message, signatures))

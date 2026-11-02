@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
@@ -143,6 +144,11 @@ class X402Adapter:
         blockhash = self._fetch_recent_blockhash()
         if blockhash is not None:
             extra["recentBlockhash"] = blockhash
+        # §1.5: advertise the accepted message versions unless they are the
+        # default [0]; the verifier reads the accepted set back from the offer.
+        versions = self._config.x402.transaction_versions
+        if versions is not None and tuple(versions) != (0,):
+            extra["transactionVersions"] = list(versions)
         return {
             "protocol": "x402",
             "scheme": "exact",
@@ -217,11 +223,8 @@ class X402Adapter:
             raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
         current = await self._store.get(replay_key)
         should_broadcast = current is None
-        skip_confirmation = False
         if current is not None:
-            skip_confirmation = await _recover_replay_record(
-                self._store, replay_key, binding, replay_record, current, now
-            )
+            await _recover_replay_record(self._store, replay_key, binding, replay_record, current, now)
 
         rpc: SolanaRpc | None = None
         sent_here = False
@@ -234,9 +237,7 @@ class X402Adapter:
                 # retry would find it already processed and refuse it.
                 if not await ledger.claim(signature, replay_record):
                     current = await self._store.get(replay_key)
-                    skip_confirmation = await _recover_replay_record(
-                        self._store, replay_key, binding, replay_record, current, now
-                    )
+                    await _recover_replay_record(self._store, replay_key, binding, replay_record, current, now)
                 else:
                     rpc = SolanaRpc(rpc_url)
                     try:
@@ -280,33 +281,38 @@ class X402Adapter:
             # ``transaction-failed`` (included but reverted) or
             # ``transaction-not-found`` (never confirmed inside the window).
             #
-            if not skip_confirmation:
-                if rpc is None:
-                    rpc = SolanaRpc(rpc_url)
-                try:
-                    # A request that did not send it is reconciling a payment
-                    # an earlier one sent, which may have left the node's
-                    # recent status cache: search the history.
-                    await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
-                    await self._store.put(
-                        replay_key,
-                        {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Keep the pending lease after a failure. A retry can
-                    # atomically take over after expiry and determine whether
-                    # the transaction landed, without permitting two concurrent
-                    # requests to return successful fulfillment.
-                    if proves_settlement_failed(exc):
-                        # It landed and failed: it moved nothing.
-                        raise InvalidProofError(
-                            f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
-                        ) from exc
-                    # No status yet is never proof it did not execute.
-                    raise _settlement_in_progress(signature, f"not confirmed yet: {exc}") from exc
+            if rpc is None:
+                rpc = SolanaRpc(rpc_url)
+            try:
+                # A request that did not send it is reconciling a payment
+                # an earlier one sent, which may have left the node's
+                # recent status cache: search the history.
+                await rpc.await_confirmation(signature, search_transaction_history=not sent_here)
+                await self._store.put(
+                    replay_key,
+                    {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Keep the pending lease after a failure. A retry can
+                # atomically take over after expiry and determine whether
+                # the transaction landed, without permitting two concurrent
+                # requests to return successful fulfillment.
+                if proves_settlement_failed(exc):
+                    # It landed and failed: it moved nothing.
+                    raise InvalidProofError(
+                        f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
+                    ) from exc
+                # No status yet is never proof it did not execute.
+                raise _settlement_in_progress(signature, f"not confirmed yet: {exc}") from exc
         finally:
             if rpc is not None:
                 await rpc.aclose()
+
+        # One confirmed payment grants one request. A recovery and the request
+        # it took over from can both see the confirmation; only the first to
+        # take the grant serves (the Rust ``ConsumedSignatures::confirm``).
+        if not await self._store.put_if_absent(f"{replay_key}:served", True):
+            raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
         accepted_network = accepted.get("network")
         response_body: X402ResponseEnvelope = {
@@ -530,18 +536,17 @@ def _bind_legacy(
 async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
     """Sign the facilitator slot while preserving existing client signatures.
 
-    The signature covers ``to_bytes_versioned(msg)``: the 0x80 prefix plus
-    the v0 body, or the bare legacy message. ``VersionedTransaction.from_bytes``
-    dispatches on the prefix, so a pre-cutover client's legacy wire is
-    co-signed like a v0 one. The fee payer must occupy a signature slot.
+    The signature covers the exact signed message bytes: the 0x80 prefix plus
+    the v0 body, the bare legacy message, or the prefixed version-1 message.
+    Legacy and v0 wires are co-signed through ``sign_transaction``; version 1
+    (which solders cannot represent) through ``sign_message`` over its message
+    bytes. The fee payer must occupy a signature slot.
     """
-    from solders.transaction import VersionedTransaction
-
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = signer.pubkey
 
     try:
-        vtx = VersionedTransaction.from_bytes(raw)
+        vtx = txv1.decode_transaction(raw)
     except Exception as exc:  # noqa: BLE001
         raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     account_keys = list(vtx.message.account_keys)
@@ -557,14 +562,20 @@ async def _co_sign(transaction_b64: str, signer: TransactionSigner) -> bytes:
     if idx >= num_required:
         raise InvalidProofError("solana_pay_kit: fee payer is not a required signer", code="payment_invalid")
 
-    signed = await signer.sign_transaction(vtx)
-    cosigned = bytes(signed.transaction)
+    if txv1.is_v1(vtx):
+        signatures = list(vtx.signatures)
+        signatures[idx] = await signer.sign_message(txv1.signed_message_bytes(vtx.message))
+        cosigned_tx = txv1.TransactionV1.populate(vtx.message, signatures)
+    else:
+        signed = await signer.sign_transaction(vtx)
+        cosigned_tx = txv1.decode_transaction(bytes(signed.transaction))
+    cosigned = bytes(cosigned_tx)
     # Every required signer, the payer included, must have signed before the
     # signature is claimed or the transaction sent: a landed multi-signer
     # transaction cut down to its first signature would otherwise be claimed
     # and reconciled on the landed transaction's status.
     try:
-        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
+        verify_required_signatures(cosigned_tx)
     except SignatureCheckError as exc:
         raise InvalidProofError(
             f"solana_pay_kit: transaction signature verification failed: {exc}", code="payment_invalid"
@@ -579,10 +590,8 @@ def _transaction_parse_error(message: str) -> InvalidProofError:
 
 def _transaction_signature(transaction_wire: bytes) -> str:
     """Return the deterministic first signature from a signed wire transaction."""
-    from solders.transaction import VersionedTransaction
-
     try:
-        signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
+        signatures = txv1.decode_transaction(transaction_wire).signatures
     except Exception as exc:  # noqa: BLE001
         raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     if not signatures:
@@ -605,15 +614,20 @@ async def _recover_replay_record(
     replay_record: dict[str, object],
     current: object,
     now: float,
-) -> bool:
-    """Claim an expired settlement for confirmation, or return a confirmed replay."""
+) -> None:
+    """Take over an expired pending settlement to confirm it.
+
+    A confirmed settlement is consumed: presenting it again is refused with
+    ``signature_consumed``, never served a second time (scheme_exact.md "A
+    consumed primitive MUST produce a settlement failure, never a success";
+    the Rust ``settle_exact`` ``PendingClaim::Consumed``). Only an expired
+    pending claim of the same bytes is resumed.
+    """
     if not isinstance(current, dict):
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
     current_record = cast("dict[str, object]", current)
     if current_record.get("binding") != binding:
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-    if current_record.get("state") == "confirmed":
-        return True
     if current_record.get("state") != "pending" or not isinstance(current_record.get("leaseUntil"), int | float):
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
@@ -631,11 +645,9 @@ async def _recover_replay_record(
     latest_record = cast("dict[str, object]", latest)
     if latest_record.get("binding") != binding:
         raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-    if latest_record.get("state") == "confirmed":
-        return True
     if latest_record.get("state") == "pending" and latest_record.get("leaseUntil") == lease_until:
         await store.put(replay_key, replay_record)
-        return False
+        return
     raise InvalidProofError(
         "solana_pay_kit: signature_consumed: settlement recovery state changed",
         code="signature_consumed",
@@ -644,11 +656,9 @@ async def _recover_replay_record(
 
 def _recent_blockhash_of(transaction_b64: str) -> str | None:
     """Best-effort extract of the recent blockhash for the network check."""
-    from solders.transaction import VersionedTransaction
-
     try:
         raw = base64.b64decode(transaction_b64)
-        tx = VersionedTransaction.from_bytes(raw)
+        tx = txv1.decode_transaction(raw)
         return str(tx.message.recent_blockhash)
     except Exception:  # noqa: BLE001 - the verifier already validated shape
         return None

@@ -39,6 +39,7 @@ from solana_pay_kit._paycore.errors import (
 )
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit._paycore.txv1 import parse_transaction_versions
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
@@ -137,6 +138,10 @@ class SessionOptions:
     # MinVoucherDelta is the minimum voucher increment (base units). 0 = no
     # minimum.
     min_voucher_delta: int = 0
+    # Transaction versions accepted for open and top-up transactions
+    # (methodDetails.transactionVersions): None accepts version 0 only,
+    # [0, 1] also accepts version 1.
+    transaction_versions: list[int] | None = None
     # Splits are optional basis-point splits distributed at close. Max 8.
     splits: list[Split] = field(default_factory=list)
     # Store is the pluggable channel store. Defaults to in-memory.
@@ -695,6 +700,12 @@ def new_session(options: SessionOptions) -> Session:
         raise PaymentError("decimals must be an integer from 0 to 9", code="invalid-config")
     network = options.network or "mainnet"
     realm = options.realm or detect_realm()
+    try:
+        parse_transaction_versions(options.transaction_versions)
+    except ValueError as exc:
+        raise PaymentError(str(exc), code="invalid-config") from exc
+    if options.transaction_versions is not None and not options.transaction_versions:
+        raise PaymentError("transactionVersions must accept at least one version", code="invalid-config")
 
     if options.rpc is None:
         raise PaymentError("session requires an RPC client for funding verification", code="invalid-config")
@@ -727,6 +738,8 @@ def new_session(options: SessionOptions) -> Session:
         grace_period_seconds=options.grace_period_seconds,
         fee_payer=options.fee_payer,
         fee_payer_key=(str(options.signer.pubkey) if options.fee_payer and options.signer is not None else None),
+        fee_payer_signer=(options.signer if options.fee_payer else None),
+        transaction_versions=options.transaction_versions,
         min_voucher_delta=options.min_voucher_delta,
         voucher_signer=options.voucher_signer,  # type: ignore[arg-type]
         operator_signer=(options.signer if options.voucher_signer == "operator" and options.signer else None),

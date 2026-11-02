@@ -26,9 +26,8 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pay_kit::mpp::client::{
-    build_subscription_activation_credential,
-    build_subscription_activation_transaction_with_options, sign_subscription_authentication,
-    BuildSubscriptionActivationOptions,
+    build_subscription_activation_credential, build_subscription_activation_transaction,
+    sign_subscription_authentication, VerifiedPlan,
 };
 use solana_pay_kit::mpp::program::subscriptions::{
     self as program, find_subscription_authority_pda, find_subscription_pda, SubscribeData,
@@ -333,9 +332,10 @@ pub mod fx {
         })
     }
 
-    /// The fields the Rust kit's client builds `SubscribeData` from without
-    /// reading the plan (kit extensions to `methodDetails`, emitted by the
-    /// kit's server; other SDKs ignore them).
+    /// The kit server's `methodDetails` extensions (plan id, bump, terms,
+    /// merchant, recipient, amount). Unknown fields every client ignores:
+    /// the build cases carry them so a client that trusted them over the
+    /// on-chain plan would sign the plan-mismatch cases.
     pub fn with_kit_extensions(mut request: Value) -> Value {
         let recipient = request_field(&request, "recipient");
         let amount = request_field(&request, "amount");
@@ -815,20 +815,11 @@ pub async fn materialize(case: &Case, recipe: &Recipe) -> Result<Value, String> 
     let (rpc, _log) = fixture_rpc::rpc_client(&fixtures);
     let build: SubscriptionRequest = serde_json::from_value(a.build_request.clone())
         .map_err(|e| format!("build request: {e}"))?;
-    let details = build
-        .validated_method_details()
-        .map_err(|e| format!("build request: {e}"))?;
-    let transaction = match build_subscription_activation_transaction_with_options(
-        &subscriber,
-        &rpc,
-        &details,
-        BuildSubscriptionActivationOptions {
-            external_id: build.external_id.clone(),
-            ..Default::default()
-        },
-    )
-    .await
-    .map_err(|e| format!("kit activation build: {e}"))?
+    let terms = build.terms().map_err(|e| format!("build request: {e}"))?;
+    let plan = VerifiedPlan::fetch(&rpc, terms, None).map_err(|e| format!("build plan: {e}"))?;
+    let transaction = match build_subscription_activation_transaction(&subscriber, &rpc, &plan)
+        .await
+        .map_err(|e| format!("kit activation build: {e}"))?
     {
         CredentialPayload::Transaction { transaction } => transaction,
         other => return Err(format!("unexpected payload {other:?}")),
@@ -878,21 +869,33 @@ pub async fn materialize(case: &Case, recipe: &Recipe) -> Result<Value, String> 
             Some(proof)
         }
     };
-    let mut payload = ActivatePayload {
-        payload_type: "transaction".into(),
-        transaction: Some(transaction.clone()),
-        signature: None,
-        authentication,
-    };
+    // The payload as JSON: an edit may drop a field the kit's wire type
+    // requires (`authentication`).
+    let mut payload = json!({
+        "type": "transaction",
+        "transaction": transaction,
+    });
+    if let Some(authentication) = authentication {
+        payload["authentication"] =
+            serde_json::to_value(authentication).map_err(|e| e.to_string())?;
+    }
     match &a.payload {
         None => {}
-        Some(PayloadEdit::Type(kind)) => payload.payload_type = (*kind).into(),
-        Some(PayloadEdit::NoTransaction) => payload.transaction = None,
+        Some(PayloadEdit::Type(kind)) => payload["type"] = json!(kind),
+        Some(PayloadEdit::NoTransaction) => {
+            payload
+                .as_object_mut()
+                .expect("object")
+                .remove("transaction");
+        }
         Some(PayloadEdit::PushSignature) => {
             let tx = decode_b64(&transaction)?;
-            payload.payload_type = "signature".into();
-            payload.transaction = None;
-            payload.signature = Some(tx.signatures[0].to_string());
+            payload["type"] = json!("signature");
+            payload
+                .as_object_mut()
+                .expect("object")
+                .remove("transaction");
+            payload["signature"] = json!(tx.signatures[0].to_string());
         }
     }
     let mut credential = PaymentCredential::new(challenge.to_echo(), payload);
@@ -1503,7 +1506,7 @@ async fn verify_input_for_build(vector: &Vector, artifact: &str) -> Result<Value
             payload_type: "transaction".into(),
             transaction: Some(artifact.to_string()),
             signature: None,
-            authentication: Some(authentication),
+            authentication,
         },
     );
     let mut out = json!({
@@ -1652,13 +1655,16 @@ mod tests {
 
     // An authored case used to accept any build the kit's verification
     // accepts, and that verification checks the subscribe accounts and
-    // discriminator but not its data.
+    // discriminator but not its data. The kit now builds the spec-request
+    // case, so the judge compares with its build; the subscribe-data check
+    // remains the fallback for an authored case the kit cannot build.
     #[test]
     fn subscribe_data_off_the_plan_fails_the_authored_build_judge() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let v = vector("subscription-build-spec-request");
         let honest = activation(&rt);
         rt.block_on(judge_build(&v, &honest)).unwrap();
+        check_subscribe_data(v.input(), &honest).unwrap();
         for data in [vec![INSTRUCTION_SUBSCRIBE], {
             let mut d = decompile(&decode_b64(&honest).unwrap().message).unwrap();
             let ix = d
@@ -1677,9 +1683,17 @@ mod tests {
                 .data = data;
             let mut tx = compile_v0(&d).unwrap();
             sign_slots(&mut tx, &[keys::CLIENT_SEED]);
-            let failure = rt
-                .block_on(judge_build(&v, &encode_b64(&tx).unwrap()))
-                .unwrap_err();
+            let tampered = encode_b64(&tx).unwrap();
+            let failure = rt.block_on(judge_build(&v, &tampered)).unwrap_err();
+            assert!(
+                failure
+                    .path
+                    .as_deref()
+                    .is_some_and(|p| p.ends_with(".data")),
+                "{}",
+                failure.message
+            );
+            let failure = check_subscribe_data(v.input(), &tampered).unwrap_err();
             assert_eq!(
                 failure.path.as_deref(),
                 Some("subscribe.data"),

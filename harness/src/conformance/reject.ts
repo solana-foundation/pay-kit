@@ -37,6 +37,14 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/invalid_batch_settlement_svm_channel_state/, "channel-state"],
   [/invalid_batch_settlement_svm_refund_transaction/, "refund-transaction"],
   [/\bduplicate_settlement\b/, "duplicate-settlement"],
+  // The bare x402 reason (not `invalid_exact_svm_network_mismatch`): the
+  // facilitator compares `paymentPayload.accepted.network` with the
+  // requirements' network, so it names an accepted that differs from the
+  // requirements (RULINGS B3), not a transaction for another cluster.
+  [/\bnetwork_mismatch\b/, "accepted-mismatch"],
+  // The batch facilitator's /verify envelope check: paymentPayload.accepted
+  // differs from paymentRequirements (spec 4.5), named with core's code.
+  [/\binvalid_payment_requirements\b/, "accepted-mismatch"],
   [/\bunsupported_scheme\b/, "unsupported-scheme"],
   // @x402/svm batch-settlement client: refusals of a challenge's terms
   // (plain Errors, no reason code).
@@ -50,7 +58,7 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // envelope rules: a ComputeBudget instruction in a version-1 charge, an
   // incomplete header config, a size over the version's limit, a lookup
   // table. Checked first: the messages also contain generic words.
-  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version/i, "unsupported-version"],
+  [/transaction version .*not accepted|unsupported_transaction_version|signs up to version|advertises no transaction version/i, "unsupported-version"],
   // RULINGS SIG1: a client signature that does not verify over the message,
   // or a signature list short of the required signers.
   [/signature verification failed|signature slots do not match|invalid client transaction signature/i, "invalid-payload"],
@@ -63,7 +71,9 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/fee payer (token account )?cannot fund/i, "fee-payer-is-funds-source"],
   [/primary amount is zero after splits|split amounts exceed/i, "splits-exceed-amount"],
   [/splits exceed maximum/i, "too-many-splits"],
-  [/ata creation owner is not authorized|unsupported compute budget|unexpected_signer/i, "unexpected-instruction"],
+  // A required signer beyond the client and the sponsor (scheme_exact_svm.md
+  // §2.1.4): @x402/svm's `excessive_signers`, the Rust kit's `unexpected_signer`.
+  [/ata creation owner is not authorized|unsupported compute budget|unexpected_signer|invalid_exact_svm_payload_excessive_signers/i, "unexpected-instruction"],
   [/atacreationrequired requires|unsupported challenge network|invalid amount|requires feepayerkey/i, "invalid-challenge"],
   [/ata creation|ata payer|transaction fee payer (must be|mismatch)|memo cannot exceed/i, "invalid-payload"],
   // x402 v2: the credential's `accepted` matches none of the route's
@@ -87,7 +97,7 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   ],
   // Client refusing a challenge that violates the method spec (RULINGS C2,
   // C3). Checked first: these messages also contain generic words.
-  [/decimals is required|failed to determine token program/i, "invalid-challenge"],
+  [/decimals is required|failed to determine token program|tokenprogram must not be present/i, "invalid-challenge"],
   // @solana/pay-kit's client refusing an offer's terms (an unknown network).
   [/invalid_challenge_terms|unsupported solana network/i, "invalid-challenge"],
   // Sponsors bound the priority fee as limit x price (RULINGS S6).
@@ -114,6 +124,8 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   [/network mismatch/i, "wrong-network"],
   // @x402/svm exact verifier reason codes.
   [/invalid_exact_svm_network_mismatch/i, "wrong-network"],
+  [/compute_price_instruction_too_high/i, "compute-price-over-cap"],
+  [/compute_limit_instruction_too_high/i, "compute-limit-over-cap"],
   [/invalid_exact_svm_payload_amount_mismatch/i, "amount-mismatch"],
   [
     /invalid_exact_svm_payload_(mint_mismatch|recipient_mismatch|no_transfer_instruction)/i,

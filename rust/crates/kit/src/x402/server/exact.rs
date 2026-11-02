@@ -151,6 +151,9 @@ pub struct X402 {
     rpc: Arc<RpcClient>,
     /// Transaction message versions accepted and advertised; see `core::tx`.
     accepted_versions: Vec<TxVersion>,
+    /// The facilitator's `transactionVersions`, copied verbatim into every
+    /// offer's `extra` (§1.5); `None` advertises `accepted_versions`.
+    advertised_versions: Option<Vec<TxVersion>>,
     config: Config,
     /// Optional shared cache of a recent blockhash, refreshed out of band, so
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
@@ -192,6 +195,7 @@ impl X402 {
         Ok(Self {
             // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
             accepted_versions: vec![TxVersion::V0],
+            advertised_versions: None,
             rpc,
             config,
             blockhash_cache: None,
@@ -211,7 +215,28 @@ impl X402 {
     /// default probes the `enable_tx_v1` gate once at construction.
     pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
         self.accepted_versions = mode.resolve(&self.rpc);
+        self.advertised_versions = None;
         self
+    }
+
+    /// Accept exactly the facilitator's `transactionVersions` and advertise
+    /// that value unchanged. scheme_exact_svm.md §1.5: “the server MUST copy
+    /// that value into PaymentRequirements.extra.transactionVersions”, so a
+    /// facilitator's `[0]` or `[1, 0, 1]` reaches the client (and comes back
+    /// in its `accepted`) as written. The accepted set is the value read as a
+    /// set (RULINGS T1). An empty list accepts nothing and is refused.
+    pub fn with_transaction_versions(mut self, versions: Vec<TxVersion>) -> Result<Self, Error> {
+        if versions.is_empty() {
+            return Err(Error::Other(
+                "transactionVersions must name at least one version".into(),
+            ));
+        }
+        let mut accepted = versions.clone();
+        accepted.sort();
+        accepted.dedup();
+        self.accepted_versions = accepted;
+        self.advertised_versions = Some(versions);
+        Ok(self)
     }
 
     /// Attach a shared blockhash cache (refreshed by a background task) so
@@ -458,7 +483,10 @@ impl X402 {
             requirements.fee_payer = Some(true);
             requirements.fee_payer_key = Some(key.clone());
         }
-        requirements.transaction_versions = crate::core::tx::advertised(&self.accepted_versions);
+        requirements.transaction_versions = self
+            .advertised_versions
+            .clone()
+            .or_else(|| crate::core::tx::advertised(&self.accepted_versions));
         // Stable settlement memo (`extra.memo`): the client stamps it on the
         // transfer and the verifier requires an exact match. Without it the
         // client uses a random nonce.
@@ -774,13 +802,19 @@ impl X402 {
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        match crate::core::rpc::send_and_confirm_with_outcome(&self.rpc, &tx, prior) {
-            Ok(confirmed) => {
+        match crate::core::rpc::send_and_confirm_settlement(&self.rpc, &tx, prior) {
+            Ok(crate::core::rpc::Settled::Confirmed(confirmed)) => {
                 if ledger.confirm(&signature).await.map_err(store_err)? {
                     Ok(confirmed.to_string())
                 } else {
                     Err(Error::SignatureConsumed)
                 }
+            }
+            // Landed before this server ever sent it: the payment was settled
+            // elsewhere (another server or a lost record) and is consumed.
+            Ok(crate::core::rpc::Settled::AlreadyLanded(_)) => {
+                ledger.confirm(&signature).await.map_err(store_err)?;
+                Err(Error::SignatureConsumed)
             }
             Err(
                 failure @ (BroadcastFailure::NotLanded(_) | BroadcastFailure::FailedOnChain(_)),
@@ -820,9 +854,7 @@ impl X402 {
         if inserted {
             Ok(())
         } else {
-            Err(Error::Other(
-                "Payment signature already consumed".to_string(),
-            ))
+            Err(Error::SignatureConsumed)
         }
     }
 
@@ -2432,7 +2464,8 @@ mod tests {
 
         assert_eq!(verify_and_settle(&x402, &header).await.unwrap(), signature);
         let replay = verify_and_settle(&x402, &header).await.unwrap_err();
-        assert!(replay.to_string().contains("already consumed"), "{replay}");
+        // Typed, so servers report the canonical signature_consumed code.
+        assert!(matches!(replay, Error::SignatureConsumed), "{replay:?}");
 
         // A different payment is unaffected by the consumed one.
         let other = solana_signature::Signature::from([4u8; 64]).to_string();
@@ -2737,6 +2770,48 @@ mod tests {
             settle(unhealthy).await.unwrap_err(),
             Error::SignatureConsumed
         ));
+    }
+
+    /// A transaction another server already landed (each holding its own
+    /// ledger): the first broadcast here is refused at preflight and the
+    /// signature has a successful status, so the payment is consumed rather
+    /// than served a second time. Positive control: the same transaction
+    /// accepted for broadcast and landed settles.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transaction_landed_elsewhere_is_consumed_not_served() {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let sponsor = memory_signer(9);
+        let mut cfg = config();
+        cfg.fee_payer_key = Some(sponsor.pubkey().to_string());
+        let send = Arc::new(AtomicU8::new(1));
+        let status = Arc::new(AtomicU8::new(1));
+        let rpc = || {
+            stub_rpc(
+                send.clone(),
+                status.clone(),
+                Arc::new(AtomicBool::new(true)),
+            )
+        };
+        let x402 = with_rpc(X402::new(cfg.clone()).unwrap(), rpc().await);
+        let requirements = x402
+            .exact_requirements("0.01", ExactOptions::default())
+            .unwrap();
+        let tx = exact_transaction(&requirements, &test_client(), &sponsor.pubkey());
+        let err = x402
+            .settle_exact(
+                VerifiedExactPayment::Transaction(tx.clone()),
+                sponsor.as_ref(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "{err:?}");
+
+        send.store(0, Ordering::SeqCst);
+        let fresh = with_rpc(X402::new(cfg).unwrap(), rpc().await);
+        fresh
+            .settle_exact(VerifiedExactPayment::Transaction(tx), sponsor.as_ref())
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3205,6 +3280,43 @@ mod tests {
             matches!(matched, Ok(VerifiedExactPayment::Transaction(_))),
             "{matched:?}"
         );
+    }
+
+    /// §1.5: the server copies the facilitator's transactionVersions into
+    /// the offer unchanged, so a credential echoing `[0]` or `[1, 0, 1]`
+    /// matches the route (the default `TxV1Mode` advertises nothing or
+    /// `[0, 1]`, and either echo would mismatch).
+    #[tokio::test]
+    async fn facilitator_transaction_versions_are_advertised_verbatim() {
+        for versions in [
+            vec![TxVersion::V0],
+            vec![TxVersion::V1, TxVersion::V0, TxVersion::V1],
+        ] {
+            let x402 = X402::new(config())
+                .unwrap()
+                .with_transaction_versions(versions.clone())
+                .unwrap();
+            let requirements = x402
+                .exact_requirements("0.01", ExactOptions::default())
+                .unwrap();
+            let accepted = requirements.to_accepted_value();
+            assert_eq!(
+                accepted["extra"]["transactionVersions"],
+                serde_json::to_value(&versions).unwrap()
+            );
+            let header = header_with_accepted(&requirements, accepted);
+            let verified = x402
+                .verify_payment_signature_for_requirements(&header, &requirements)
+                .await;
+            assert!(
+                matches!(verified, Ok(VerifiedExactPayment::Transaction(_))),
+                "{versions:?}: {verified:?}"
+            );
+        }
+        assert!(X402::new(config())
+            .unwrap()
+            .with_transaction_versions(vec![])
+            .is_err());
     }
 
     // Control: a hint the credential does echo must equal the route's.

@@ -81,6 +81,7 @@ function signatureCredential(
         feePayer?: boolean;
         feePayerKey?: string;
         splits?: Array<{ recipient: string; amount: string; ataCreationRequired?: boolean; memo?: string }>;
+        transactionVersions?: Array<0 | 1>;
     } = {},
 ) {
     const curr = overrides.currency ?? 'sol';
@@ -104,6 +105,7 @@ function signatureCredential(
                     ...(overrides.feePayer !== undefined ? { feePayer: overrides.feePayer } : {}),
                     ...(overrides.feePayerKey ? { feePayerKey: overrides.feePayerKey } : {}),
                     ...(overrides.splits ? { splits: overrides.splits } : {}),
+                    ...(overrides.transactionVersions ? { transactionVersions: overrides.transactionVersions } : {}),
                 },
             },
         },
@@ -123,6 +125,7 @@ function transactionCredential(
         feePayer?: boolean;
         feePayerKey?: string;
         splits?: Array<{ recipient: string; amount: string; ataCreationRequired?: boolean; memo?: string }>;
+        transactionVersions?: Array<0 | 1>;
     } = {},
 ) {
     const curr = overrides.currency ?? 'sol';
@@ -146,6 +149,7 @@ function transactionCredential(
                     ...(overrides.feePayer !== undefined ? { feePayer: overrides.feePayer } : {}),
                     ...(overrides.feePayerKey ? { feePayerKey: overrides.feePayerKey } : {}),
                     ...(overrides.splits ? { splits: overrides.splits } : {}),
+                    ...(overrides.transactionVersions ? { transactionVersions: overrides.transactionVersions } : {}),
                 },
             },
         },
@@ -1723,7 +1727,7 @@ test('signature: throws on RPC error response', async () => {
 
 // ── Reported transaction version (type="signature") ──
 
-test('signature: settles a legacy transaction reported by the RPC like a version-0 one', async () => {
+test('signature: rejects a legacy transaction reported by the RPC', async () => {
     const method = charge({
         recipient: RECIPIENT,
         network: 'devnet',
@@ -1731,14 +1735,32 @@ test('signature: settles a legacy transaction reported by the RPC like a version
         store,
     });
 
-    // A pre-cutover client's landed legacy transaction is policed as
-    // version 0 and settles.
+    // mpp-specs-txv1 Transaction Versions: servers "MUST reject a legacy
+    // message", whatever versions they accept.
     globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version: 'legacy' });
-    const receipt = await method.verify({
-        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
-        request: {} as any,
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', transactionVersions: [0, 1] }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('legacy transaction version is not accepted; accepted versions: 0, 1');
+});
+
+test('signature: rejects a version 1 transaction the challenge does not advertise', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
     });
-    expect(receipt.status).toBe('success');
+
+    globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version: 1 });
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('transaction version 1 is not accepted; accepted versions: 0');
 });
 
 test('signature: rejects when the RPC does not report the transaction version', async () => {
@@ -1789,7 +1811,7 @@ test.each([0, 1])('signature: accepts a version %i transaction reported by the R
     globalThis.fetch = async () => rpcSuccess({ ...solTransferTx(RECIPIENT, 1000000), version });
 
     const receipt = await method.verify({
-        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+        credential: signatureCredential(SIGNATURE, { amount: '1000000', transactionVersions: [0, 1] }),
         request: {} as any,
     });
 
@@ -1908,7 +1930,24 @@ test('pull: accepts valid native SOL transfer', async () => {
     expect(receipt.reference).toBe(transactionSignatureFromBase64(transaction));
 });
 
-test('pull: settles when the RPC reports the broadcast transaction as legacy', async () => {
+test('pull: broadcasts with preflight at confirmed commitment', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const mockFetch = globalThis.fetch;
+    const sendOptions: unknown[] = [];
+    globalThis.fetch = async (input, init) => {
+        const body = JSON.parse(init?.body as string);
+        if (body.method === 'sendTransaction') sendOptions.push(body.params[1]);
+        return await mockFetch(input, init);
+    };
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    await method.verify({ credential: transactionCredential(transaction, { amount: '1000000' }), request: {} as any });
+
+    expect(sendOptions).toEqual([{ encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }]);
+});
+
+test('pull: rejects when the RPC reports the broadcast transaction as legacy', async () => {
     const method = charge({
         recipient: RECIPIENT,
         network: 'devnet',
@@ -1919,11 +1958,12 @@ test('pull: settles when the RPC reports the broadcast transaction as legacy', a
     mockServerBroadcastFetch({ ...solTransferTx(RECIPIENT, 1000000), version: 'legacy' });
     const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
 
-    const receipt = await method.verify({
-        credential: transactionCredential(transaction, { amount: '1000000' }),
-        request: {} as any,
-    });
-    expect(receipt.status).toBe('success');
+    await expect(
+        method.verify({
+            credential: transactionCredential(transaction, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow('legacy transaction version is not accepted; accepted versions: 0');
 });
 
 test('pull: identical challenge-bound retry rejects a completed payment', async () => {
@@ -3906,7 +3946,7 @@ test('#25 client-paid compute-unit price above the tight cap still passes (gener
     ).resolves.toBeUndefined();
 });
 
-test('verifyChargeTransaction accepts a legacy (unversioned) transaction under the version-0 rules', async () => {
+test('verifyChargeTransaction rejects a legacy (unversioned) transaction', async () => {
     const authority = await generateKeyPairSigner();
     const txMessage = pipe(
         createTransactionMessage({ version: 'legacy' }),
@@ -3919,14 +3959,16 @@ test('verifyChargeTransaction accepts a legacy (unversioned) transaction under t
             ),
     );
     const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
-    await expect(
-        verifyChargeTransaction(tx, {
-            amount: '1000000',
-            currency: 'sol',
-            methodDetails: { network: 'devnet' },
-            recipient: RECIPIENT,
-        }),
-    ).resolves.toBeUndefined();
+    // mpp-specs-txv1: "servers MUST NOT advertise \"legacy\" and MUST reject a
+    // legacy message", under the default [0] and an explicit [0, 1] alike.
+    for (const methodDetails of [
+        { network: 'devnet' },
+        { network: 'devnet', transactionVersions: [0, 1] as Array<0 | 1> },
+    ]) {
+        await expect(
+            verifyChargeTransaction(tx, { amount: '1000000', currency: 'sol', methodDetails, recipient: RECIPIENT }),
+        ).rejects.toThrow(/^legacy transaction version is not accepted/);
+    }
 });
 
 // RULINGS SIG1: the verification step itself refuses a client signature
@@ -4030,4 +4072,138 @@ test('#3 interpretPostTimeoutStatus: not found returns timeout', () => {
 test('#3 interpretPostTimeoutStatus: rpc error returns timeout with detail', () => {
     const outcome = interpretPostTimeoutStatus(null, 'connection refused');
     expect(outcome).toEqual({ detail: 'connection refused', kind: 'timeout' });
+});
+
+// draft-solana-charge-00 §Transaction payload: "The transaction MUST be a valid
+// Solana versioned transaction that does not exceed the 1232-byte transaction
+// size limit."
+const LARGE_MEMO_REQUEST = {
+    amount: '1000000',
+    currency: 'sol',
+    externalId: 'a'.repeat(560),
+    methodDetails: {
+        network: 'devnet',
+        recentBlockhash: BLOCKHASH,
+        splits: [
+            { amount: '1000', memo: 'b'.repeat(560), recipient: '3pF8Kg2aHbNvJkLMwEqR7YtDxZ5sGhJn4UV6mWcXrT9A' },
+            { amount: '1000', memo: 'c'.repeat(560), recipient: '11111111111111111111111111111112' },
+        ],
+    },
+    recipient: RECIPIENT,
+};
+
+test('verifyChargeTransaction rejects a version-0 transaction over the 1232-byte limit', async () => {
+    const authority = await generateKeyPairSigner();
+    const memo = (text: string): Instruction => ({
+        accounts: [],
+        data: new TextEncoder().encode(text),
+        programAddress: address('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+    });
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [
+                    getTransferSolInstruction({
+                        source: authority,
+                        destination: address(RECIPIENT),
+                        amount: 1_000_000n,
+                    }),
+                    memo('a'.repeat(560)),
+                    memo('b'.repeat(560)),
+                    memo('c'.repeat(560)),
+                ],
+                msg,
+            ),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+    expect(getBase64Codec().encode(tx).byteLength).toBeGreaterThan(1232);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', transactionVersions: [0, 1] },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/^version 0 transaction is \d+ bytes, over the 1232-byte limit/);
+});
+
+test('buildChargeTransaction refuses a version-0 build over the 1232-byte limit', async () => {
+    const signer = await generateKeyPairSigner();
+    await expect(buildChargeTransaction({ request: LARGE_MEMO_REQUEST, signer })).rejects.toThrow(
+        /^version 0 transaction is \d+ bytes, over the 1232-byte limit/,
+    );
+});
+
+test('a charge too large for version 0 fits version 1 when the challenge advertises it', async () => {
+    const signer = await generateKeyPairSigner();
+    const request = {
+        ...LARGE_MEMO_REQUEST,
+        methodDetails: { ...LARGE_MEMO_REQUEST.methodDetails, transactionVersions: [0, 1] as Array<0 | 1> },
+    };
+    const tx = await buildChargeTransaction({ request, signer });
+    const size = getBase64Codec().encode(tx).byteLength;
+    expect(size).toBeGreaterThan(1232);
+    expect(size).toBeLessThanOrEqual(4096);
+    await expect(verifyChargeTransaction(tx, request)).resolves.toBeUndefined();
+    // The same version-1 build against a version-0-only challenge.
+    await expect(verifyChargeTransaction(tx, LARGE_MEMO_REQUEST)).rejects.toThrow(
+        'transaction version 1 is not accepted; accepted versions: 0',
+    );
+});
+
+test('verifyChargeTransaction accepts a transaction within the 1232-byte limit', async () => {
+    const signer = await generateKeyPairSigner();
+    const request = {
+        amount: '1000000',
+        currency: 'sol',
+        externalId: 'a'.repeat(400),
+        methodDetails: { network: 'devnet', recentBlockhash: BLOCKHASH },
+        recipient: RECIPIENT,
+    };
+    const tx = await buildChargeTransaction({ request, signer });
+    expect(getBase64Codec().encode(tx).byteLength).toBeLessThanOrEqual(1232);
+    await expect(verifyChargeTransaction(tx, request)).resolves.toBeUndefined();
+});
+
+// An ATA Create (non-idempotent) instruction carries empty data, which the kit
+// decoder omits; the policy check must reject it, not crash with a TypeError.
+test('verifyChargeTransaction rejects a non-idempotent (empty-data) ATA creation as a policy violation', async () => {
+    const payer = await generateKeyPairSigner();
+    const split = '3pF8Kg2aHbNvJkLMwEqR7YtDxZ5sGhJn4UV6mWcXrT9A';
+    const mint = address(USDC_MINT);
+    const tokenProgram = address(TOKEN_PROGRAM);
+    const ataOf = async (owner: string) =>
+        (await findAssociatedTokenPda({ mint, owner: address(owner), tokenProgram }))[0];
+    const sourceAta = await ataOf(payer.address);
+    const transfer = async (owner: string, amount: bigint) =>
+        getTransferCheckedInstruction(
+            { amount, authority: payer, decimals: 6, destination: await ataOf(owner), mint, source: sourceAta },
+            { programAddress: tokenProgram },
+        );
+    const idempotent = await createAssociatedTokenAccountIdempotent(payer.address, address(split), mint, tokenProgram);
+    const createNonIdempotent: Instruction = { ...idempotent, data: new Uint8Array() };
+    const instructions = [await transfer(RECIPIENT, 750n), createNonIdempotent, await transfer(split, 250n)];
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(payer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(message));
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000',
+            currency: USDC_MINT,
+            methodDetails: {
+                decimals: 6,
+                network: 'devnet',
+                splits: [{ amount: '250', ataCreationRequired: true, recipient: split }],
+                tokenProgram: TOKEN_PROGRAM,
+            },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Only idempotent ATA creation is allowed/);
 });

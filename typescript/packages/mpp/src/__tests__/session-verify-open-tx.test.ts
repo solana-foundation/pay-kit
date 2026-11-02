@@ -6,8 +6,10 @@
  * verifyOpenTx API, plus coverage for the verifier checks that landed with
  * it:
  *
- *   - verifyOpenTx accepts both legacy and v0 transaction encodings and
- *     rejects malformed wire bytes.
+ *   - verifyOpenTx admits the transaction version first: version 0 by
+ *     default, version 1 when `transactionVersions` lists it (with the
+ *     version-1 header budget caps), never legacy; it rejects malformed wire
+ *     bytes.
  *   - verifyOpenTx rejects v0 opens carrying address-lookup tables — every
  *     account it inspects must be static.
  *   - verifyOpenTx binds the open instruction's accounts (payee, mint,
@@ -30,9 +32,13 @@ import {
     getCompiledTransactionMessageEncoder,
     getTransactionDecoder,
     getTransactionEncoder,
+    type KeyPairSigner,
     type Signature,
 } from '@solana/kit';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { stubClusterRpc } from './cluster-rpc-stub.js';
+import { reencodeAsV1, V1_LOADED_ACCOUNTS_DATA_SIZE, VALID_SESSION_V1_CONFIG } from './reencode-v1.js';
 
 import { buildOpenPaymentChannelTransaction } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
@@ -47,6 +53,15 @@ import {
     waitForSignatureConfirmation,
 } from '../server/session/on-chain.js';
 import type { OpenPayload } from '../shared/session-types.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+beforeEach(() => {
+    stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -68,6 +83,7 @@ function challengeRequest(recipient: string, methodDetails: Record<string, unkno
         suggestedDeposit: '5000',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             gracePeriodSeconds: 900,
             network: 'devnet',
             recentBlockhash: CHALLENGED_BLOCKHASH,
@@ -122,17 +138,18 @@ async function verifiedOpenFixture() {
     return { expected, open, openPayload, payee, payer, sessionSigner };
 }
 
-/** Re-encode a v0 wire transaction as a legacy wire transaction. */
-function reencodeAsLegacy(transactionBase64: string): string {
+/** Re-encode a v0 wire transaction as a legacy wire transaction, re-signed by `signer`. */
+async function reencodeAsLegacy(transactionBase64: string, signer: KeyPairSigner): Promise<string> {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
     const legacyMessageBytes = getCompiledTransactionMessageEncoder().encode({
         ...compiled,
         version: 'legacy',
     } as never);
+    const [signature] = await signer.signMessages([{ content: legacyMessageBytes as Uint8Array } as never]);
     const legacyTx = getTransactionEncoder().encode({
         messageBytes: legacyMessageBytes as never,
-        signatures: tx.signatures,
+        signatures: { ...tx.signatures, ...signature } as never,
     });
     return getBase64Codec().decode(legacyTx);
 }
@@ -169,6 +186,93 @@ function stripSignature(transactionBase64: string, signer: string): string {
     return getBase64Codec().decode(stripped);
 }
 
+// ── verifyOpenTx: transaction versions ──────────────────────────────────
+
+describe('verifyOpenTx transaction versions', () => {
+    test('rejects a version-1 open when the server accepts only the default [0]', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG);
+        for (const transactionVersions of [undefined, [0] as const]) {
+            await expect(
+                verifyOpenTx({
+                    expected: { ...expected, transactionVersions },
+                    openPayload: { ...openPayload, transaction: v1 },
+                }),
+            ).rejects.toThrow('transaction version 1 is not accepted; accepted versions: 0');
+        }
+    });
+
+    test('accepts a version-1 open when transactionVersions lists 1', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG);
+        const verified = await verifyOpenTx({
+            expected: { ...expected, transactionVersions: [0, 1] },
+            openPayload: { ...openPayload, transaction: v1 },
+        });
+        expect(verified.channelId).toBe(open.channelId);
+        expect(verified.deposit).toBe(5_000n);
+    });
+
+    test('rejects a version-0 open when the server accepts only version 1', async () => {
+        const { expected, openPayload } = await verifiedOpenFixture();
+        await expect(
+            verifyOpenTx({ expected: { ...expected, transactionVersions: [1] }, openPayload }),
+        ).rejects.toThrow('transaction version 0 is not accepted; accepted versions: 1');
+    });
+
+    test('holds the version-1 header budget to the session caps', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const accepting = { ...expected, transactionVersions: [0, 1] as const };
+        const attempt = async (config: Parameters<typeof reencodeAsV1>[2]) =>
+            await verifyOpenTx({
+                expected: accepting,
+                openPayload: { ...openPayload, transaction: await reencodeAsV1(open.transaction, payer, config) },
+            });
+        const { computeUnitLimit: _limit, ...withoutLimit } = VALID_SESSION_V1_CONFIG;
+        await expect(attempt(withoutLimit)).rejects.toThrow('version 1 transaction config must set computeUnitLimit');
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, computeUnitLimit: 200_001 })).rejects.toThrow(
+            'compute unit limit 200001 exceeds maximum 200000',
+        );
+        // 1_000_001 lamports over 200_000 units is a 5_000_005 micro-lamport price, over the 5_000_000 cap.
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, priorityFeeLamports: 1_000_001n })).rejects.toThrow(
+            /compute unit price \d+ exceeds maximum 5000000/,
+        );
+        await expect(
+            attempt({ ...VALID_SESSION_V1_CONFIG, loadedAccountsDataSizeLimit: V1_LOADED_ACCOUNTS_DATA_SIZE - 1 }),
+        ).rejects.toThrow('version 1 loaded accounts data size limit must be 67108864');
+        await expect(attempt({ ...VALID_SESSION_V1_CONFIG, priorityFeeLamports: 1_000_000n })).resolves.toBeDefined();
+    });
+
+    test('applies the sponsored price cap to a version-1 open the server pays for', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        // Judged as sponsored (the expected fee payer is not the channel payer):
+        // 2_001 lamports over 200_000 units is a 10_005 micro-lamport price, over the 10_000 cap.
+        const sponsored = { ...expected, feePayer: open.payee, transactionVersions: [0, 1] as const };
+        const v1 = await reencodeAsV1(open.transaction, payer, {
+            ...VALID_SESSION_V1_CONFIG,
+            priorityFeeLamports: 2_001n,
+        });
+        await expect(
+            verifyOpenTx({ expected: sponsored, openPayload: { ...openPayload, transaction: v1 } }),
+        ).rejects.toThrow(/compute unit price \d+ exceeds maximum 10000/);
+    });
+
+    test('rejects ComputeBudget instructions in a version-1 open', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        // SetComputeUnitPrice(1): the budget belongs in the version-1 header.
+        const setPrice = new Uint8Array([3, 1, 0, 0, 0, 0, 0, 0, 0]);
+        const v1 = await reencodeAsV1(open.transaction, payer, VALID_SESSION_V1_CONFIG, {
+            computeBudgetInstruction: setPrice,
+        });
+        await expect(
+            verifyOpenTx({
+                expected: { ...expected, transactionVersions: [0, 1] },
+                openPayload: { ...openPayload, transaction: v1 },
+            }),
+        ).rejects.toThrow('version 1 transactions must not contain ComputeBudget instructions');
+    });
+});
+
 // ── verifyOpenTx: transaction shape ─────────────────────────────────────
 
 describe('verifyOpenTx transaction shape', () => {
@@ -183,18 +287,19 @@ describe('verifyOpenTx transaction shape', () => {
         expect(verified.salt).toBe(7n);
     });
 
-    test('accepts a legacy-encoded open transaction (pre-cutover client wire format)', async () => {
-        const { expected, open, openPayload } = await verifiedOpenFixture();
-        const legacyTransaction = reencodeAsLegacy(open.transaction);
+    test('rejects a legacy-encoded open transaction, whatever the accepted set', async () => {
+        const { expected, open, openPayload, payer } = await verifiedOpenFixture();
+        const legacyTransaction = await reencodeAsLegacy(open.transaction, payer);
         expect(legacyTransaction).not.toBe(open.transaction);
 
-        const verified = await verifyOpenTx({
-            expected,
-            openPayload: { ...openPayload, transaction: legacyTransaction },
-        });
-        expect(verified.channelId).toBe(open.channelId);
-        expect(verified.deposit).toBe(5_000n);
-        expect(verified.salt).toBe(7n);
+        for (const transactionVersions of [undefined, [0, 1] as const]) {
+            await expect(
+                verifyOpenTx({
+                    expected: { ...expected, transactionVersions },
+                    openPayload: { ...openPayload, transaction: legacyTransaction },
+                }),
+            ).rejects.toThrow(/legacy transaction version is not accepted/);
+        }
     });
 
     test('rejects a v0 open carrying an address-lookup table', async () => {
@@ -203,7 +308,7 @@ describe('verifyOpenTx transaction shape', () => {
 
         await expect(
             verifyOpenTx({ expected, openPayload: { ...openPayload, transaction: withLookup } }),
-        ).rejects.toThrow(/address-lookup tables are not permitted/);
+        ).rejects.toThrow(/address lookup tables are not supported/);
     });
 
     test('rejects a payload without a transaction', async () => {
@@ -370,6 +475,133 @@ describe('verifyOpenTx Compute Budget policy', () => {
             /unsupported compute budget instruction/,
         );
         await expect(withBudget([{ accounts: [0], data: unitPrice(1n) }])).rejects.toThrow(/must not have accounts/);
+    });
+});
+
+// ── verifyOpenTx: instruction allowlist ────────────────────────────────
+
+describe('verifyOpenTx instruction allowlist', () => {
+    /**
+     * Sponsored open with extra payment-channels instructions appended after
+     * the real open, re-signed by the channel payer. The operator's fee-payer
+     * slot stays empty so the server would co-sign it.
+     */
+    async function sponsoredOpenWithExtra(extra: readonly Uint8Array[]) {
+        const { payee, payer, sessionSigner } = await clientOpenFixture();
+        const operator = await generateKeyPairSigner();
+        const request = challengeRequest(payee.address, {
+            feePayer: true,
+            feePayerKey: operator.address,
+        }) as unknown as SessionRequest;
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: sessionSigner.address,
+            request,
+            salt: 7n,
+            signer: payer,
+        });
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(open.transaction));
+        const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            instructions: readonly { accountIndices?: readonly number[]; programAddressIndex: number }[];
+            staticAccounts: readonly string[];
+        };
+        const programIndex = compiled.staticAccounts.indexOf(PAYMENT_CHANNELS_PROGRAM_ID.toString());
+        expect(programIndex).toBeGreaterThan(0);
+        const openIx = compiled.instructions.find(ix => ix.programAddressIndex === programIndex);
+        const messageBytes = getCompiledTransactionMessageEncoder().encode({
+            ...compiled,
+            instructions: [
+                ...compiled.instructions,
+                ...extra.map(data => ({
+                    accountIndices: openIx?.accountIndices ?? [],
+                    data,
+                    programAddressIndex: programIndex,
+                })),
+            ],
+        } as never);
+        const [payerSignature] = await payer.signMessages([{ content: messageBytes as Uint8Array } as never]);
+        const signed = getTransactionEncoder().encode({
+            messageBytes: messageBytes as never,
+            signatures: { ...tx.signatures, ...payerSignature } as never,
+        });
+        const transaction = getBase64Codec().decode(signed);
+        const openPayload: OpenPayload = {
+            authorizedSigner: sessionSigner.address,
+            channelId: open.channelId,
+            depositAmount: open.deposit,
+            gracePeriodSeconds: open.gracePeriod,
+            mint: open.mint,
+            openSlot: open.openSlot,
+            payee: open.payee,
+            payer: open.payer,
+            salt: open.salt,
+            transaction,
+        };
+        const expected: VerifyOpenTxExpected = {
+            authorizedSigner: sessionSigner.address,
+            channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            currency: 'USDC',
+            feePayer: operator.address,
+            network: 'devnet',
+            openSlot: CHALLENGED_SLOT,
+            recentBlockhash: CHALLENGED_BLOCKHASH,
+            recipient: open.payee,
+            rentPayer: operator.address,
+            splits: [],
+            tokenProgram: TOKEN_PROGRAM,
+        };
+        let operatorSignCalls = 0;
+        const payerSigner = {
+            address: operator.address,
+            signTransactions: async (transactions: readonly unknown[]) => {
+                operatorSignCalls += 1;
+                return await operator.signTransactions(transactions as never);
+            },
+        };
+        return { expected, openPayload, operatorSignCalls: () => operatorSignCalls, payerSigner };
+    }
+
+    test('the sponsored fixture without extras verifies', async () => {
+        const { expected, openPayload } = await sponsoredOpenWithExtra([]);
+        await expect(verifyOpenTx({ expected, openPayload })).resolves.toBeDefined();
+    });
+
+    test.each([
+        ['a different payment-channels discriminator (topUp)', new Uint8Array([2, 0, 0, 0, 0, 0, 0, 0, 0])],
+        ['empty instruction data', new Uint8Array([])],
+        ['arbitrary data', new Uint8Array([0xff, 1, 2, 3])],
+    ])('refuses an open carrying %s before co-signing', async (_label, data) => {
+        const { expected, openPayload, operatorSignCalls, payerSigner } = await sponsoredOpenWithExtra([data]);
+        await expect(verifyOpenTx({ expected, openPayload })).rejects.toThrow(
+            /open transaction contains an unexpected instruction/,
+        );
+        const rpc = submitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+        await expect(
+            submitOpenTx({
+                confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+                expected,
+                openPayload,
+                payerSigner: payerSigner as never,
+                rpc: rpc as never,
+            }),
+        ).rejects.toThrow(/open transaction contains an unexpected instruction/);
+        expect(operatorSignCalls()).toBe(0);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('refuses an open carrying a second open instruction', async () => {
+        const { openPayload: base } = await sponsoredOpenWithExtra([]);
+        const tx = getTransactionDecoder().decode(getBase64Codec().encode(base.transaction!));
+        const compiled = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as unknown as {
+            instructions: readonly { data?: Uint8Array; programAddressIndex: number }[];
+            staticAccounts: readonly string[];
+        };
+        const programIndex = compiled.staticAccounts.indexOf(PAYMENT_CHANNELS_PROGRAM_ID.toString());
+        const openData = compiled.instructions.find(ix => ix.programAddressIndex === programIndex)?.data;
+        expect(openData?.[0]).toBe(1);
+        const { expected, openPayload } = await sponsoredOpenWithExtra([openData!]);
+        await expect(verifyOpenTx({ expected, openPayload })).rejects.toThrow(
+            /open transaction contains an unexpected instruction/,
+        );
     });
 });
 

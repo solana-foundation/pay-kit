@@ -41,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or_else(|| "server did not return a supported x402 upto challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
-    let expires_at = now_unix() + 3600;
+    // maxTimeoutSeconds is the completion window and the basis for
+    // expiresAt; a later deadline is refused by the server.
+    let expires_at = now_unix()
+        .saturating_add(i64::try_from(requirements.max_timeout_seconds).unwrap_or(i64::MAX));
     let nonce = format!("upto-{}", now_unix());
     // `openSlot` (like `recentBlockhash`) normally rides in the challenge
     // requirements; the RPC client only fills in whichever hint is absent.

@@ -24,12 +24,11 @@ Mirrors the Rust spine (``server/upto.rs``) and the Go reference
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
-import struct
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -40,6 +39,7 @@ from spl.token.instructions import (  # type: ignore[import-untyped]
     create_idempotent_associated_token_account,
 )
 
+from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import (
@@ -48,30 +48,34 @@ from solana_pay_kit._paycore.paymentchannels import (
     build_distribute_instruction,
     build_settle_and_seal_instructions,
     decode_channel_account,
+    distribution_hash,
+    find_associated_token_address,
     treasury_owner,
     voucher_message_bytes,
 )
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.transaction import (
-    SignatureCheckError,
-    build_partially_signed_v0_transaction,
-    verify_required_signatures,
-)
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
+from solana_pay_kit.protocols.x402.upto.open import (
+    DEFAULT_UPTO_MAX_TIMEOUT_SECONDS,
+    PreparedUptoOpen,
+    UptoRoute,
+    cosign_upto_open,
+    prepare_upto_open,
+    route_memo,
+    upto_requirements,
+    verify_upto_open_preflight,
+)
 from solana_pay_kit.protocols.x402.upto.types import (
     DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS,
-    UPTO_SCHEME,
-    UptoPayload,
     UptoRequirements,
     UptoSettlementResponse,
 )
 from solana_pay_kit.protocols.x402.upto.verify import (
+    DEFAULT_MAX_CHANNEL_LIFETIME_SECONDS,
     assert_settlement_within_ceiling,
-    parse_base_units,
-    validate_upto_open_instruction,
-    verify_upto_payload,
 )
 
 if TYPE_CHECKING:
@@ -80,7 +84,17 @@ if TYPE_CHECKING:
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import Gate
 
-__all__ = ["X402Upto", "VerifiedUptoOpen"]
+__all__ = [
+    "PreparedUptoOpen",
+    "UptoRoute",
+    "VerifiedUptoOpen",
+    "X402Upto",
+    "cosign_upto_open",
+    "prepare_upto_open",
+    "route_memo",
+    "upto_requirements",
+    "verify_upto_open_preflight",
+]
 
 # Settlement receipt headers (mirror the exact adapter + Go x402 constants).
 _RESPONSE_HEADER = "payment-response"
@@ -89,9 +103,6 @@ _CHALLENGE_HEADER = "payment-required"
 
 # ChannelStatus::Open discriminant (generated types.channelStatus.Open = 0).
 _CHANNEL_STATUS_OPEN = 0
-
-# Default authorization window (Go DefaultMaxTimeoutSeconds).
-_DEFAULT_MAX_TIMEOUT_SECONDS = 6 * 50  # 300
 
 
 def _empty_distribution() -> list[Distribution]:
@@ -141,6 +152,11 @@ class X402Upto:
         channel_program: str | None = None,
         recent_blockhash_provider: Callable[[], str | None] | None = None,
         recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None,
+        receiver_authorizer_signer: SolanaSigner | None = None,
+        max_timeout_seconds: int = DEFAULT_UPTO_MAX_TIMEOUT_SECONDS,
+        max_channel_lifetime_seconds: int = DEFAULT_MAX_CHANNEL_LIFETIME_SECONDS,
+        withdraw_delay: int = DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS,
+        transaction_versions: Sequence[int] | None = None,
     ) -> None:
         """Build an engine bound to ``config``; raise for delegated mode.
 
@@ -151,12 +167,22 @@ class X402Upto:
         pre-fetch the blockhash. ``recentSlot`` is server-provided in the
         challenge: the client derives the channel PDA from it and never
         fetches the slot itself.
+
+        ``receiver_authorizer_signer`` signs settlement vouchers (the channel
+        ``authorized_signer``); it defaults to the fee payer (self-facilitated).
+        ``max_channel_lifetime_seconds`` is the facilitator's
+        ``maxChannelLifetimeSecs`` and ``transaction_versions`` the open message
+        versions accepted and advertised (``None`` accepts version 0 only).
         """
         if config.x402.is_delegated():
             raise NotImplementedError(
                 "solana_pay_kit: x402 delegated mode is not yet implemented; "
                 "leave X402Config.facilitator_url None for self-hosted"
             )
+        if max_channel_lifetime_seconds <= 0:
+            raise ConfigurationError("solana_pay_kit: x402 upto maxChannelLifetimeSecs must be positive")
+        if withdraw_delay <= 0:
+            raise ConfigurationError("solana_pay_kit: x402 upto withdrawDelay must be greater than zero")
         self._config = config
         # The channel program defaults to the canonical deployment; the harness
         # overrides it via the PAYMENT_CHANNELS_PROGRAM_ID env (matching Go/Rust).
@@ -165,6 +191,13 @@ class X402Upto:
         )
         self._recent_blockhash_provider = recent_blockhash_provider
         self._recent_state_provider = recent_state_provider
+        self._receiver_authorizer_signer = receiver_authorizer_signer
+        self._max_timeout_seconds = max_timeout_seconds
+        self._max_channel_lifetime_seconds = max_channel_lifetime_seconds
+        self._withdraw_delay = withdraw_delay
+        self._accepted_versions = txv1.accepted_versions(
+            txv1.parse_transaction_versions(list(transaction_versions) if transaction_versions is not None else None)
+        )
         # Per-channel in-flight reservation (verify_open -> settle_actual), guarded
         # so it is safe even under a threaded server (Go uses a mutex here too);
         # do not rely on set() atomicity for the check-then-add.
@@ -173,10 +206,10 @@ class X402Upto:
 
     # -- public API ---------------------------------------------------------
 
-    def accepts_entry(self, gate: Gate, request: Any) -> UptoRequirements:
-        """Build the route-pinned ``upto`` requirement (the server's offer)."""
+    def route(self, gate: Gate, request: Any = None, *, route: str | None = None) -> UptoRoute:
+        """The route this engine offers for ``gate``; ``route`` (a canonical
+        request identity) binds it with :func:`route_memo`."""
         fee_payer = str(self._signer().pubkey)
-        receiver_authorizer = fee_payer
         coin = gate.amount.primary_coin()
         coin_value = coin.value if coin is not None else self._config.stablecoins[0].value
         label = self._config.network.mints_label()
@@ -186,8 +219,6 @@ class X402Upto:
                 "solana_pay_kit: x402 upto requires an SPL token (not native SOL); "
                 f"could not resolve mint for {coin_value!r}"
             )
-        token_program = token_program_for(coin_value, label)
-        pay_to = gate.pay_to or self._config.effective_recipient()
         try:
             amount = parse_units(gate.total().amount_string(), 6)
         except ValueError as exc:
@@ -195,21 +226,30 @@ class X402Upto:
                 f"solana_pay_kit: x402 upto price {gate.total().amount_string()!r} "
                 "exceeds 6-decimal (micro-unit) precision"
             ) from exc
-        requirements: UptoRequirements = {
-            "scheme": UPTO_SCHEME,
-            "network": self._config.network.caip2(),
-            "amount": str(amount),
-            "asset": asset,
-            "payTo": pay_to,
-            "maxTimeoutSeconds": _DEFAULT_MAX_TIMEOUT_SECONDS,
-            "extra": {
-                "decimals": 6,
-                "tokenProgram": token_program,
-                "feePayer": fee_payer,
-                "receiverAuthorizer": receiver_authorizer,
-                "withdrawDelay": DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS,
-            },
-        }
+        return UptoRoute(
+            network=self._config.network.caip2(),
+            amount=int(amount),
+            asset=asset,
+            token_program=token_program_for(coin_value, label),
+            pay_to=gate.pay_to or self._config.effective_recipient(),
+            fee_payer=fee_payer,
+            receiver_authorizer=self.receiver_authorizer(),
+            withdraw_delay=self._withdraw_delay,
+            max_timeout_seconds=self._max_timeout_seconds,
+            memo=route_memo(route) if route is not None else None,
+            transaction_versions=self._accepted_versions,
+            decimals=6,
+        )
+
+    def receiver_authorizer(self) -> str:
+        """The voucher signer key (base58): the configured receiver
+        authorizer, else the fee payer."""
+        signer = self._receiver_authorizer_signer or self._signer()
+        return str(signer.pubkey)
+
+    def accepts_entry(self, gate: Gate, request: Any, *, route: str | None = None) -> UptoRequirements:
+        """Build the route-pinned ``upto`` requirement (the server's offer)."""
+        requirements = upto_requirements(self.route(gate, request, route=route))
         blockhash, recent_slot = self._fetch_recent_state()
         if blockhash is not None:
             requirements["extra"]["recentBlockhash"] = blockhash
@@ -219,12 +259,12 @@ class X402Upto:
             requirements["extra"]["recentSlot"] = str(recent_slot)
         return requirements
 
-    def challenge_headers(self, gate: Gate, request: Any) -> dict[str, str]:
+    def challenge_headers(self, gate: Gate, request: Any, *, route: str | None = None) -> dict[str, str]:
         """Build the ``payment-required`` header (base64 JSON challenge)."""
         envelope = {
             "x402Version": X402_VERSION,
             "resource": {"type": "http", "url": _request_path(request)},
-            "accepts": [self.accepts_entry(gate, request)],
+            "accepts": [self.accepts_entry(gate, request, route=route)],
         }
         payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
         return {_CHALLENGE_HEADER: base64.b64encode(payload).decode("ascii")}
@@ -238,133 +278,90 @@ class X402Upto:
         body = base64.b64encode(json.dumps(settlement, separators=(",", ":")).encode("utf-8")).decode("ascii")
         return {_RESPONSE_HEADER: body, _SETTLEMENT_HEADER: settlement.get("transaction", "")}
 
-    async def verify_open(self, gate: Gate, request: Any) -> VerifiedUptoOpen:
+    async def verify_open(self, gate: Gate, request: Any, *, route: str | None = None) -> VerifiedUptoOpen:
         """Validate the credential, broadcast + confirm the channel ``open``, and
         bind the on-chain channel state. Reserves the channel until settlement.
-        """
-        import time
 
+        Every pre-broadcast check is :func:`prepare_upto_open` (Phase 3 steps
+        0 to 7 and the open acceptance policy); then settlement readiness
+        (step 8), the co-signature, the broadcast and the on-chain rebind.
+        """
         signer = self._signer()
         fee_payer = str(signer.pubkey)
-        receiver_authorizer = fee_payer
+        receiver_authorizer = self.receiver_authorizer()
 
         header = _payment_signature_header(request)
         if not header:
             raise InvalidProofError("solana_pay_kit: payment required", code="payment_required")
-        envelope = _decode_envelope(header)
-        # x402 v2 (specs/x402-specification-v2.md §5.2): the chosen
-        # PaymentRequirements live in `accepted`; `scheme` and `network` are
-        # required there. There is no envelope-level scheme/network.
-        accepted: dict[str, Any] = envelope.get("accepted") or {}
-        if accepted.get("scheme") != UPTO_SCHEME:
-            raise InvalidProofError(f"invalid payload type: {accepted.get('scheme')}", code="payment_invalid")
-
-        requirements = self.accepts_entry(gate, request)
-        payload = _parse_payload(envelope.get("payload"))
-        verify_upto_payload(payload, requirements, receiver_authorizer, int(time.time()))
-
-        # Phase 3: network + role keys bound to this server's offer. Network is
-        # read from `accepted` (the canonical PaymentRequirements), per spec.
-        if accepted.get("network") != requirements["network"]:
-            raise InvalidProofError(
-                f"network mismatch: payload {accepted.get('network')!r}, expected {requirements['network']!r}",
-                code="payment_invalid",
-            )
-        if requirements["extra"].get("feePayer") != fee_payer:
-            raise InvalidProofError("extra.feePayer is not this server's key", code="payment_invalid")
-        if requirements["extra"].get("receiverAuthorizer") != receiver_authorizer:
-            raise InvalidProofError("extra.receiverAuthorizer is not this server's key", code="payment_invalid")
-
+        offered = [upto_requirements(self.route(gate, request, route=route))]
         program_id = Pubkey.from_string(self._channel_program or PAYMENT_CHANNELS_PROGRAM_ID)
-        mint = Pubkey.from_string(requirements["asset"])
         fee_payer_pubkey = Pubkey.from_string(fee_payer)
         receiver_authorizer_pubkey = Pubkey.from_string(receiver_authorizer)
-        # The fee payer holds the channel payee seat (zero-share lifecycle
-        # authority); the receiver authorizer signs vouchers only.
-        payee = fee_payer_pubkey
-        distribution = self._distribution(requirements)
-        token_program = Pubkey.from_string(requirements["extra"]["tokenProgram"])
-        channel_id = Pubkey.from_string(payload["channelId"])
-        payer = Pubkey.from_string(payload["from"])
-        max_amount = parse_base_units(payload["maxAmount"], "maxAmount")
-        expires_at = int(payload["expiresAt"])
-
-        released = False
-        self._reserve_channel(str(channel_id))
-
-        def _release() -> None:
-            with self._in_flight_lock:
-                self._in_flight.discard(str(channel_id))
 
         rpc = SolanaRpc(self._config.effective_rpc_url())
-        try:
-            open_tx = payload.get("openTransaction")
-            if not open_tx:
-                raise InvalidProofError(
-                    "payment-channel asset transfer method requires openTransaction (pull)", code="payment_invalid"
-                )
-            account_keys, instructions = _decode_transaction(open_tx)
-            # The challenged recentSlot at verify time: the requirement is
-            # recomputed with a fresh slot from the recent-state provider, so
-            # the transaction's openSlot (stamped from the earlier challenge)
-            # must sit at-or-before it, inside the program freshness window.
-            # None (provider unwired / fetch failed) skips the window check;
-            # the PDA bind below still holds and the program enforces the
-            # window at broadcast.
-            raw_slot = requirements["extra"].get("recentSlot")
-            challenged_slot = int(raw_slot) if isinstance(raw_slot, (int, str)) and str(raw_slot).isdigit() else None
-            validate_upto_open_instruction(
-                account_keys,
-                instructions,
-                program_id=program_id,
-                fee_payer=fee_payer_pubkey,
-                receiver_authorizer=receiver_authorizer_pubkey,
-                payer=payer,
-                payee=payee,
-                mint=mint,
-                token_program=token_program,
-                channel_id=channel_id,
-                max_amount=max_amount,
-                withdraw_delay=int(requirements["extra"]["withdrawDelay"]),
-                payload_nonce=payload["nonce"],
-                payload_open_slot=payload["openSlot"],
-                recent_slot=challenged_slot,
-            )
-            if not account_keys or account_keys[0] != fee_payer:
-                raise InvalidProofError(
-                    "open transaction fee payer must be the advertised fee payer", code="payment_invalid"
-                )
+        reserved: str | None = None
+        released = False
 
-            cosigned = await _cosign_fee_payer(open_tx, signer)
+        def _release() -> None:
+            if reserved is None:
+                return
+            with self._in_flight_lock:
+                self._in_flight.discard(reserved)
+
+        try:
+            # The challenged recentSlot at verify time comes from the
+            # recent-state provider when wired, else from the RPC.
+            _, provided_slot = self._fetch_recent_state()
+            extra: dict[str, Any] = {} if provided_slot is None else {"recent_slot": provided_slot}
+            prepared = await prepare_upto_open(
+                header,
+                offered,
+                fee_payer=fee_payer,
+                receiver_authorizer=receiver_authorizer,
+                rpc=rpc,
+                now=int(time.time()),
+                accepted_versions=self._accepted_versions,
+                max_channel_lifetime_seconds=self._max_channel_lifetime_seconds,
+                program_id=program_id,
+                **extra,
+            )
+            self._reserve_channel(str(prepared.channel_id))
+            reserved = str(prepared.channel_id)
+
+            await self._ensure_payouts_ready(
+                rpc, prepared.mint, prepared.token_program, prepared.distribution, fee_payer_pubkey
+            )
+
+            cosigned = await cosign_upto_open(prepared.transaction, signer)
             sent = await rpc.send_raw_transaction(cosigned)
             await rpc.await_confirmation(str(sent.value))
 
-            channel = await self._fetch_channel(rpc, channel_id, program_id)
+            channel = await self._fetch_channel(rpc, prepared.channel_id, program_id)
             self._validate_channel_state(
                 channel,
                 fee_payer_pubkey,
                 receiver_authorizer_pubkey,
-                payer,
-                payee,
-                mint,
-                max_amount,
-                int(requirements["extra"]["withdrawDelay"]),
-                distribution,
+                prepared.payer,
+                prepared.payee,
+                prepared.mint,
+                prepared.max_amount,
+                int(prepared.requirements["extra"]["withdrawDelay"]),
+                prepared.distribution,
             )
 
             verified = VerifiedUptoOpen(
-                channel_id=channel_id,
-                payer=payer,
-                payee=payee,
+                channel_id=prepared.channel_id,
+                payer=prepared.payer,
+                payee=prepared.payee,
                 rent_payer=Pubkey.from_string(str(channel.rent_payer)),
-                mint=mint,
-                token_program=token_program,
+                mint=prepared.mint,
+                token_program=prepared.token_program,
                 program_id=program_id,
                 deposit=int(channel.deposit),
-                max_amount=max_amount,
-                expires_at=expires_at,
-                network=requirements["network"],
-                distribution=distribution,
+                max_amount=prepared.max_amount,
+                expires_at=prepared.expires_at,
+                network=prepared.requirements["network"],
+                distribution=prepared.distribution,
                 _release_fn=_release,
             )
             released = True
@@ -385,7 +382,8 @@ class X402Upto:
         """
         signer = self._signer()
         fee_payer = signer.pubkey
-        receiver_authorizer = fee_payer
+        message_signer: SolanaSigner = self._receiver_authorizer_signer or signer
+        receiver_authorizer = message_signer.pubkey
         try:
             assert_settlement_within_ceiling(actual, verified.max_amount)
 
@@ -402,7 +400,6 @@ class X402Upto:
                     program_id=verified.program_id,
                 )
             else:
-                message_signer: SolanaSigner = signer
                 message = voucher_message_bytes(verified.channel_id, actual, verified.expires_at)
                 sig_bytes = bytes(await message_signer.sign_message(message))
                 if len(sig_bytes) != 64:
@@ -443,13 +440,11 @@ class X402Upto:
             create_treasury_ata = create_idempotent_associated_token_account(
                 fee_payer, treasury, verified.mint, verified.token_program
             )
-            create_recipient_atas = [
-                create_idempotent_associated_token_account(
-                    fee_payer, entry.recipient, verified.mint, verified.token_program
-                )
-                for entry in verified.distribution
-            ]
-            instructions = [*instructions, create_payee_ata, create_treasury_ata, *create_recipient_atas, distribute]
+            # Recipient accounts are never created here: the open was refused
+            # unless each already existed and was usable (_ensure_payouts_ready),
+            # and funding them would let an owner close and recreate the
+            # account to collect the fee payer's rent on every settlement.
+            instructions = [*instructions, create_payee_ata, create_treasury_ata, distribute]
 
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
@@ -525,6 +520,43 @@ class X402Upto:
         beneficiary = Pubkey.from_string(requirements["payTo"])
         return [Distribution(recipient=beneficiary, bps=10_000)]
 
+    async def _ensure_payouts_ready(
+        self,
+        rpc: SolanaRpc,
+        mint: Pubkey,
+        token_program: Pubkey,
+        distribution: list[Distribution],
+        fee_payer: Pubkey,
+    ) -> None:
+        """Settlement readiness (scheme_upto_svm.md Phase 3 step 8).
+
+        Every distribution recipient's token account must already exist and
+        be usable before the deposit is escrowed: settlement never creates
+        it, and the program forfeits a payout to an unusable account. The
+        fee payer's own account is the payee seat settlement creates itself.
+        A failed read is a refusal too. Mirrors the Rust
+        ``X402Upto::ensure_payouts_ready``.
+        """
+        for entry in distribution:
+            if entry.recipient == fee_payer:
+                continue
+            ata, _ = find_associated_token_address(entry.recipient, mint, token_program)
+            try:
+                account = await rpc.get_account_info(str(ata))
+            except Exception as exc:  # noqa: BLE001
+                raise InvalidProofError(f"payout token account read failed: {exc}", code="payment_invalid") from exc
+            problem = (
+                "does not exist"
+                if account is None
+                else _unusable_token_account(account[1], account[0], entry.recipient, mint, token_program)
+            )
+            if problem is not None:
+                raise InvalidProofError(
+                    f"payout token account {ata} of {entry.recipient} {problem}; it must be an "
+                    "initialized token account before payments settle to it",
+                    code="payment_invalid",
+                )
+
     async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Channel:
         account = await rpc.get_account_info(str(channel_id))
         if account is None:
@@ -560,7 +592,7 @@ class X402Upto:
                 f"channel payee mismatch: expected the fee payer {payee}, got {channel.payee}",
                 code="payment_invalid",
             )
-        expected_hash = list(_distribution_hash(distribution))
+        expected_hash = list(distribution_hash(distribution))
         if list(channel.distribution_hash) != expected_hash:
             raise InvalidProofError(
                 "channel distribution does not match the expected recipient split", code="payment_invalid"
@@ -588,84 +620,62 @@ class X402Upto:
 # -- module-level helpers ---------------------------------------------------
 
 
-def _decode_envelope(header: str) -> dict[str, Any]:
-    try:
-        decoded = base64.b64decode(header, validate=True)
-    except Exception as exc:  # noqa: BLE001
-        raise InvalidProofError("invalid upto payment signature base64", code="payment_invalid") from exc
-    try:
-        envelope = json.loads(decoded)
-    except Exception as exc:  # noqa: BLE001
-        raise InvalidProofError("invalid upto payment signature json", code="payment_invalid") from exc
-    if not isinstance(envelope, dict):
-        raise InvalidProofError("invalid upto payment signature envelope", code="payment_invalid")
-    return cast("dict[str, Any]", envelope)
+_TOKEN_ACCOUNT_LEN = 165
+_TOKEN_ACCOUNT_INITIALIZED = 1
+_TOKEN_ACCOUNT_FROZEN = 2
+_TOKEN_ACCOUNT_TYPE = 2
+_EXTENSION_IMMUTABLE_OWNER = 7
 
 
-def _parse_payload(raw: Any) -> UptoPayload:
-    """Validate the inbound payload dict and narrow it to the typed shape."""
-    if not isinstance(raw, dict):
-        raise InvalidProofError("upto payload missing or malformed", code="payment_invalid")
-    payload = cast("dict[str, Any]", raw)
-    for key in ("from", "maxAmount", "channelId", "deposit", "authorizedSigner", "nonce", "openSlot"):
-        if not isinstance(payload.get(key), str) or not payload[key]:
-            raise InvalidProofError(f"upto payload missing {key}", code="payment_invalid")
-    return cast("UptoPayload", payload)
+def _unsupported_account_extension(data: bytes) -> int | None:
+    """The first Token-2022 account extension other than ImmutableOwner."""
+    if len(data) == _TOKEN_ACCOUNT_LEN:
+        return None
+    if data[_TOKEN_ACCOUNT_LEN] != _TOKEN_ACCOUNT_TYPE:
+        return data[_TOKEN_ACCOUNT_LEN]
+    cursor = _TOKEN_ACCOUNT_LEN + 1
+    while cursor < len(data):
+        if not any(data[cursor:]):
+            return None
+        header = data[cursor : cursor + 4]
+        if len(header) < 4:
+            return 0xFFFF
+        extension = int.from_bytes(header[0:2], "little")
+        length = int.from_bytes(header[2:4], "little")
+        if extension != _EXTENSION_IMMUTABLE_OWNER:
+            return extension
+        cursor += 4 + length
+        if cursor > len(data):
+            return 0xFFFF
+    return None
 
 
-def _distribution_hash(distribution: list[Distribution]) -> bytes:
-    hasher = hashlib.sha256()
-    hasher.update(struct.pack("<I", len(distribution)))
-    for entry in distribution:
-        hasher.update(bytes(entry.recipient))
-        hasher.update(struct.pack("<H", entry.bps))
-    return hasher.digest()
+def _unusable_token_account(
+    program: str, data: bytes, owner: Pubkey, mint: Pubkey, token_program: Pubkey
+) -> str | None:
+    """Why a token account cannot receive a payout, or ``None`` when it can.
 
-
-def _decode_transaction(transaction_b64: str) -> tuple[list[str], list[Any]]:
-    """Decode a base64 (legacy or v0) transaction into ``(account_keys, instructions)``."""
-    from solders.transaction import VersionedTransaction
-
-    try:
-        raw = base64.b64decode(transaction_b64, validate=True)
-        message = VersionedTransaction.from_bytes(raw).message
-    except InvalidProofError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise InvalidProofError(f"invalid transaction: {exc}", code="payment_invalid") from exc
-    account_keys = [str(key) for key in message.account_keys]
-    return account_keys, list(message.instructions)
-
-
-async def _cosign_fee_payer(transaction_b64: str, signer: TransactionSigner) -> bytes:
-    """Sign the fee-payer slot while preserving the client-built open tx.
-
-    The client built the open with the advertised fee payer (slot 0) and signed
-    only its own (payer) slot; the server completes the fee-payer signature and
-    the result is broadcastable. Mirrors the exact-scheme cosign.
+    Mirrors the Rust ``unusable_settlement_account``.
     """
-    from solders.transaction import VersionedTransaction
-
-    raw = base64.b64decode(transaction_b64)
-    fee_payer = signer.pubkey
-    vtx = VersionedTransaction.from_bytes(raw)
-    account_keys = list(vtx.message.account_keys)
-    num_required = int(vtx.message.header.num_required_signatures)
-    try:
-        idx = account_keys.index(fee_payer)
-    except ValueError as exc:
-        raise InvalidProofError("fee payer pubkey not present in transaction accounts", code="payment_invalid") from exc
-    if idx >= num_required:
-        raise InvalidProofError("fee payer is not a required signer", code="payment_invalid")
-    signed = await signer.sign_transaction(vtx)
-    cosigned = bytes(signed.transaction)
-    try:
-        verify_required_signatures(VersionedTransaction.from_bytes(cosigned))
-    except SignatureCheckError as exc:
-        raise InvalidProofError(
-            f"open transaction signature verification failed: {exc}", code="payment_invalid"
-        ) from exc
-    return cosigned
+    if program != str(token_program):
+        return "is not owned by the declared token program"
+    if len(data) < _TOKEN_ACCOUNT_LEN:
+        return "is not an initialized token account"
+    account_mint = Pubkey.from_bytes(data[0:32])
+    account_owner = Pubkey.from_bytes(data[32:64])
+    state = data[108]
+    if account_mint != mint:
+        return f"holds mint {account_mint} rather than {mint}"
+    if account_owner != owner:
+        return f"is owned by {account_owner} rather than {owner}"
+    if state == _TOKEN_ACCOUNT_FROZEN:
+        return "is frozen"
+    extension = _unsupported_account_extension(data)
+    if extension is not None:
+        return f"carries token account extension {extension}, which this server will not settle through"
+    if state != _TOKEN_ACCOUNT_INITIALIZED:
+        return f"is in account state {state}"
+    return None
 
 
 def _request_path(request: Any) -> str:

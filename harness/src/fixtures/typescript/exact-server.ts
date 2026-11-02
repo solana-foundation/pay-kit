@@ -23,10 +23,17 @@ import { createPayKit, type PricingDef, Signer, usd } from "@solana/pay-kit";
 import { classifyMessageToCanonicalCode } from "../../canonical-codes";
 import { readX402ServerEnvironment } from "./exact-shared";
 
-// @x402/svm reason codes whose meaning the shared classifier cannot read
-// from the words alone.
+// pay-kit and @x402/svm reason codes whose meaning the shared classifier
+// cannot read from the words alone. As the Rust harness server
+// (`canonical_code`, x402_harness_server.rs): a credential whose `accepted`
+// is not the route's requirement, or whose transfer pays another amount,
+// recipient or mint, is a charge_request_mismatch.
 const SDK_CODE_TO_CANONICAL: Record<string, string> = {
+  accepted_mismatch: "charge_request_mismatch",
   duplicate_settlement: "signature_consumed",
+  invalid_exact_svm_payload_amount_mismatch: "charge_request_mismatch",
+  invalid_exact_svm_payload_mint_mismatch: "charge_request_mismatch",
+  invalid_exact_svm_payload_recipient_mismatch: "charge_request_mismatch",
 };
 
 function canonicalCode(sdkCode: string, detail: string | undefined): string {

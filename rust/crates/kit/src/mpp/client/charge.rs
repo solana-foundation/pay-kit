@@ -77,12 +77,20 @@ pub struct BuildChargeTransactionOptions {
     /// auto-pay agent meant for one network from being lured into
     /// signing a transaction for another.
     pub expected_network: Option<String>,
+    /// Client-side pin on who the wallet will pay.
+    ///
+    /// When set, the builder refuses a challenge whose `recipient` is not
+    /// this address (core, Amount Verification: "Clients MUST verify before
+    /// authorizing payment: ... 2. Recipient/address is expected"). Split
+    /// recipients are the challenge's own terms and are not pinned.
+    pub expected_recipient: Option<String>,
     /// What to do when the signer is the fee payer and a split sets
     /// `ataCreationRequired`. The charge spec says the client MUST include
-    /// the ATA creation, so the default funds it; [`PayerFundedAtaCreation::Decline`]
-    /// refuses the whole challenge instead (never a transaction without it).
-    /// The rent is not counted against `max_amount_base_units`, so callers
-    /// that auto-pay untrusted challenges should decline, as `PayKitClient` does.
+    /// the ATA creation, and the rent is spent on top of `amount`, outside
+    /// `max_amount_base_units`. The default, [`PayerFundedAtaCreation::Decline`],
+    /// refuses the whole challenge (never a transaction without the creation);
+    /// [`PayerFundedAtaCreation::Include`] funds it for a server the caller
+    /// trusts to name split recipients.
     pub payer_funded_ata_creation: PayerFundedAtaCreation,
     /// Bounded compute-unit price/limit for the prepared
     /// transaction. Defaults match the historical hardcoded budget (1
@@ -96,15 +104,15 @@ pub struct BuildChargeTransactionOptions {
 ///
 /// The charge spec obliges the client: when it pays the fees it "MUST include
 /// one for each split whose entry sets `ataCreationRequired: true`". The rent
-/// is spent on top of the charged amount, so a wallet that will not fund it
-/// declines the challenge. There is no variant that builds the transaction
-/// without the creation instruction.
+/// is spent on top of the charged amount and goes to accounts the challenge
+/// names, so a wallet declines unless its caller opts in. There is no variant
+/// that builds the transaction without the creation instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PayerFundedAtaCreation {
-    /// Include the ATA creation instructions and fund their rent (spec default).
-    #[default]
+    /// Include the ATA creation instructions and fund their rent.
     Include,
     /// Refuse the challenge with [`Error::PayerFundedAtaCreationDeclined`].
+    #[default]
     Decline,
 }
 
@@ -305,7 +313,9 @@ fn server_fee_payer(
         return Ok(None);
     }
     let Some(key) = method_details.fee_payer_key.as_deref() else {
-        return Ok(None);
+        return Err(Error::InvalidChallenge(
+            "methodDetails.feePayer is true but the challenge names no feePayerKey".into(),
+        ));
     };
     let fee_payer =
         Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?;
@@ -350,7 +360,8 @@ pub async fn build_prepared_charge(
             "channelCharge requires the explicit build_channel_charge_credential API".into(),
         ));
     }
-    require_supported_network(method_details)?;
+    validate_challenge_details(currency, method_details)?;
+    check_client_policy(total_amount, recipient, method_details, options)?;
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
         return Err(Error::TooManySplits);
@@ -469,33 +480,14 @@ pub async fn build_charge_transaction_with_options(
             "channelCharge requires the explicit build_channel_charge_credential API".into(),
         ));
     }
-    require_supported_network(method_details)?;
+    validate_challenge_details(currency, method_details)?;
     let total_amount: u64 = amount
         .parse()
         .map_err(|_| Error::Other(format!("Invalid amount: {amount}")))?;
 
     // Audit #10: client-side policy gates. Run before any signing work so
     // we never produce a signature for an out-of-policy challenge.
-    if let Some(cap) = options.max_amount_base_units {
-        if total_amount > cap {
-            return Err(Error::Other(format!(
-                "Challenge amount {total_amount} exceeds client max_amount_base_units {cap}"
-            )));
-        }
-    }
-    if let Some(expected) = options.expected_network.as_deref() {
-        // An omitted network is the protocol's documented mainnet default.
-        // Compare canonical values so the guard agrees with offer selection
-        // (`mainnet-beta` is the legacy spelling of `mainnet`).
-        let actual = method_details.network.as_deref().unwrap_or("mainnet");
-        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
-            && matches!(expected, "mainnet" | "mainnet-beta");
-        if actual != expected && !both_mainnet {
-            return Err(Error::Other(format!(
-                "Challenge network `{actual}` does not match client expected_network `{expected}`"
-            )));
-        }
-    }
+    check_client_policy(total_amount, recipient, method_details, &options)?;
 
     // Confidential charges settle via an encrypted, multi-transaction bundle,
     // not the plaintext transfer this function builds. Validate the spec
@@ -1071,6 +1063,65 @@ fn decode_charge_challenge(
 
 /// Refuse a challenge on a network the client cannot identify, so it never
 /// resolves to a mainnet mint by default.
+/// The challenge-shape rules a client checks before building anything
+/// (draft-solana-charge-00, Method Details): the cluster is one of the three
+/// defined ones, `tokenProgram` is absent for native SOL, and a sponsored
+/// challenge (`feePayer: true`) names its `feePayerKey`.
+/// The caller's pins on what the wallet will sign (Audit #10; core, Amount
+/// Verification: "Clients MUST verify before authorizing payment"). Shared by
+/// every public builder so no entry point skips them.
+fn check_client_policy(
+    total_amount: u64,
+    recipient: &str,
+    method_details: &MethodDetails,
+    options: &BuildChargeTransactionOptions,
+) -> Result<(), Error> {
+    if let Some(cap) = options.max_amount_base_units {
+        if total_amount > cap {
+            return Err(Error::Other(format!(
+                "Challenge amount {total_amount} exceeds client max_amount_base_units {cap}"
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_network.as_deref() {
+        // An omitted network is the protocol's documented mainnet default.
+        // Compare canonical values so the guard agrees with offer selection
+        // (`mainnet-beta` is the legacy spelling of `mainnet`).
+        let actual = method_details.network.as_deref().unwrap_or("mainnet");
+        let both_mainnet = matches!(actual, "mainnet" | "mainnet-beta")
+            && matches!(expected, "mainnet" | "mainnet-beta");
+        if actual != expected && !both_mainnet {
+            return Err(Error::Other(format!(
+                "Challenge network `{actual}` does not match client expected_network `{expected}`"
+            )));
+        }
+    }
+
+    if let Some(expected) = options.expected_recipient.as_deref() {
+        if recipient != expected {
+            return Err(Error::Other(format!(
+                "Challenge recipient `{recipient}` does not match client expected_recipient `{expected}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_challenge_details(currency: &str, method_details: &MethodDetails) -> Result<(), Error> {
+    require_supported_network(method_details)?;
+    if currency.eq_ignore_ascii_case("sol") && method_details.token_program.is_some() {
+        return Err(Error::InvalidChallenge(
+            "methodDetails.tokenProgram MUST NOT be present when currency is \"sol\"".into(),
+        ));
+    }
+    if method_details.fee_payer == Some(true) && method_details.fee_payer_key.is_none() {
+        return Err(Error::InvalidChallenge(
+            "methodDetails.feePayer is true but the challenge names no feePayerKey".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn require_supported_network(method_details: &MethodDetails) -> Result<(), Error> {
     crate::mpp::protocol::solana::canonical_network(method_details.network.as_deref())
         .map(|_| ())
@@ -2739,7 +2790,10 @@ mod tests {
             USDC_MINT,
             RECIPIENT,
             &md,
-            &BuildChargeTransactionOptions::default(),
+            &BuildChargeTransactionOptions {
+                payer_funded_ata_creation: PayerFundedAtaCreation::Include,
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -3881,6 +3935,171 @@ mod tests {
         assert_eq!(selected.id, "good");
     }
 
+    /// `build_prepared_charge` is public and takes the same options, so it
+    /// enforces the same recipient, network and amount pins as the signing
+    /// builder; each pin's positive control builds.
+    #[tokio::test]
+    async fn build_prepared_charge_enforces_the_client_pins() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("localnet".to_string()),
+            ..Default::default()
+        };
+        let other = Pubkey::new_unique().to_string();
+        let cases = [
+            (
+                BuildChargeTransactionOptions {
+                    expected_recipient: Some(RECIPIENT.to_string()),
+                    ..Default::default()
+                },
+                "expected_recipient",
+            ),
+            (
+                BuildChargeTransactionOptions {
+                    expected_network: Some("devnet".to_string()),
+                    ..Default::default()
+                },
+                "expected_network",
+            ),
+            (
+                BuildChargeTransactionOptions {
+                    max_amount_base_units: Some(999),
+                    ..Default::default()
+                },
+                "max_amount_base_units",
+            ),
+        ];
+        for (options, pin) in cases {
+            let err = build_prepared_charge(signer_pk, &rpc, 1000, "sol", &other, &md, &options)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains(pin), "{pin}: {err}");
+        }
+        let pinned = BuildChargeTransactionOptions {
+            expected_recipient: Some(RECIPIENT.to_string()),
+            expected_network: Some("localnet".to_string()),
+            max_amount_base_units: Some(1000),
+            ..Default::default()
+        };
+        build_prepared_charge(signer_pk, &rpc, 1000, "sol", RECIPIENT, &md, &pinned)
+            .await
+            .unwrap();
+    }
+
+    /// Core, Amount Verification: "Recipient/address is expected". A pinned
+    /// recipient refuses a challenge paying anyone else; the same challenge
+    /// to the pinned address builds.
+    #[tokio::test]
+    async fn build_charge_refuses_an_unexpected_recipient() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("localnet".to_string()),
+            ..Default::default()
+        };
+        let pinned = |recipient: &str| BuildChargeTransactionOptions {
+            expected_recipient: Some(recipient.to_string()),
+            ..Default::default()
+        };
+        let other = Pubkey::new_unique().to_string();
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000",
+            "sol",
+            &other,
+            &md,
+            pinned(RECIPIENT),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("expected_recipient"), "{err}");
+        build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000",
+            "sol",
+            RECIPIENT,
+            &md,
+            pinned(RECIPIENT),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Method Details, tokenProgram: "MUST NOT be present when currency is
+    /// \"sol\"." The same challenge without the field builds.
+    #[tokio::test]
+    async fn build_charge_refuses_token_program_on_a_sol_charge() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let mut md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("localnet".to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(signer.as_ref(), &rpc, "1000", "sol", RECIPIENT, &md)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidChallenge(_)), "{err}");
+        assert!(matches!(
+            build_prepared_charge(
+                signer.pubkey(),
+                &rpc,
+                1000,
+                "sol",
+                RECIPIENT,
+                &md,
+                &BuildChargeTransactionOptions::default(),
+            )
+            .await,
+            Err(Error::InvalidChallenge(_))
+        ));
+        md.token_program = None;
+        build_charge_transaction(signer.as_ref(), &rpc, "1000", "sol", RECIPIENT, &md)
+            .await
+            .unwrap();
+    }
+
+    /// Method Details, feePayer: "When true, the feePayerKey field MUST also
+    /// be present." The client must not fall back to paying fees itself.
+    #[tokio::test]
+    async fn build_charge_refuses_fee_payer_without_key() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let mut md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("localnet".to_string()),
+            fee_payer: Some(true),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(signer.as_ref(), &rpc, "1000", "sol", RECIPIENT, &md)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidChallenge(_)), "{err}");
+        assert!(matches!(
+            build_prepared_charge(
+                signer.pubkey(),
+                &rpc,
+                1000,
+                "sol",
+                RECIPIENT,
+                &md,
+                &BuildChargeTransactionOptions::default(),
+            )
+            .await,
+            Err(Error::InvalidChallenge(_))
+        ));
+        md.fee_payer = Some(false);
+        build_charge_transaction(signer.as_ref(), &rpc, "1000", "sol", RECIPIENT, &md)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn build_charge_refuses_an_unsupported_network() {
         let signer = make_signer();
@@ -3969,19 +4188,64 @@ mod tests {
             .count()
     }
 
-    // RULINGS C5: with the client as fee payer, `ataCreationRequired` obliges
-    // the client to include the creation. Regression: the default used to
-    // refuse the challenge.
+    // The rent for split ATAs the client funds sits outside any amount cap
+    // and goes to accounts the challenge names, so the default declines
+    // (RULINGS C5: declining is conformant), even with an amount cap set.
     #[tokio::test]
-    async fn build_charge_includes_payer_funded_split_ata_by_default() {
+    async fn build_charge_declines_payer_funded_split_ata_by_default() {
         let signer = make_signer();
         let rpc = dummy_rpc();
         let md = ata_split_details(None);
 
-        let payload =
+        let err =
             build_charge_transaction(signer.as_ref(), &rpc, "1000000", USDC_MINT, RECIPIENT, &md)
                 .await
-                .unwrap();
+                .unwrap_err();
+        assert!(
+            matches!(err, crate::mpp::Error::PayerFundedAtaCreationDeclined),
+            "{err:?}"
+        );
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                max_amount_base_units: Some(1_000_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::mpp::Error::PayerFundedAtaCreationDeclined),
+            "{err:?}"
+        );
+    }
+
+    // RULINGS C5: a caller that opts in gets every flagged creation.
+    #[tokio::test]
+    async fn build_charge_includes_payer_funded_split_ata_on_opt_in() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = ata_split_details(None);
+
+        let payload = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                payer_funded_ata_creation: PayerFundedAtaCreation::Include,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(ata_create_count(&payload), 8);
     }
 

@@ -16,7 +16,7 @@ minimumReleaseAgeExclude:
 # @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
 overrides:
   ws: '^8.21.0'
-  '@x402/core': 'file:.x402-vendor/x402-core-2.26.0.tgz'
+  '@x402/core': 'file:.x402-vendor/x402-core-2.28.0.tgz'
   '@hono/node-server': '>=2.0.10'
   '@humanfs/node': '0.16.8'
   baseline-browser-mapping: '2.11.0'
@@ -26,12 +26,21 @@ overrides:
   'brace-expansion@5.0.4': '5.0.12'
   'brace-expansion@5.0.6': '5.0.12'
   'linkify-it': '5.0.2'
-  'markdown-it': '14.3.1'
+  # GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c, GHSA-vfgh-jcmw-g37q: quadratic-time
+  # parsing, patched in 14.3.3. Reaches us via typedoc.
+  'markdown-it': '>=14.3.3 <15'
   'nanoid@3.3.11': '3.3.18'
   'picomatch@2.3.1': '2.3.2'
   postcss: '8.5.23'
   source-map-js: '1.2.2'
-  vite: '8.0.16'
+  # GHSA-587h-7wmj-h5pm and siblings (launch-editor, fs.allow, custom
+  # middleware), patched in 8.1.6. Reaches us via vitest.
+  vite: '>=8.1.6 <9'
+  # GHSA-g7r4-m6w7-qqqr: dev-server file read on Windows, patched in 0.28.1.
+  # Reaches us via tsx, tsup and vite.
+  esbuild: '>=0.28.1 <0.29'
+  # GHSA-4x5r-pxfx-6jf8: file read via sourceMappingURL, patched in 7.29.6.
+  '@babel/core': '>=7.29.6 <8'
   # fast-uri/hono/ip-address floors below track advisories reached via
   # @modelcontextprotocol/sdk (see `pnpm why <pkg>`); bump as new CVEs land.
   '@modelcontextprotocol/sdk': '>=1.31.0'
@@ -40,9 +49,16 @@ overrides:
   ip-address: '>=10.7.2'
   js-yaml: '>=5.4.1'
   path-to-regexp: '>=8.4.0'
-  qs: '>=6.16.0'
+  # GHSA-6pq8-jhm2-2vcw: qs.stringify comma-format TypeError, patched in 6.16.1.
+  qs: '>=6.16.1'
   yaml: '>=2.8.3'
-  body-parser: '>=2.3.0'
+  # GHSA-27r3-jxmh-p828: compressed-body trailing-bytes denial of service,
+  # patched in 2.4.0. Reaches us via mppx > express.
+  body-parser: '>=2.4.0'
+  # GHSA-mrhx-c7xc-m3w5: memory exhaustion validating oversized constrained
+  # collections, patched in 4.6.6. Reaches us directly (packages/mpp) and via
+  # mppx > incur.
+  zod: '>=4.6.6 <5'
   # GHSA-jqcg-44mw-7w3h: forwarded-header denial of service, patched in 2.0.8.
   # Reaches us via mppx > express.
   proxy-addr: '>=2.0.8'

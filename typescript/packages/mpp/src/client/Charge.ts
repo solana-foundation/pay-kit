@@ -5,16 +5,21 @@ import {
     appendTransactionMessageInstructions,
     type Base64EncodedWireTransaction,
     type Blockhash,
+    compileTransaction,
     createSolanaRpc,
     createTransactionMessage,
     getBase64EncodedWireTransaction,
+    getTransactionSize,
     type Instruction,
     partiallySignTransactionMessageWithSigners,
     pipe,
     prependTransactionMessageInstructions,
+    setTransactionMessageComputeUnitLimit,
     setTransactionMessageFeePayer,
     setTransactionMessageFeePayerSigner,
     setTransactionMessageLifetimeUsingBlockhash,
+    setTransactionMessageLoadedAccountsDataSizeLimit,
+    setTransactionMessagePriorityFeeLamports,
     signature as toSignature,
     signTransactionMessageWithSigners,
     type TransactionSigner,
@@ -30,6 +35,7 @@ import { Credential, Method } from 'mppx';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
+    CANONICAL_NETWORKS,
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
     normalizeNetwork,
@@ -40,6 +46,14 @@ import {
     TOKEN_PROGRAM,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
+import {
+    MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
+    negotiateTransactionVersion,
+    priorityFeeLamports,
+    type TransactionVersion,
+    V0_MAX_TRANSACTION_SIZE,
+    V1_MAX_TRANSACTION_SIZE,
+} from '../utils/transaction-versions.js';
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -71,7 +85,15 @@ import * as Methods from '../Methods.js';
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-    const { signer, broadcast = false, onProgress, maxAmount, expectedNetwork, allowUnknownToken2022 } = parameters;
+    const {
+        signer,
+        broadcast = false,
+        onProgress,
+        maxAmount,
+        expectedNetwork,
+        expectedRecipient,
+        allowUnknownToken2022,
+    } = parameters;
 
     const method = Method.toClient(Methods.charge, {
         async createCredential({ challenge }) {
@@ -101,11 +123,19 @@ export function charge(parameters: charge.Parameters) {
                     `Challenge network "${network ?? 'mainnet'}" does not match the expected network "${expectedNetwork}"`,
                 );
             }
+            // Core: "Clients MUST verify before authorizing payment: ...
+            // Recipient/address is expected".
+            if (expectedRecipient !== undefined && challenge.request.recipient !== expectedRecipient) {
+                throw new Error(
+                    `Challenge recipient ${challenge.request.recipient} does not match the expected recipient ${expectedRecipient}`,
+                );
+            }
 
             const encodedTx = await buildChargeTransaction({
                 allowUnknownToken2022,
                 computeUnitLimit: parameters.computeUnitLimit,
                 computeUnitPrice: parameters.computeUnitPrice,
+                maxTransactionVersion: parameters.maxTransactionVersion,
                 onProgress,
                 request: challenge.request,
                 rpcUrl:
@@ -178,10 +208,41 @@ export async function buildChargeTransaction(
         feePayerKey,
         recentBlockhash: serverBlockhash,
         splits,
+        transactionVersions,
     } = methodDetails;
+
+    // Challenge checks that need no RPC: refuse an out-of-spec challenge before
+    // anything is fetched or signed.
+    assertSupportedChallengeNetwork(network);
+    // mpp-specs-txv1 Transaction Versions: "Clients MUST build one of the
+    // advertised versions and SHOULD build the highest one their signer can
+    // produce." Refused up front when none is buildable.
+    const version = negotiateTransactionVersion(transactionVersions, parameters.maxTransactionVersion);
+    const computeUnitLimit = parameters.computeUnitLimit ?? DEFAULT_COMPUTE_UNIT_LIMIT;
+    const computeUnitPrice = parameters.computeUnitPrice ?? DEFAULT_COMPUTE_UNIT_PRICE;
+    if (!Number.isSafeInteger(computeUnitLimit) || computeUnitLimit <= 0 || computeUnitLimit > MAX_COMPUTE_UNIT_LIMIT) {
+        throw new Error(`computeUnitLimit must be an integer in 1..=${MAX_COMPUTE_UNIT_LIMIT}`);
+    }
+    if (computeUnitPrice < 0n || computeUnitPrice > U64_MAX) {
+        throw new Error('computeUnitPrice must fit in a u64');
+    }
+    // A zero amount is refused below: no split arithmetic leaves the primary
+    // recipient a positive amount.
+    const totalAmount = parseU64Amount(amount, 'amount');
+    if (splits !== undefined && splits.length > MAX_SPLITS) {
+        throw new Error(`Too many splits: ${splits.length} (maximum ${MAX_SPLITS})`);
+    }
+    for (const split of splits ?? []) {
+        parseU64Amount(split.amount, 'split amount');
+    }
 
     // currency is "sol" for native, or the mint address for SPL tokens.
     const mint = resolveStablecoinMint(currency, network);
+    // draft-solana-charge-00 §Method Details, tokenProgram: "MUST NOT be
+    // present when `currency` is \"sol\"".
+    if (!mint && tokenProgramAddr !== undefined) {
+        throw new Error('methodDetails.tokenProgram must not be present when currency is "sol"');
+    }
 
     const rpcUrl =
         parameters.rpcUrl ?? DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ?? DEFAULT_RPC_URLS.mainnet;
@@ -211,7 +272,7 @@ export async function buildChargeTransaction(
 
     // Compute primary amount (total minus splits).
     const splitsTotal = (splits ?? []).reduce((sum, s) => sum + BigInt(s.amount), 0n);
-    const primaryAmount = BigInt(amount) - splitsTotal;
+    const primaryAmount = totalAmount - splitsTotal;
     if (primaryAmount <= 0n) {
         throw new Error('Splits consume the entire amount; primary recipient must receive a positive amount');
     }
@@ -372,24 +433,52 @@ export async function buildChargeTransaction(
           }
         : (await rpc.getLatestBlockhash().send()).value;
 
-    const txMessage = pipe(
-        createTransactionMessage({ version: 0 }),
+    // The @solana/kit 6.x types do not list version 1 yet (its runtime and
+    // kit >= 8 do): a version-1 message is typed as a version-0 one, and the
+    // budget setters below write the version-1 header config at runtime.
+    const messageVersion = version as 0;
+    const baseMessage = pipe(
+        createTransactionMessage({ version: messageVersion }),
         msg =>
             useServerFeePayer
                 ? setTransactionMessageFeePayer(address(feePayerKey!), msg)
                 : setTransactionMessageFeePayerSigner(signer, msg),
         msg => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
         msg => appendTransactionMessageInstructions(instructions, msg),
-        // Prepend compute budget instructions per best practice.
-        msg =>
-            prependTransactionMessageInstructions(
-                [
-                    getSetComputeUnitPriceInstruction({ microLamports: parameters.computeUnitPrice ?? 1n }),
-                    getSetComputeUnitLimitInstruction({ units: parameters.computeUnitLimit ?? 200_000 }),
-                ],
-                msg,
-            ),
     );
+
+    const txMessage =
+        version === 1
+            ? // Version 1 carries the compute budget in the message header, never
+              // as ComputeBudget instructions: the limit, the total priority fee
+              // for limit x price (rounded up), and the runtime-maximum
+              // loaded-account-data limit servers require (unset budgets zero).
+              pipe(
+                  baseMessage,
+                  msg => setTransactionMessageComputeUnitLimit(computeUnitLimit, msg),
+                  msg =>
+                      setTransactionMessagePriorityFeeLamports(
+                          priorityFeeLamports(computeUnitLimit, computeUnitPrice),
+                          msg as never,
+                      ) as typeof msg,
+                  msg => setTransactionMessageLoadedAccountsDataSizeLimit(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES, msg),
+              )
+            : // Prepend compute budget instructions per best practice.
+              prependTransactionMessageInstructions(
+                  [
+                      getSetComputeUnitPriceInstruction({ microLamports: computeUnitPrice }),
+                      getSetComputeUnitLimitInstruction({ units: computeUnitLimit }),
+                  ],
+                  baseMessage,
+              );
+
+    // Refuse a transaction over its version's size limit before it reaches
+    // the signer: the network would drop it.
+    const size = getTransactionSize(compileTransaction(txMessage));
+    const maxSize = version === 1 ? V1_MAX_TRANSACTION_SIZE : V0_MAX_TRANSACTION_SIZE;
+    if (size > maxSize) {
+        throw new Error(`version ${version} transaction is ${size} bytes, over the ${maxSize}-byte limit`);
+    }
 
     // When server pays fees, partially sign (only the transfer authority).
     // The server will add its fee payer signature before broadcasting.
@@ -401,6 +490,45 @@ export async function buildChargeTransaction(
 }
 
 // ── Helpers ──
+
+const DEFAULT_COMPUTE_UNIT_LIMIT = 200_000;
+const DEFAULT_COMPUTE_UNIT_PRICE = 1n;
+/** The runtime's compute unit ceiling per transaction. */
+const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+
+/** draft-solana-charge-00 §Method Details: "An array of at most 8 additional payment splits." */
+const MAX_SPLITS = 8;
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * draft-solana-charge-00 §Method Details, network: "MUST be one of
+ * \"mainnet\", \"devnet\", or \"localnet\"" (the legacy `mainnet-beta` spelling
+ * is accepted as an alias). An unknown cluster is refused rather than paid
+ * through the mainnet RPC.
+ */
+function assertSupportedChallengeNetwork(network: string | undefined): void {
+    if (network === undefined) return;
+    if (!(CANONICAL_NETWORKS as readonly string[]).includes(normalizeNetwork(network))) {
+        throw new Error(`Unsupported challenge network "${network}" (allowed: ${CANONICAL_NETWORKS.join(', ')})`);
+    }
+}
+
+/**
+ * draft-solana-charge-00 §Request Schema, amount: "The value MUST be a
+ * positive integer that fits in a 64-bit unsigned integer". Checked
+ * explicitly so the refusal names the amount instead of surfacing a codec
+ * error from instruction encoding.
+ */
+function parseU64Amount(value: string, label: string): bigint {
+    if (!/^[0-9]+$/.test(value)) {
+        throw new Error(`Invalid amount: ${label} "${value}" is not a base-10 integer`);
+    }
+    const parsed = BigInt(value);
+    if (parsed > U64_MAX) {
+        throw new Error(`Invalid amount: ${label} ${value} does not fit in a u64`);
+    }
+    return parsed;
+}
 
 /**
  * Always-on expiry refusal for the client (audit #10): refuse to sign a
@@ -511,11 +639,19 @@ export declare namespace charge {
          */
         expectedNetwork?: string;
         /**
+         * Opt-in guard: refuse to sign a challenge whose primary `recipient` is
+         * not this address. Use for auto-pay flows that know whom they pay.
+         * Defaults to no constraint.
+         */
+        expectedRecipient?: string;
+        /**
          * Opt-in guard (audit #10): refuse to sign a challenge whose amount (in
          * base units) exceeds this cap. Use for auto-pay flows where the server
          * controls what gets signed. Defaults to no constraint.
          */
         maxAmount?: bigint;
+        /** Highest transaction message version the signer can sign. See {@link buildChargeTransaction.Parameters}. */
+        maxTransactionVersion?: TransactionVersion;
         /** Called at each step of the payment process. */
         onProgress?: (event: ProgressEvent) => void;
         /** Custom RPC URL. If not set, inferred from the challenge's network field. */
@@ -557,6 +693,13 @@ export declare namespace buildChargeTransaction {
         computeUnitLimit?: number;
         /** Compute unit price in micro-lamports for priority fees. Defaults to 1. */
         computeUnitPrice?: bigint;
+        /**
+         * Highest transaction message version the signer can sign (e.g. `0` for
+         * a hardware wallet that does not sign version 1 yet). The client builds
+         * the highest advertised version up to this one, and refuses the
+         * challenge when none is buildable. Defaults to no restriction.
+         */
+        maxTransactionVersion?: TransactionVersion;
         /** Called at each step of the payment build/signing process. */
         onProgress?: (
             event:
@@ -582,6 +725,8 @@ export declare namespace buildChargeTransaction {
                 recentBlockhash?: string;
                 splits?: Array<{ amount: string; ataCreationRequired?: boolean; memo?: string; recipient: string }>;
                 tokenProgram?: string;
+                /** Transaction message versions the server accepts. Absent means [0]. */
+                transactionVersions?: readonly TransactionVersion[];
             };
             recipient: string;
         };

@@ -1,0 +1,3508 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "Client-paid open (the payer is fee payer and rentPayer) of a delegated session key, deposit 1000, the challenged recentSlot as openSlot and the challenged blockhash: every field agrees, so the server accepts. The baseline every open reject pairs with. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-client-paid-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-994af38957",
+      "MPP-36fd6945f0",
+      "MPP-48a0bd6cec"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients and servers MUST derive the expected channelId from the channel program ID and the seed components above and MUST verify that the open transaction creates and funds exactly that PDA.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "feePayer: the challenge names the operator as feePayerKey, the client builds the open with the operator as fee payer and rentPayer (account 1) and leaves its slot empty; the server co-signs. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-sponsored-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+D8+jujxoIr0hnlHLC81qT8CrXOtSPJlAOrWvzUyLEYD2y6lAULd5QpbN0ejsvU/6/sttRT0lDIXZlLpnHgoKgAIACg9mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAQAOCQwEAgMIBQcLCg0hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-25dd4709fe",
+      "MPP-d0a49deec1",
+      "MPP-1289809c4e",
+      "MPP-eebad15185"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "MUST be the operator / fee-payer key already in scope (the same key that co-signs open as fee payer); a single operator signature satisfies both the fee-payer and rentPayer signer roles.",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer authorizes itself as voucher signer (no delegation). Pair: session-open-client-paid-accept (a delegated key). The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-payer-signer-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "channelId": "ADBrpWacLn5d6nqa6sfhAKVvJ17gSXeZdXkFCEDNSPDH",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "Acj8uMp4L1B0FcAdZRltBaLM9ZdPMploGNDW9ffCJBJcFv5AnO+i4hNoBfy10us5jA35nyiNaxPeUzF5l0sDKwSAAQAJDepKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+yI2G4oMBLmIead2lqWVgyUkCU2QA3lre2r23GUCibQWPui735LYbLUcXCuQCHKEbW7CX/lHmcacdNUjiesuMD+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+Fmnofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrqtOKzMeS086FUK64PlV3V0zA0nHTqHHCpIF7AZVCSIzzEkOkozS44c7s0P8ldozF5ymD02/RsLDbpEpnVXU5rkDBQAFAkANAwAFAAkDAQAAAAAAAAALDgAADAgAAgEDBwQGCgkLIQEHAAAAAAAAAOgDAAAAAAAAhAMAAICy5g4AAAAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-aa166e34b4",
+      "MPP-994af38957"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| authorizedSigner | string | REQUIRED | Base58 public key bound into the PDA seeds as the voucher signer; MAY equal payer or a delegated signer |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "openSlot back-dated 100 slots below the challenged recentSlot (a client MAY choose an earlier openSlot). The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-earlier-open-slot-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "AhnyyhLLcmPQa5aeqJmavPLYswHWJuAwAZKSRNy4784Y",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "249999900",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AbzWcjY+uep4i8b4gILXjkC+FD9H+7jWDmuPlLgmoF3hSaVo5rP+FjG8ld6xlAXiSiEXcozL8NwDmh/b2efYrQaAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+yQLGg515sy2Vv+1IrMZq/HUYmmv+Vdgr4fKQ0/tFDQKad66+1VINkZsW7FwDTU64br+uEcQYEcyMLFXTFnpnZqAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsCAQMHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAHLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| openSlot | string | REQUIRED | Decimal u64 per-incarnation epoch encoded into the open instruction as open_slot; MUST be no greater than the challenge's methodDetails.recentSlot and MUST satisfy the on-chain window rule of {{channel-closure}} when the transaction executes.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "openSlot exactly OPEN_SLOT_WINDOW (1500) slots below the challenged recentSlot: the last slot inside the window. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-open-slot-window-edge-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "GQat47WDqxEPrDnaVmzwrCXmGdr6RaTd61kVYdCTZhqe",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "249998500",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AY+jhXlyXa1JlcJeG/ndnMe4v3ou+7Z2J/l48B2NzGbIe1AEgXJz78NGJFL0QYqeYNK/eAhVP7b6uNRemfXEYgqAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCfFGWdYzTuYUSp3yxbO81mJziMBcFrJwiHSdmycE9JhrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7OTp+JQBhjHf03J5bTmKwhnGPhlQ42p1QiEsdji7x+elAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAgEHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAApKzmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4",
+      "MPP-48e464d2fb"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the credential's openSlot equals the decoded open_slot and satisfies the open-slot window relative to both the challenged recentSlot (openSlot <= recentSlot and recentSlot - openSlot <= OPEN_SLOT_WINDOW)",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge offers idleTimeoutOptionsSeconds [60, 300, 900]; the client selects 300. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-idle-timeout-offered-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutOptionsSeconds": [
+            60,
+            300,
+            900
+          ],
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-e436a4d7d5",
+      "MPP-4797b22e1a"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "A client-selected value MUST exactly match an offered value.",
+      "section": "Server-Initiated Idle Close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge proposes one co-recipient at 500 bps; the open commits exactly that preimage. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-splits-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "distributionSplits": [
+            {
+              "recipient": "Vote111111111111111111111111111111111111111",
+              "shareBps": 500
+            }
+          ],
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AYA5pvTkutrXyohZKckxvCRiTM1VwGKlwFjvr6dtUlg0SMODH26GsWmh5jIFWmW6XUu1tbZVHjVQGfnKwMPUqwmAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQxDAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAABAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAAD0AQA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "distributionSplits": [
+            {
+              "recipient": "Vote111111111111111111111111111111111111111",
+              "shareBps": 500
+            }
+          ],
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a9cb73c5b3"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| distributionSplits | array | OPTIONAL | Splits preimage (see the challenge's methodDetails.distributionSplits); MUST byte-match the splits proposed in the 402 challenge |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "depositAmount 100 equals the challenged minimumDeposit 100. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-deposit-at-minimum-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "100",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQ5wrjfGlmCYmZbzigtGz3Oeq7ij25tST4+LrwcEEDxhgtOH6fhzbfcbM4DDptJoXJk9MGvJIPXtxxtQjftJBASAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAAZAAAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d142f89f1c",
+      "MPP-ec0236515c"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST reject POST /channel/open payloads with depositAmount < minimumDeposit.",
+      "section": "Shared Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "No minimumDeposit and a deposit of 1 base unit. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-deposit-one-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ATWBl8ZQeonAoAumKB/NbGKCji1cUsoo+Ji+vZNWE/3ekqDA3e8b7yADdkC1QF8y3pPqv7JgxPFhauTjmUEopAaAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAAAQAAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-e4dc36f3bd"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| deposit | u64 | Initial deposit in base units; MUST be non-zero |",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "voucherSigner operator: authorizedSigner is the challenged operator and the open carries the payer's bearer proof signed for the opening challenge and the derived channel. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-operator-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "5QGteaddauV3jKRg43geFUiCoEhzeb5RLxPhXSuZuiPxHo2PHuehNGbHY2ZXRxDAqfPMZXjHeLZ5NJoBmGuujQMp",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUepFFiy5AhIdDvQX1NhLpftEvL2Q1/PXlepoYtrj9tXvCWk+Bk3K/IBRleVU4TnVkJV5ZqnpL/8CDVT+zNsZQ2AAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+y+IhX8CLS4q8ulmISGQK+UNpnLEbJGTvn2Byvt6534CfhYuln1AEmVB5fBmzQasfmKy7rHEEp2BAw7r7jmvAUmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzqMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Waeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAoCAQMHBAYLCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-421303e0b1",
+      "MPP-85917fe086",
+      "MPP-7126d3b0b5",
+      "MPP-05f0c337af"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The proof's challengeId, channelId, and payer MUST equal the opening challenge ID, declared and derived channel ID, and transaction payer.",
+      "section": "Session Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A Token-2022 mint with tokenProgram Token-2022 in the challenge; the open's token program and escrow ATA are Token-2022's. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-open-token-2022-accept",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "EJM1Cw1AQJnHezDTVduE7xy362ynLZqFGzLRfSnpWebg",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ASICzn5PnLLYdvGmxm/UpgJVQiEkHy5agOu4uhjwy7waq0Oux5/tTVAthfq/9qI7w2gX6tbNG6nkUIODOQbmbwaAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsnyZhio/8+oRg2C1pmm0xLv+TzxdnCiw5pIXWxaq5SYufzHLB/h3eUGYKZ6JJDNnkFy8+dmPqWPv0gm7MXLex78WZbABGrHUXL/BcPI1ASdzm0jp8xMXaptvu5P/Sl+TnAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324e51j94YQl285GzN2rYa/E2DuQ0n/r35KNihi/wXkkg7bIoqh7dHHYFPlZH5OVyECpzj2fTVun06S4p0nlpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b5cf9fcdaa"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "If the challenge supplied tokenProgram, the decoded token program MUST match it; otherwise it MUST be a supported token program for the mint.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "depositAmount 99 against minimumDeposit 100 (the open is built for a challenge without the floor). Pair: session-open-deposit-at-minimum-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-open-deposit-below-minimum-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "99",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQryIh+5r68SQXiy8cgkV1mZDEHU5qkiXyjt+DgYbMyICIYKA/bgv/wtNQL0A35RWOOx8SWuI/8PxT5lan2huQuAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAAYwAAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d142f89f1c",
+      "MPP-ec0236515c"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST reject POST /channel/open payloads with depositAmount < minimumDeposit.",
+      "section": "Shared Fields"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A deposit of 0 with no minimumDeposit. Pair: session-open-deposit-one-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "amount-mismatch"
+    },
+    "id": "session-open-deposit-zero-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "0",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AYPhAgVFf1hdTdTI95wpf7TrHn+/Juj77hQeiGzf5nlE6rdwCnU8xX8kGgP1tQJKbiKYAD+NPydXzHsx4kxFaQCAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAAAAAAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-e4dc36f3bd"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| deposit | u64 | Initial deposit in base units; MUST be non-zero |",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope claims depositAmount 999 while the signed open deposits 1000. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /depositAmount set to \"999\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-deposit-envelope-mismatch-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "999",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec0236515c",
+      "MPP-36fd6945f0",
+      "MPP-a4620e1d52"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| depositAmount | string | REQUIRED | Initial deposit in base units; MUST equal the decoded open deposit and satisfy depositAmount >= minimumDeposit (when the challenge sets one) |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The signed open deposits 5000 while the envelope says 1000. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open deposit argument set to 5000 (payload unchanged).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-deposit-argument-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AdSJLzjyo2CjScxNfVE48EK1euczkIrfsR/fVX2XcKzOiRl0JVVi6HykC4g0sdL06aOGfGrdOa1RsCNkrg3FDAWAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAAiBMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ec0236515c",
+      "MPP-36fd6945f0",
+      "MPP-a4620e1d52"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the decoded deposit equals depositAmount, satisfies methodDetails.minimumDeposit (when set), and that the resulting distributionHash matches the digest of the canonical preimage of the splits proposed in the 402 challenge.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open (envelope and instruction) binds a 600-second grace period; the challenge says 900. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-grace-period-mismatch-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 600,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AbtKTHlifCjyemUPD8klPI+VaEXknDXljXQxLlrODemCuzszwaTdFPiKdCKIZSGeTbqdHi8wgitSy9Nd+DbfOgKAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAABYAgAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-53a60f6563",
+      "MPP-382e76fa94"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST verify that a new channel uses the challenged gracePeriodSeconds.",
+      "section": "Grace Period Security"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope says 900 but the signed open's grace_period is 1 second. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open grace_period argument set to 1 (payload unchanged).",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-grace-period-argument-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "Af3vXTPE/0YybfB2wZI9fPUGIl9ypldGdDMkN+Od72HuqdK9UwajqaZF7vkwRCl/A7vS+5j3Zgfh2U0CPrjnwAeAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAAABAAAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-382e76fa94",
+      "MPP-36fd6945f0"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST verify that a new channel uses the challenged gracePeriodSeconds.",
+      "section": "Grace Period Security"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open pays another payee than the challenged recipient. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-payee-mismatch-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "4rnmDxryVMd79QHyAw2bYvGbqyQQNA1sPCBZhJXCnsPD",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "Ac5Q+CcpLKn8ikaCzlenU8Ma60bYQB26pmXfZP64OQ8Ta30wYhRTtxZEPWfid1X7ZdXJsgOG8GEqseButtiL6AmAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsOVRDo86eBz84Q8g+FIgZrbDOGsoNFIPLAlkTEhPUtchrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7IlsD1cAwz93SzSjBCnZDbii0hBpg9D2P8kkNpRaJTV+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nWlQNe2seKyu1F1IZyaPwYBCSQcqMTxcMwcotSO7q+dCMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WZGiigt0OBWTpNlGlXkgiSavyK2CyIObdkQ1m566mks6p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAA0OAAAGCQwBAgMIBAcLCg0hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-3da59f1464",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| payee | string | REQUIRED | Base58 public key of the channel payee (matches recipient in the 402 challenge) |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open escrows a mint the server never challenged. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-mint-not-challenged-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "GKPvjKF7mDTui4rqHRhWuQSf48w3bzpwZXwhYAeUeWHb",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AXUcdz7szB/gSls8nWTk3e9Mbos3c16hhsn4elTePn5vYEbuDQcxqdpIMt6pcbAVT4fHYAs8JMyT39Mv1pAtvQWAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsaL6O8ySa5NVMflCYmR4olh0FnwoP0cGKSqod+RkHhkfXxl8AkQqzO4aonD6HrDWelyryMoolCI0onub2nSQgXOOVrm+QAdpNFHJzTLBGktj8dcdLnKfMQkDh74xjfsMuAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKlaVA17ax4rK7UXUhnJo/BgEJJByoxPFwzByi1I7ur50IyXJY9OJInxuz0QKRSODYMLWhOZ2v8QhASOe9jb6fhZkaKKC3Q4FZOk2UaVeSCJJq/IrYLIg5t2RDWbnrqaSzqnofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrqtOKzMeS086FUK64PlV3V0zA0nHTqHHCpIF7AZVCSIzzgEOYK/tsicXvWMZL1QUWj+WWjO7gtLHAp6yzh4ggmTMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAsOAAAMDQoDAgEHBAYJCAshAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-bf87a688ef",
+      "MPP-299460514f",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST set the 402 challenge currency only to an allow-listed mint and MUST reject any open whose decoded mint is not on the list.",
+      "section": "Mint Allow-List"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open commits a co-recipient split the challenge did not propose. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-splits-not-challenged-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "distributionSplits": [
+            {
+              "recipient": "Vote111111111111111111111111111111111111111",
+              "shareBps": 500
+            }
+          ],
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AYA5pvTkutrXyohZKckxvCRiTM1VwGKlwFjvr6dtUlg0SMODH26GsWmh5jIFWmW6XUu1tbZVHjVQGfnKwMPUqwmAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQxDAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAABAAAAB2FIHTV0dLt8TXYk69O9s9g1XnPREEP8DaNTgAAAAAD0AQA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a9cb73c5b3",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| distributionSplits | array | OPTIONAL | Splits preimage (see the challenge's methodDetails.distributionSplits); MUST byte-match the splits proposed in the 402 challenge |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge proposes a split; the open commits none. Pair: session-open-splits-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-splits-dropped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "distributionSplits": [
+            {
+              "recipient": "Vote111111111111111111111111111111111111111",
+              "shareBps": 500
+            }
+          ],
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a9cb73c5b3",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| distributionSplits | array | OPTIONAL | Splits preimage (see the challenge's methodDetails.distributionSplits); MUST byte-match the splits proposed in the 402 challenge |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "openSlot 10 slots past the challenged recentSlot (the open was built for a later challenge). Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-open-slot-ahead-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "9K6cyVh6zMpuQAsH6P4g4PXfmFLNSE4vt9vUy7V4f2c4",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000010",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUIVqBfuiWQ9HGD8cMb8/r3BfNj+8//axuozaCpK2uZdF8vC/BKVjFsFE5DNr5nEGOQ4fBu6hNnVGAmU85XqkwKAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWTBPdSGy8A5CsD87A6KBSe26O9fcs9ehbbMNncI1EfRrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7HuATgeFUD3JQzA9TVrSc6vF8WDMfwEZcNRdRxnEU5I1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAgEHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAirLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4",
+      "MPP-664cb0aec6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Future openSlot values MUST be strictly rejected at open.",
+      "section": "Reincarnation Replay"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "openSlot 1501 slots below the challenged recentSlot. Pair: session-open-open-slot-window-edge-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-open-slot-outside-window-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "4YvxqUrLqpJMS8kSVxSFfwkZdLBdzLv3TtQ7H11oRWhF",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "249998499",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUTCcyicSzLuJE61hHLujGMtqNv91K9juK9p7Wuoyyl+pVShsZnl4ZfmOc9DvKFanocPllBy1RMDfH5izFw+BguAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsNMEU6AdAY+VIzcbc6tN+E8QE9IgNL47P/IcF7uimstJrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7I43cOpUQuvtuVIQohNKnLTJ9TQxRbHbpcv9Bl6apSKQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsBAgMHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAo6zmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-dc4603ccd4",
+      "MPP-48e464d2fb"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the credential's openSlot equals the decoded open_slot and satisfies the open-slot window relative to both the challenged recentSlot (openSlot <= recentSlot and recentSlot - openSlot <= OPEN_SLOT_WINDOW)",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope's openSlot is one slot earlier than the signed open's (channelId unchanged), so the PDA re-derived from the envelope is not the declared channel. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /openSlot set to \"249999999\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-open-open-slot-envelope-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "249999999",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-733a58af31",
+      "MPP-73f0b859d9",
+      "MPP-994af38957"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "A PDA seed: it is a derivation input for the channel address, and servers MUST include it when re-deriving or validating channelId.",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope's salt is 8 while the signed open (and channelId) use 7. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /salt set to \"8\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-open-salt-envelope-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "8",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-994af38957",
+      "MPP-a9eb047d07"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients and servers MUST derive the expected channelId from the channel program ID and the seed components above and MUST verify that the open transaction creates and funds exactly that PDA.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope declares the PDA of another salt as channelId; relying on a client-declared channelId alone is not sufficient. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /channelId set to \"4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-open-channel-id-not-derived-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-994af38957",
+      "MPP-895f62e266"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients and servers MUST derive the expected channelId from the channel program ID and the seed components above and MUST verify that the open transaction creates and funds exactly that PDA.",
+      "section": "Channel State"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open instruction's channel account (5) is another PDA while the envelope declares the derived one. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open account #5 set to 4pZ8bbBE534oGg9FcXrN4vtz92QwNGZ112T2bzMpCXrZ.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-open-channel-account-swapped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ATsxnSxk4gLkpFvfh5UnhmwsW8hDXEvdznjoQ/7+wIs4d8VMaFAsrPRwpQI7UNCPUvBsSWuFO241iu4RmoLI5QWAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsOMGwfUGdepA8aZuO4GZzx5l67eKS+rVI+rCYzCHcXdprhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsBAgMHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-994af38957",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Recompute the expected PDA from the decoded payer, payee, mint, authorized signer, salt, and open_slot plus the channel program ID. Verify it equals both the decoded channel account and the declared channelId.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The escrow token account (7) is another channel's ATA. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open account #7 set to 6KXfpa2CfwVyheA1FGLGiXv9enkRLLZ3vyCqpuXgmU5p.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-escrow-ata-swapped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ATRLfSGckDvbvPlxiqutqYfSqbgjzsFnnKOUTW9O7LV3U52rq3kgbQtI15kqb6jWGM1cNUmngZuE6MztfnHc1wmAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsTwmRLVXF2kNTaNPmfPeSGz/MNmb6XiKUkLyvM+cPEXNrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7PPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAgEHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the decoded escrow account is the associated token account for (channelId, mint, tokenProgram).",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open's token program account (8) is Token-2022 for a Tokenkeg mint. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open account #8 set to TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-token-program-swapped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AS2mcV+hKyr4V2W5BuUB9/a42twve80mDCkX/NXIL2Un1eRfOIGz+DaFYLCrG7DD2onVr5J+ylYmu7l1C2juRQKAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324e51j94YQl285GzN2rYa/E2DuQ0n/r35KNihi/w7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-b5cf9fcdaa",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "If the challenge supplied tokenProgram, the decoded token program MUST match it; otherwise it MUST be a supported token program for the mint.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "accounts[1] (rentPayer) is a third key, not the transaction fee payer. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open account #1 set to FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-rent-payer-not-fee-payer-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "Apw8TB4Xyzy/yqGQErv3bdUcopjgOQdxpS7wsk6UhztqGT0aSmy11E+vgumTO/mhUc53rUzS1add0lE1r3Z6iwQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIACg/qSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLNVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+jaa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAAEOCQwEAgMIBQcLCg0hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-1289809c4e",
+      "MPP-eebad15185"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verifiers that read open accounts by fixed index MUST account for rentPayer at index 1 and the resulting +1 shift of every account after payer, and MUST verify that accounts[1] equals the operator / fee-payer key.",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The mint account (3) made writable: the account privileges are no longer the committed open's. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open account #3 made writable.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-writable-mint-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ARsqxZlgH5HXtSqX/hFGpXRj9h/F7V40KOI8zXuyh6Odqsst0leaZJ3Ys4qgtvKzWadUKEvZtUXr6M0T92o/ogKAAQAJDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqVpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAAwOAAANAQsEAgMIBQcKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c108029161",
+      "MPP-a4620e1d52"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST reject Action: \"open\" credentials when the challenge, HTTP payload, decoded transaction, derived PDA, escrow ATA, token program, or confirmed on-chain state disagree.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A fifteenth account appended to the open instruction. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: a fifteenth (remaining) account on open.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-extra-account-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AfT0DkiWMS62mkZQ0xKSCfGyhslO9ToDzj5zJ6lVHYDMSglyL9WWYvrMh9o3s/L5KbFr1HGcfPbC7oA1FiPJlQOAAQALD+pKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPVQgfaGUl33PRq2/7CvC51tS1aikIYT+39wAAk8OPo2sxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwUABQJADQMABQAJAwEAAAAAAAAADA8AAA0ICwMBAgcEBgoJDA4hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c108029161",
+      "MPP-a4620e1d52"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Every instruction takes an exact account list and rejects transactions with missing OR extra accounts.",
+      "section": "Account Shapes and Events"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "authorizedSigner is a PDA (not a curve point); the open instruction, channelId and escrow are re-derived for it, so only the curve check refuses it. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open rebuilt with authorizedSigner GA8NBhhXYRotpLHDj3SEDQEnSK7XxVaBDG9o2sfjj4fE (not a curve point) and the payload re-derived.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-authorized-signer-off-curve-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "GA8NBhhXYRotpLHDj3SEDQEnSK7XxVaBDG9o2sfjj4fE",
+          "channelId": "ZKSjK3zmkEk6bo9gspkUedTyV2Kmxbrzw5NPRXM3bWr",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AckfyBTPPC5pzxbbxEmYJNzK1j9tZyHlFJAOTExCj8lFyMbZhtimsIsKTbBubLQU0BeFMg8UV2i3plgo5BjBIQiAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsCEdwrZ0MReaQI6deukIV9LXv5uuFagaR8XAp+e3wcdtrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7H1hEB7aaTodImA1vo0C5qkM8c1pSIXJrC89PJOcWZO3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+Fmnofuk6ysJCZP30t/WK4niuHIHemOf19dHqOmfY9QVrqtOKzMeS086FUK64PlV3V0zA0nHTqHHCpIF7AZVCSIz4TXb7XK8zEFAiFGS4sWk9BMubkUwzNqVHyd0uO9TsgXMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAsOAAAMCA0BAgMHBAYKCQshAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-060fb1362b",
+      "MPP-ebbc4c1186",
+      "MPP-4658b373e8"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The decoded authorizedSigner MUST equal the credential's authorizedSigner and MUST be a valid Ed25519 public-key point; reject non-curve values.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The envelope names the payer as authorizedSigner while the signed open binds the delegated session key. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /authorizedSigner set to \"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-open-authorized-signer-envelope-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-060fb1362b",
+      "MPP-994af38957"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The decoded authorizedSigner MUST equal the credential's authorizedSigner and MUST be a valid Ed25519 public-key point; reject non-curve values.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open envelope carries bump: 255. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /bump set to 255.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-bump-field-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "bump": 255,
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-427162b59f",
+      "MPP-2f056735f6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers MUST reject open envelopes that include a bump field using the malformed-credential problem type.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open envelope carries a signed voucher for the new channel. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /voucher set to {\"signature\":\"2hEU8vQtQWA4KqnjephuE4hBVXYWLVcPi3dUWWAmcNXQBB6SMdtLpqK2hVxo6BpEnpXphfkvaReH4YuLWo3R96iC\",\"signatureType\":\"ed25519\",\"signer\":\"AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os\",\"voucher\":{\"channelId\":\"HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd\",\"cumulativeAmount\":\"25\",\"expiresAt\":4102444800}}.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-initial-voucher-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA==",
+          "voucher": {
+            "signature": "2hEU8vQtQWA4KqnjephuE4hBVXYWLVcPi3dUWWAmcNXQBB6SMdtLpqK2hVxo6BpEnpXphfkvaReH4YuLWo3R96iC",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "25",
+              "expiresAt": 4102444800
+            }
+          }
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-89f2059960"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Action: \"open\" MUST NOT carry an initial voucher.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "voucherSigner client, yet the open carries a (valid) bearer proof. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /authentication set to {\"challengeId\":\"c_session_conformance_0001\",\"payer\":\"GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB\",\"signature\":\"3z3vpam1h1EEoJ45eX2fRpfaYmqDoDtH96hm6MkHF6wX9kp8BXEwsNtpWXvsQRtdWz4kRhRLXpi8wbTicgw3iJmg\",\"type\":\"proof\"}.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-open-client-mode-authentication-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "3z3vpam1h1EEoJ45eX2fRpfaYmqDoDtH96hm6MkHF6wX9kp8BXEwsNtpWXvsQRtdWz4kRhRLXpi8wbTicgw3iJmg",
+            "type": "proof"
+          },
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-04f98ac67d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| authentication | object | Conditionally REQUIRED | Reusable proof from {{session-bearer-proof}}; REQUIRED for operator and MUST be absent for client |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "voucherSigner operator and an open without the bearer proof. Pair: session-open-operator-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-open-operator-missing-authentication-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUepFFiy5AhIdDvQX1NhLpftEvL2Q1/PXlepoYtrj9tXvCWk+Bk3K/IBRleVU4TnVkJV5ZqnpL/8CDVT+zNsZQ2AAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+y+IhX8CLS4q8ulmISGQK+UNpnLEbJGTvn2Byvt6534CfhYuln1AEmVB5fBmzQasfmKy7rHEEp2BAw7r7jmvAUmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzqMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Waeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAoCAQMHBAYLCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-04f98ac67d",
+      "MPP-7126d3b0b5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "For operator, authorizedSigner MUST equal the challenged operator, and the server MUST verify authentication before broadcasting the open transaction.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The bearer proof is validly signed, but for another session challenge. Pair: session-open-operator-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-open-operator-proof-other-challenge-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authentication": {
+            "challengeId": "c_session_other_challenge",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "3rFbKnzLVjpcZnEgqS55wiwVZMDS9tjkYriB6Lmr5eKCpHBsFTYXMwiCsvxXykqsSzFdTinJqZSqG3kgrAB24gP6",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUepFFiy5AhIdDvQX1NhLpftEvL2Q1/PXlepoYtrj9tXvCWk+Bk3K/IBRleVU4TnVkJV5ZqnpL/8CDVT+zNsZQ2AAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+y+IhX8CLS4q8ulmISGQK+UNpnLEbJGTvn2Byvt6534CfhYuln1AEmVB5fBmzQasfmKy7rHEEp2BAw7r7jmvAUmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzqMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Waeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAoCAQMHBAYLCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-85917fe086",
+      "MPP-421303e0b1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The proof's challengeId, channelId, and payer MUST equal the opening challenge ID, declared and derived channel ID, and transaction payer.",
+      "section": "Session Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The bearer proof names the opening challenge but its signature is the payer's proof for another channel. Pair: session-open-operator-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /authentication/signature set to \"3z3vpam1h1EEoJ45eX2fRpfaYmqDoDtH96hm6MkHF6wX9kp8BXEwsNtpWXvsQRtdWz4kRhRLXpi8wbTicgw3iJmg\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "authentication-invalid"
+    },
+    "id": "session-open-operator-proof-tampered-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authentication": {
+            "challengeId": "c_session_conformance_0001",
+            "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+            "signature": "3z3vpam1h1EEoJ45eX2fRpfaYmqDoDtH96hm6MkHF6wX9kp8BXEwsNtpWXvsQRtdWz4kRhRLXpi8wbTicgw3iJmg",
+            "type": "proof"
+          },
+          "authorizedSigner": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "channelId": "DoCcHK3ySYmKWdinAKofCbTsGRTV5C6uWm5sjijmdzYY",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AUepFFiy5AhIdDvQX1NhLpftEvL2Q1/PXlepoYtrj9tXvCWk+Bk3K/IBRleVU4TnVkJV5ZqnpL/8CDVT+zNsZQ2AAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+y+IhX8CLS4q8ulmISGQK+UNpnLEbJGTvn2Byvt6534CfhYuln1AEmVB5fBmzQasfmKy7rHEEp2BAw7r7jmvAUmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQZr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzqMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4Waeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAoCAQMHBAYLCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-421303e0b1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "At open, the server MUST verify the session challenge and signature.",
+      "section": "Session Bearer Proof"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "voucherSigner operator, but the open binds the client's session key as authorizedSigner. Pair: session-open-operator-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-operator-signer-not-operator-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "operator"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-05f0c337af",
+      "MPP-7126d3b0b5"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Base58-encoded Ed25519 public key that MUST equal the channel's authorizedSigner.",
+      "section": "Method Details"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge offers [60, 300, 900]; the client selects 120. Pair: session-open-idle-timeout-offered-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-idle-timeout-not-offered-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 120,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutOptionsSeconds": [
+            60,
+            300,
+            900
+          ],
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-e436a4d7d5",
+      "MPP-1c0ce290f2",
+      "MPP-ea7a6777e6"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The server MUST reject an unsupported selection and MUST NOT silently clamp, replace, or otherwise reinterpret it.",
+      "section": "Server-Initiated Idle Close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge offers no idle-timeout options; the open selects 300 anyway. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-idle-timeout-without-options-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c20fb92f4d",
+      "MPP-4797b22e1a",
+      "MPP-1c0ce290f2"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The client MUST NOT include this field when the challenge omits idleTimeoutOptionsSeconds.",
+      "section": "Server-Initiated Idle Close"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open transaction uses a blockhash the challenge did not carry. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: transaction recompiled with recent blockhash 9zrUHnA1nCByPksy3aL8tQ47vqdaG2vnFs4HrxgcZj4F.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-open-wrong-blockhash-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AY/qIlrwxDfrGYIJ9KjbuWHMYfxN7saaHAWl4pYK6Gv3MmjWra2QVH+IfEqeYHFK2584OVp7G+TctSzypqLXlwOAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjOFr4m6yHxELp9AyAG3pZESE/3ojcRt8ldF8ZX2kNeCdAMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-ff870e0a38",
+      "MPP-d235eadc2e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients SHOULD set openSlot to the challenge's methodDetails.recentSlot and MUST use the challenged recentBlockhash in the transaction.",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A Memo instruction after the open: the transaction carries an instruction outside the open. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: instruction of program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr with data [105, 110, 118, 111, 105, 99, 101, 45, 55] added.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-foreign-instruction-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ARvEaJYCgaOMXiGUUkRdxEtUxGLEtuRmJFN1g3BbdXJycJciLHYJCgADTNuybUEI4fNtlMPWuGF3Cdh+e+qTqwCAAQALD+pKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nWlQNe2seKyu1F1IZyaPwYBCSQcqMTxcMwcotSO7q+dCMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WZGiigt0OBWTpNlGlXkgiSavyK2CyIObdkQ1m566mks6p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa6rTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiM8xJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5BAUABQJADQMABQAJAwEAAAAAAAAADQ4AAA4JDAMBAggEBwsKDSEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAGAAlpbnZvaWNlLTcA"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a4620e1d52",
+      "MPP-36fd6945f0"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers that sponsor or submit open transactions MUST treat the decoded transaction contents as the committed request.",
+      "section": "Open Transaction Binding"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "Sponsored open plus a System transfer of 1 SOL from the sponsor (the fee payer) to a third key. Pair: session-open-sponsored-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: System transfer of 1000000000 lamports from the fee payer to Stake11111111111111111111111111111111111111 added.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-sponsor-drain-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADxC8Z9Rp9fx4EGZusmbs5WP3US6pBmYmnP9T18sXyV/01VvaMuNkwcghEUOApeFLhfzx/BrYffMdE+JlBiO5MGgAIAChBmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsBqHYF5E3VCqYNDe9/ip6slV/U1yKeHIraKSdwAAAAABrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7O4oMIhlwfLYOX3C9LSt4F0TLHiY4U4DN02KLOoTModE8+uGdMQ3iOffhvfzbqqtqa83cz+tpNfKcLmylDVaSJgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nWlQNe2seKyu1F1IZyaPwYBCSQcqMTxcMwcotSO7q+dCMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WZGiigt0OBWTpNlGlXkgiSavyK2CyIObdkQ1m566mks6p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa6rTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiM8xJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5BAcABQJADQMABwAJAwEAAAAAAAAADg4BAA8KDQUDBAkGCAwLDiEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAGAgACDAIAAAAAypo7AAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a4620e1d52",
+      "MPP-c108029161"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Servers that sponsor or submit open transactions MUST treat the decoded transaction contents as the committed request.",
+      "section": "Open Transaction Binding"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open instruction appears twice. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: a second open instruction.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-duplicate-open-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AV+z1bvl0dug25na3gbHMlnjRSJHW4bKDngglUuzD+wxqsPRl1MQ22AygVGNqNekXUrjBfrCjbFQgDhCyuabEgWAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQQFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAADA4AAA0ICwMBAgcEBgoJDCEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAA"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-36fd6945f0",
+      "MPP-a4620e1d52"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Decode the open transaction before signing, paying fees, or broadcasting. Verify it contains the expected channel program instruction and that the instruction uses the open discriminator",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open instruction removed; only the ComputeBudget prefix remains. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open instruction removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-missing-open-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AevKF0hWnOcolYQ6vbRj3FhIfxgllz7ckwoQoWCI4PFZ4xKdoxViBxaExwOJ3odrEsrPEC57XVI7RgxXkHH4hwqAAQABAupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAADMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQIBAAUCQA0DAAEACQMBAAAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-36fd6945f0",
+      "MPP-994af38957"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Decode the open transaction before signing, paying fees, or broadcasting. Verify it contains the expected channel program instruction and that the instruction uses the open discriminator",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open instruction is invoked on another program than the challenged channelProgram. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open invoked on program CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-wrong-program-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AZj8x72iKy77bxrbIN7T7u3G4WCPlxEoe5yIOi4NFwKsyQ783YdXKRb5WKcm4Wj/PkuM0w459WF+sCkHg0IMeg+AAQALD+pKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+5zuI5kf4R6qBhBRYJ1OB9ZeRPgTFbwrVq8rZ1Zzp6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa6rTiszHktPOhVCuuD5Vd1dMwNJx06hxwqSBewGVQkiM8xJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwUABQJADQMABQAJAwEAAAAAAAAADA4AAA4ICwMBAgcEBgoJDSEBBwAAAAAAAADoAwAAAAAAAIQDAACAsuYOAAAAAAAAAAAA"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-c108029161",
+      "MPP-36fd6945f0"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verify the instruction targets the challenged channel program and encodes the challenged payer, payee, mint, authorizedSigner, salt, deposit, grace_period, open_slot, and canonical distributionSplits preimage.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The channel-program instruction carries the topUp discriminator (3) instead of open (1). Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: open discriminator set to 3.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-open-wrong-discriminator-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "ARu1ONzWuMJrS8tzcTI1pg038PDQqb6jdA1jh1462hcwfc5hyT42S4sTd/jsNcb/A3SrOTf/8vhc4Q5PR1YuQwSAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAwcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-36fd6945f0"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Decode the open transaction before signing, paying fees, or broadcasting. Verify it contains the expected channel program instruction and that the instruction uses the open discriminator",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "Client-paid challenge, but a third key (which signs) is the transaction fee payer; rentPayer is still the payer. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: transaction fee payer set to FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-mismatch"
+    },
+    "id": "session-open-fee-payer-swapped-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AmHNZdZZ1nCU1aFy6jXYGtgstGQehUCu38NoVc3B8hRydR5sqJatmTXN0/3NGSODU4onUx+cC52JWlJ+XWTvkQfpXUa0YwGjbFk3r9BoyEKu8sGLanEVHKJ3Bw/acts/EoRdn1+uL+zhEE/0JCGZw+26ht5SzaQSbx56gd2LeBAOgAIACg/VQgfaGUl33PRq2/7CvC51tS1aikIYT+39wAAk8OPo2upKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAQEOCQwEAgMIBQcLCg0hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-eebad15185",
+      "MPP-1289809c4e"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Verifiers that read the open accounts by fixed index MUST account for the rentPayer account at index 1 (payer=0, rentPayer=1, payee=2, mint=3, authorizedSigner=4, channel=5, with every account after payer shifted by +1) and MUST verify that accounts[1] equals the operator / fee-payer key.",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The challenge sponsors fees (feePayerKey = the operator) but the client pays them itself (built for a client-paid challenge). Pair: session-open-sponsored-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-mismatch"
+    },
+    "id": "session-open-sponsored-client-pays-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQsiBxLF7/cXV8Bl9PY6Q9c0m3IRc00MwvCK1lFGWz3D34g4JgheM1ApoGyGUViOpqs8T7I29svNtfkzkVGl3AyAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-d0a49deec1",
+      "MPP-25dd4709fe"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "if feePayer is true, the fee payer MUST equal feePayerKey;",
+      "section": "Open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer's signature slot is zeroed. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: client signature zeroed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-payer-signature-missing-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-16faa7304f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The payer MUST be a signer.",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The payer's slot holds the payer's signature over another message. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: client signature replaced with its signature over another message.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-payer-signature-forged-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AQozwY5QTI8UYj7BkDiegOapMfgYh/hIerAURDBTAdXeJdPZrRyvi+BBLyGkPXh9CqQL3F4+YJBERykkYfzJ6waAAQAKDupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAwOAAANCAsDAQIHBAYKCQwhAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-16faa7304f"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The payer MUST be a signer.",
+      "section": "open"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open's transaction field is not base64. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /transaction set to \"not a transaction!\".",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-transaction-not-base64-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "not a transaction!"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a5edb594a1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The open envelope has no transaction. Pair: session-open-client-paid-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting. Mutation: credential /transaction removed.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload"
+    },
+    "id": "session-open-missing-transaction-reject",
+    "input": {
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7"
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPP-a5edb594a1"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "| transaction | string | REQUIRED | Base64-encoded (standard alphabet, padded) signed or partially signed transaction |",
+      "section": "Action: \"open\""
+    },
+    "tier": "offline"
+  }
+]

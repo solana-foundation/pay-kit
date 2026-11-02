@@ -84,6 +84,34 @@ pub fn parse_units(amount: &str, decimals: u8) -> Result<String> {
     }
 }
 
+/// Convert base units to the human-readable amount [`parse_units`] reads:
+/// `format_units("1500000", 6)` → `"1.5"`, and
+/// `parse_units(&format_units(x, d)?, d) == x` for every valid `x`. Callers
+/// holding a price in base units use it to drive the decimal-priced APIs
+/// (`Mpp::charge`, `X402::exact_requirements`) without rounding.
+///
+/// Rejects `decimals > MAX_DECIMALS` and anything but a base-10 `u128`.
+pub fn format_units(base_units: &str, decimals: u8) -> Result<String> {
+    if decimals > MAX_DECIMALS {
+        return Err(Error::Other(format!(
+            "Decimals {decimals} exceeds maximum {MAX_DECIMALS}"
+        )));
+    }
+    if base_units.is_empty() || !base_units.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Error::Other(format!("Invalid base units: {base_units}")));
+    }
+    let units: u128 = base_units
+        .parse()
+        .map_err(|_| Error::Other(format!("Invalid base units: {base_units}")))?;
+    let scale = 10u128.pow(u32::from(decimals));
+    let (whole, frac) = (units / scale, units % scale);
+    if frac == 0 {
+        return Ok(whole.to_string());
+    }
+    let frac = format!("{frac:0width$}", width = usize::from(decimals));
+    Ok(format!("{whole}.{}", frac.trim_end_matches('0')))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +145,22 @@ mod tests {
         );
         let huge = format!("1{}", "0".repeat(21));
         assert!(parse_units(&huge, MAX_DECIMALS).is_err());
+    }
+
+    #[test]
+    fn format_units_inverts_parse_units() {
+        assert_eq!(format_units("1500000", 6).unwrap(), "1.5");
+        assert_eq!(format_units("1000", 9).unwrap(), "0.000001");
+        assert_eq!(format_units("1000", 6).unwrap(), "0.001");
+        assert_eq!(format_units("7", 0).unwrap(), "7");
+        assert_eq!(format_units("0", 6).unwrap(), "0");
+        for (units, decimals) in [("1000", 9), ("123456789", 6), ("1", 18), ("10", 1)] {
+            let human = format_units(units, decimals).unwrap();
+            assert_eq!(parse_units(&human, decimals).unwrap(), units, "{human}");
+        }
+        assert!(format_units("", 6).is_err());
+        assert!(format_units("-1", 6).is_err());
+        assert!(format_units("1.5", 6).is_err());
+        assert!(format_units("1", MAX_DECIMALS + 1).is_err());
     }
 }

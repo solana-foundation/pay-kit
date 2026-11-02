@@ -236,10 +236,29 @@ pub fn validate(vector: &Value) -> Result<(), String> {
     {
         return Err("expect.outcome must be accept or reject".into());
     }
+    let known: Vec<&str> = RejectCode::ALL.iter().map(|c| c.as_str()).collect();
     if let Some(code) = expect.get("rejectCode") {
-        let known: Vec<&str> = RejectCode::ALL.iter().map(|c| c.as_str()).collect();
         if !one_of(code, &known) {
             return Err("expect.rejectCode is not in the shared vocabulary".into());
+        }
+    }
+    if let Some(alternatives) = expect.get("alsoConformant") {
+        let valid = alternatives.as_array().is_some_and(|alts| {
+            !alts.is_empty()
+                && alts.iter().all(|alt| match alt["outcome"].as_str() {
+                    Some("accept") => alt.get("rejectCode").is_none(),
+                    Some("reject") => alt.get("rejectCode").is_some_and(|c| one_of(c, &known)),
+                    _ => false,
+                })
+        });
+        if !valid
+            || !expect
+                .get("alsoConformantReason")
+                .is_some_and(Value::is_string)
+        {
+            return Err(
+                "expect.alsoConformant must be a non-empty array of {outcome: accept} / {outcome: reject, rejectCode} with an alsoConformantReason".into(),
+            );
         }
     }
     Ok(())

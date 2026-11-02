@@ -24,9 +24,9 @@ pub use http_stream::*;
 pub use session::{
     build_open_payment_channel_transaction, create_payment_channel_session_opener,
     derive_payment_channel_open, BuildOpenPaymentChannelTransactionParams,
-    DerivePaymentChannelOpenParams, PaymentChannelOpen, PaymentChannelOpenOptions,
-    PaymentChannelSessionOpen, PaymentChannelSessionOpenOptions, SessionPayout,
-    DEFAULT_GRACE_PERIOD_SECONDS,
+    DerivePaymentChannelOpenParams, OpenBlockhash, PaymentChannelOpen, PaymentChannelOpenOptions,
+    PaymentChannelSessionOpen, PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
+    SessionPayout, DEFAULT_GRACE_PERIOD_SECONDS, MAX_SESSION_GRACE_PERIOD_SECONDS,
 };
 pub use session_consumer::*;
 pub use subscription::{
@@ -34,4 +34,5 @@ pub use subscription::{
     build_subscription_activation_transaction,
     build_subscription_activation_transaction_with_options, sign_subscription_authentication,
     BuildSubscriptionActivationOptions, SubscriptionActivation, SubscriptionMethodDetails,
+    VerifiedPlan,
 };

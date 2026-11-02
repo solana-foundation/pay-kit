@@ -49,15 +49,62 @@ impl<T: CommitTransport + ?Sized> CommitTransport for Arc<T> {
     }
 }
 
+/// What a [`SessionConsumer`] may sign vouchers for.
+///
+/// A metering directive is the server's claim of what a delivery cost, and
+/// the voucher signed for it lets the server settle that much of the
+/// deposit. The budget is the caller's bound on both: no directive is
+/// committed past it, whatever the server names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeteringBudget {
+    max_per_delivery: u64,
+    max_cumulative: u64,
+}
+
+impl MeteringBudget {
+    /// At most `max_per_delivery` base units for one delivery, and at most
+    /// `max_cumulative` for the channel's cumulative voucher (typically the
+    /// deposit, or less).
+    pub fn new(max_per_delivery: u64, max_cumulative: u64) -> Result<Self> {
+        if max_per_delivery == 0 || max_per_delivery > max_cumulative {
+            return Err(Error::Other(format!(
+                "metering budget needs 0 < max_per_delivery ({max_per_delivery}) <= \
+                 max_cumulative ({max_cumulative})"
+            )));
+        }
+        Ok(Self {
+            max_per_delivery,
+            max_cumulative,
+        })
+    }
+
+    pub fn max_per_delivery(&self) -> u64 {
+        self.max_per_delivery
+    }
+
+    pub fn max_cumulative(&self) -> u64 {
+        self.max_cumulative
+    }
+}
+
 /// Client-side consumer for session-metered deliveries.
 pub struct SessionConsumer<T> {
     session: ActiveSession,
     transport: T,
+    budget: MeteringBudget,
 }
 
 impl<T: CommitTransport> SessionConsumer<T> {
-    pub fn new(session: ActiveSession, transport: T) -> Self {
-        Self { session, transport }
+    pub fn new(session: ActiveSession, transport: T, budget: MeteringBudget) -> Self {
+        Self {
+            session,
+            transport,
+            budget,
+        }
+    }
+
+    pub fn budget(&self) -> MeteringBudget {
+        self.budget
     }
 
     pub fn session(&self) -> &ActiveSession {
@@ -83,15 +130,8 @@ impl<T: CommitTransport> SessionConsumer<T> {
         &mut self,
         directive: &MeteringDirective,
     ) -> Result<CommitReceipt> {
-        self.validate_directive(directive)?;
-        let amount = directive.amount_base_units()?;
-        if amount == 0 {
-            return Err(Error::Other(
-                "metered delivery amount must be greater than zero".to_string(),
-            ));
-        }
-
-        let voucher = self.session.prepare_increment(amount).await?;
+        let cumulative = self.validate_directive(directive)?;
+        let voucher = self.session.prepare_voucher(cumulative).await?;
         let payload = CommitPayload {
             delivery_id: directive.delivery_id.clone(),
             voucher,
@@ -102,7 +142,9 @@ impl<T: CommitTransport> SessionConsumer<T> {
         Ok(receipt)
     }
 
-    fn validate_directive(&self, directive: &MeteringDirective) -> Result<()> {
+    /// Check `directive` against the session, the transport and the budget,
+    /// and return the cumulative amount a voucher for it would sign.
+    fn validate_directive(&self, directive: &MeteringDirective) -> Result<u64> {
         let channel_id = self.session.channel_id_str();
         if directive.session_id != channel_id {
             return Err(Error::Other(format!(
@@ -110,7 +152,32 @@ impl<T: CommitTransport> SessionConsumer<T> {
                 directive.session_id
             )));
         }
-        self.transport.check_directive(directive)
+        let amount = directive.amount_base_units()?;
+        if amount == 0 {
+            return Err(Error::Other(
+                "metered delivery amount must be greater than zero".to_string(),
+            ));
+        }
+        if amount > self.budget.max_per_delivery {
+            return Err(Error::Other(format!(
+                "metered delivery amount {amount} exceeds the per-delivery budget {}",
+                self.budget.max_per_delivery
+            )));
+        }
+        let cumulative = self
+            .session
+            .cumulative
+            .checked_add(amount)
+            .filter(|cumulative| *cumulative <= self.budget.max_cumulative)
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "metered delivery amount {amount} takes the session past its cumulative \
+                     budget {} (committed {})",
+                    self.budget.max_cumulative, self.session.cumulative
+                ))
+            })?;
+        self.transport.check_directive(directive)?;
+        Ok(cumulative)
     }
 }
 
@@ -190,6 +257,10 @@ mod tests {
         Box::new(MemorySigner::from_bytes(&kp).unwrap())
     }
 
+    fn budget() -> MeteringBudget {
+        MeteringBudget::new(1_000, 10_000).unwrap()
+    }
+
     fn directive(session_id: String, amount: u64) -> MeteringDirective {
         MeteringDirective {
             delivery_id: "d1".to_string(),
@@ -211,7 +282,7 @@ mod tests {
             commits: Mutex::new(vec![]),
             fail: false,
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let envelope = MeteredEnvelope {
             payload: "work".to_string(),
             metering: directive(consumer.session().channel_id_str(), 250),
@@ -234,7 +305,7 @@ mod tests {
             commits: Mutex::new(vec![]),
             fail: false,
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         consumer.session_mut().set_expires_at(1234);
         let envelope = MeteredEnvelope {
             payload: "payload".to_string(),
@@ -271,7 +342,8 @@ mod tests {
             commits: Mutex::new(vec![]),
             fail: false,
         });
-        let mut consumer = SessionConsumer::new(session, std::sync::Arc::clone(&transport));
+        let mut consumer =
+            SessionConsumer::new(session, std::sync::Arc::clone(&transport), budget());
         let directive = directive(consumer.session().channel_id_str(), 25);
 
         let receipt = consumer.commit_directive(&directive).await.unwrap();
@@ -287,7 +359,7 @@ mod tests {
             commits: Mutex::new(vec![]),
             fail: false,
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
 
         let wrong_session = MeteredEnvelope {
             payload: (),
@@ -321,11 +393,76 @@ mod tests {
             commits: Mutex::new(vec![]),
             fail: true,
         };
-        let mut consumer = SessionConsumer::new(session, transport);
+        let mut consumer = SessionConsumer::new(session, transport, budget());
         let directive = directive(consumer.session().channel_id_str(), 250);
 
         let err = consumer.commit_directive(&directive).await.unwrap_err();
         assert!(err.to_string().contains("commit failed"));
         assert_eq!(consumer.session().cumulative, 0);
+    }
+
+    #[tokio::test]
+    async fn directives_past_the_budget_are_refused_before_signing() {
+        let session = ActiveSession::new(Pubkey::new_unique(), signer());
+        let transport = RecordingTransport {
+            commits: Mutex::new(vec![]),
+            fail: false,
+        };
+        let budget = MeteringBudget::new(400, 1_000).unwrap();
+        let mut consumer = SessionConsumer::new(session, transport, budget);
+        let session_id = consumer.session().channel_id_str();
+
+        // One delivery may not cost more than the per-delivery cap.
+        let err = consumer
+            .accept(MeteredEnvelope {
+                payload: (),
+                metering: directive(session_id.clone(), 401),
+            })
+            .err()
+            .expect("over the per-delivery cap");
+        assert!(err.to_string().contains("per-delivery budget"), "{err}");
+        let err = consumer
+            .commit_directive(&directive(session_id.clone(), 401))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("per-delivery budget"), "{err}");
+
+        // Deliveries within it commit up to the cumulative cap and no further.
+        for _ in 0..2 {
+            consumer
+                .commit_directive(&directive(session_id.clone(), 400))
+                .await
+                .unwrap();
+        }
+        consumer
+            .commit_directive(&directive(session_id.clone(), 200))
+            .await
+            .unwrap();
+        assert_eq!(consumer.session().cumulative, 1_000);
+        let err = consumer
+            .commit_directive(&directive(session_id.clone(), 1))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cumulative budget"), "{err}");
+
+        // A directive that would overflow the cumulative is refused too.
+        consumer.session_mut().cumulative = u64::MAX - 1;
+        let err = consumer
+            .commit_directive(&directive(session_id, 2))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cumulative budget"), "{err}");
+        assert_eq!(consumer.transport.commits.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_budget_needs_a_positive_per_delivery_cap_within_the_total() {
+        assert!(MeteringBudget::new(0, 10).is_err());
+        assert!(MeteringBudget::new(11, 10).is_err());
+        let budget = MeteringBudget::new(10, 10).unwrap();
+        assert_eq!(
+            (budget.max_per_delivery(), budget.max_cumulative()),
+            (10, 10)
+        );
     }
 }

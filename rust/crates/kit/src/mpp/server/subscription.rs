@@ -488,7 +488,7 @@ impl SubscriptionServer {
             &request,
             subscriber,
             activation_signature,
-            authentication.as_ref(),
+            &authentication,
         )
         .await
     }
@@ -681,13 +681,14 @@ impl SubscriptionServer {
                 )
                 .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
                 let subscriber = extract_subscriber_from_tx(&tx, &request, &self.config)?;
+                verify_credential_source(credential.source.as_deref(), &subscriber)?;
                 let program_id = parse_pubkey(&self.program_id, "program_id")
                     .map_err(|e| VerificationError::new(e.to_string()))?;
                 let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
                     .map_err(|e| VerificationError::new(e.to_string()))?;
                 let delegation_pda = find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
                 verify_activation_authentication(
-                    activate.authentication.as_ref(),
+                    &activate.authentication,
                     &credential.challenge.id,
                     subscriber,
                     &delegation_pda,
@@ -738,7 +739,7 @@ impl SubscriptionServer {
         request: &SubscriptionRequest,
         subscriber: Pubkey,
         activation: VerifiedSignature,
-        authentication: Option<&SubscriptionAuthentication>,
+        authentication: &SubscriptionAuthentication,
     ) -> Result<ReceiptKind, VerificationError> {
         let activation_reference = activation.to_string();
         // ── Derive subscription PDA and read on-chain state ──────────────
@@ -804,11 +805,6 @@ impl SubscriptionServer {
         self.ensure_current_authority(&subscriber, &delegation)
             .await?;
 
-        let authentication = authentication.ok_or_else(|| {
-            VerificationError::invalid_payload(
-                "Subscription activation is missing authentication.type=\"proof\"",
-            )
-        })?;
         let binding_key = subscription_binding_key(&subscription_pda);
         let subscription_id = derive_subscription_id(&subscription_pda, &credential.challenge.id);
         let binding = |landed_slot: u64| {
@@ -1414,7 +1410,7 @@ struct PreparedActivation {
     subscriber: Pubkey,
     /// Co-signed by the sponsor when fee sponsorship is configured.
     tx: VersionedTransaction,
-    authentication: Option<SubscriptionAuthentication>,
+    authentication: SubscriptionAuthentication,
 }
 
 /// Conformance hooks (feature `testkit`). Not a payment verifier: nothing
@@ -1751,21 +1747,25 @@ fn decode_activate_payload(
         let SubscriptionAction::Activate(payload) = action;
         return Ok(payload);
     }
-    serde_json::from_value::<ActivatePayload>(credential.payload.clone())
-        .map_err(|e| VerificationError::invalid_payload(format!("Failed to decode payload: {e}")))
+    serde_json::from_value::<ActivatePayload>(credential.payload.clone()).map_err(|e| {
+        // The proof is REQUIRED: name its absence rather than a decode
+        // failure, so it is reported as a missing proof.
+        if credential.payload.get("authentication").is_none() {
+            VerificationError::invalid_payload(
+                "Subscription activation is missing authentication.type=\"proof\"",
+            )
+        } else {
+            VerificationError::invalid_payload(format!("Failed to decode payload: {e}"))
+        }
+    })
 }
 
 fn verify_activation_authentication(
-    authentication: Option<&SubscriptionAuthentication>,
+    authentication: &SubscriptionAuthentication,
     challenge_id: &str,
     subscriber: Pubkey,
     subscription_delegation: &Pubkey,
 ) -> Result<(), VerificationError> {
-    let authentication = authentication.ok_or_else(|| {
-        VerificationError::invalid_payload(
-            "Subscription activation is missing authentication.type=\"proof\"",
-        )
-    })?;
     if authentication.challenge_id != challenge_id {
         return Err(VerificationError::credential_mismatch(
             "Subscription proof challengeId does not match the activation challenge",
@@ -1782,6 +1782,33 @@ fn verify_activation_authentication(
     {
         return Err(VerificationError::invalid_payload(
             "Invalid subscription authentication proof",
+        ));
+    }
+    Ok(())
+}
+
+/// draft-solana-subscription-00 §Source Verification: "If source is
+/// present, servers MUST verify that it uses the did:pkh:solana: method and
+/// that its address matches the subscriber signer extracted from the
+/// activation transaction."
+fn verify_credential_source(
+    source: Option<&str>,
+    subscriber: &Pubkey,
+) -> Result<(), VerificationError> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let address = source
+        .strip_prefix("did:pkh:solana:")
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(chain, _)| !chain.is_empty())
+        .map(|(_, address)| address)
+        .ok_or_else(|| {
+            VerificationError::credential_mismatch("Credential source must be a did:pkh:solana DID")
+        })?;
+    if address.parse::<Pubkey>().ok().as_ref() != Some(subscriber) {
+        return Err(VerificationError::credential_mismatch(
+            "Credential source does not match the activation subscriber",
         ));
     }
     Ok(())
@@ -1853,10 +1880,21 @@ fn extract_subscriber_from_tx(
         None
     };
 
+    if fee_payer_in_play && fee_payer_pubkey.is_none() {
+        return Err(VerificationError::invalid_payload(
+            "fee_payer=true requires a configured fee-payer pubkey",
+        ));
+    }
     if let Some(fp) = fee_payer_pubkey.filter(|_| fee_payer_in_play) {
-        // account_keys[0] is the fee-payer (the server's wallet); the
-        // subscriber is the next signer that's neither the fee-payer
-        // nor the puller.
+        // account_keys[0] must be the fee payer (the server's wallet),
+        // checked first so a transaction the subscriber pays for reports
+        // the fee payer, not a missing subscriber. The subscriber is the
+        // next signer that's neither the fee payer nor the puller.
+        if keys[0] != fp {
+            return Err(VerificationError::invalid_payload(format!(
+                "Activation transaction fee payer must be {fp}"
+            )));
+        }
         let required_signers = tx.message.header().num_required_signatures as usize;
         for k in keys.iter().take(required_signers).skip(1) {
             if *k != puller && *k != fp {
@@ -3162,6 +3200,67 @@ mod tests {
         assert!(err.message.contains("Could not identify subscriber"));
     }
 
+    // draft-solana-subscription-00 §Subscription Bearer Proof: "set the fee
+    // payer to methodDetails.feePayerKey when methodDetails.feePayer is
+    // true". A subscriber-paid transaction under a sponsored challenge is a
+    // fee-payer mismatch, reported before the subscriber is looked for.
+    #[test]
+    fn sponsored_challenge_checks_the_fee_payer_first() {
+        let subscriber = Pubkey::new_unique();
+        let instruction = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new_readonly(subscriber, true)],
+            data: vec![INSTRUCTION_SUBSCRIBE],
+        };
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &subscriber,
+            &[instruction],
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap();
+        let mut config = make_config();
+        config.fee_payer = true;
+        config.fee_payer_pubkey = Some(Pubkey::new_unique().to_string());
+        let err =
+            extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).unwrap_err();
+        assert!(err.message.contains("fee payer must be"), "{}", err.message);
+
+        // Positive control: unsponsored, the same transaction's subscriber
+        // is its fee payer.
+        config.fee_payer = false;
+        assert_eq!(
+            extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).unwrap(),
+            subscriber
+        );
+    }
+
+    // draft-solana-subscription-00 §Source Verification.
+    #[test]
+    fn credential_source_must_be_the_subscribers_did_pkh() {
+        let subscriber = Pubkey::new_unique();
+        verify_credential_source(None, &subscriber).unwrap();
+        verify_credential_source(
+            Some(&PaymentCredential::solana_did(
+                "devnet",
+                &subscriber.to_string(),
+            )),
+            &subscriber,
+        )
+        .unwrap();
+        for source in [
+            PaymentCredential::solana_did("devnet", &Pubkey::new_unique().to_string()),
+            format!("did:web:{subscriber}"),
+            format!("did:pkh:eip155:1:{subscriber}"),
+            format!("did:pkh:solana:{subscriber}"),
+            "did:pkh:solana:devnet:not-a-key".to_string(),
+        ] {
+            let err = verify_credential_source(Some(&source), &subscriber).unwrap_err();
+            assert!(err.message.contains("source"), "{source}: {}", err.message);
+        }
+    }
+
     #[test]
     fn format_rfc3339_seconds_round_trips_known_timestamps() {
         // 2024-01-15T12:03:10Z = 1705320190
@@ -3182,7 +3281,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
-                authentication: None,
+                authentication: test_authentication(),
             },
         );
         let payload = decode_activate_payload(&credential).expect("decode");
@@ -3199,7 +3298,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
-                authentication: None,
+                authentication: test_authentication(),
             }),
         );
         let payload = decode_activate_payload(&credential).expect("decode");
@@ -3215,6 +3314,15 @@ mod tests {
         );
         // ActivatePayload has `type` as required; this should not parse.
         assert!(decode_activate_payload(&credential).is_err());
+    }
+
+    fn test_authentication() -> SubscriptionAuthentication {
+        SubscriptionAuthentication {
+            kind: crate::mpp::protocol::intents::SubscriptionAuthenticationType::Proof,
+            challenge_id: "challenge".into(),
+            payer: Pubkey::new_unique().to_string(),
+            signature: "1".into(),
+        }
     }
 
     fn make_test_challenge_for_payload() -> crate::mpp::protocol::core::PaymentChallenge {
@@ -3250,7 +3358,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
-                authentication: None,
+                authentication: test_authentication(),
             },
         );
         let err = server
@@ -3274,7 +3382,7 @@ mod tests {
                 payload_type: "signature".into(),
                 transaction: None,
                 signature: Some("5J8Sig".into()),
-                authentication: None,
+                authentication: test_authentication(),
             },
         );
         let err = server
@@ -3375,22 +3483,27 @@ mod tests {
         keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
         let signer = MemorySigner::from_bytes(&keypair).unwrap();
         let config = make_config();
-        let details = SubscriptionMethodDetails {
-            plan_address: config.plan_id.clone(),
-            mint: config.mint.clone(),
-            token_program: config.token_program.clone(),
-            puller: config.puller.clone(),
-            merchant: Some(config.puller.clone()),
-            recipient: Some(config.recipient.clone()),
-            amount: Some("10000000".into()),
-            subscription_program: Some(SUBSCRIPTIONS_PROGRAM_ID.into()),
-            recent_blockhash: Some("11111111111111111111111111111111".into()),
-            plan_id_numeric: Some(1),
-            plan_bump: Some(255),
-            expected_period_hours: Some(720),
-            expected_created_at: Some(1_700_000_000),
+        let issued = SubscriptionRequest {
+            amount: "10000000".into(),
+            currency: config.mint.clone(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: config.recipient.clone(),
+            method_details: Some(serde_json::json!({
+                "planAddress": config.plan_id,
+                "mint": config.mint,
+                "tokenProgram": config.token_program,
+                "decimals": 6,
+                "puller": config.puller,
+                "subscriptionProgram": SUBSCRIPTIONS_PROGRAM_ID,
+                "recentBlockhash": "11111111111111111111111111111111",
+            })),
             ..Default::default()
         };
+        let details = crate::mpp::client::subscription::assume_plan(
+            &issued,
+            parse_pubkey(&config.puller, "puller").unwrap(),
+        );
         let payload = build_subscription_activation_transaction_with_options(
             &signer,
             &solana_rpc_client::rpc_client::RpcClient::new_mock("succeeds"),
@@ -3451,7 +3564,7 @@ mod tests {
                     payload_type: "transaction".into(),
                     transaction: Some(self.transaction.clone()),
                     signature: None,
-                    authentication: Some(authentication.clone()),
+                    authentication: authentication.clone(),
                 },
             );
             (credential, authentication)
@@ -3570,8 +3683,7 @@ mod tests {
         let server = SubscriptionServer::new(config).unwrap();
         let challenge = server.subscription_challenge("10000000").unwrap();
         let request: SubscriptionRequest = challenge.request.decode().unwrap();
-        let details =
-            SubscriptionMethodDetails::from_json(request.method_details.as_ref().unwrap()).unwrap();
+        let details = crate::mpp::client::subscription::assume_plan(&request, puller);
         let transaction = build_subscription_activation_transaction_with_options(
             &signer,
             &solana_rpc_client::rpc_client::RpcClient::new_mock("succeeds"),
@@ -3818,7 +3930,7 @@ mod tests {
                 payload_type: "transaction".into(),
                 transaction: Some(crate::core::tx::encode(&tx).unwrap()),
                 signature: None,
-                authentication: Some(authentication),
+                authentication,
             },
         );
         let error = fixture

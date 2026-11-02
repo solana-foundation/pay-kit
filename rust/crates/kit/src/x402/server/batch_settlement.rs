@@ -40,6 +40,14 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 
+use crate::core::payment_channel::payer_refund::DistributeClearance;
+use crate::core::payment_channel::token_account::{
+    decode_token_account, TOKEN_ACCOUNT_FROZEN, TOKEN_ACCOUNT_INITIALIZED,
+};
+#[cfg(test)]
+use crate::core::payment_channel::token_account::{
+    EXTENSION_IMMUTABLE_OWNER, TOKEN_ACCOUNT_LEN, TOKEN_ACCOUNT_TYPE,
+};
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
@@ -53,13 +61,14 @@ use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
-    check_channel_config, check_client_signed_payload, check_no_cooperative_close,
-    check_no_refund_amount, check_token_program, check_voucher_batched, check_withdraw_delay,
-    derive_channel_id, errors as codes, setup_form_from_transaction, BatchChannelConfig,
-    BatchError, BatchExtra, BatchPayload, BatchPaymentPayload, BatchRequiredEnvelope,
-    BatchRequirements, BatchSettlementExtra, BatchSettlementResponse, ChannelStateSnapshot,
-    SetupForm, TransactionExpectations, VoucherState, BATCH_SETTLEMENT_SCHEME,
-    MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS, VOUCHER_EXPIRES_AT,
+    check_channel_config, check_client_signed_payload, check_no_client_close_authorization,
+    check_no_refund_amount, check_token_program, check_voucher, check_voucher_batched,
+    check_withdraw_delay, derive_channel_id, errors as codes, setup_form_from_transaction,
+    BatchChannelConfig, BatchError, BatchExtra, BatchPayload, BatchPaymentPayload, BatchRefund,
+    BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra, BatchSettlementResponse,
+    ChannelStateSnapshot, SetupForm, TransactionExpectations, VoucherState,
+    BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS,
+    V1_MAX_CLAIM_CHANNELS, V1_MAX_SETTLE_CHANNELS, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
@@ -78,6 +87,11 @@ const CHANNEL_STATUS_CLOSING: u8 = 2;
 
 /// `ChannelStatus::Distributed` discriminant.
 const CHANNEL_STATUS_DISTRIBUTED: u8 = 3;
+
+/// `AccountDiscriminator::Channel` in the payment-channels IDL: the first byte
+/// of a live channel account. `ClosedChannel` (2) marks an account the program
+/// has closed, which no voucher can ever be redeemed against.
+const CHANNEL_ACCOUNT_DISCRIMINATOR: u8 = 1;
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -194,34 +208,70 @@ fn is_empty_tombstone(state: &ChannelState) -> bool {
 
 fn spawn_next_submission(
     version: TxVersion,
-    in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
-    pending: &mut std::collections::VecDeque<Vec<Instruction>>,
+    in_flight: &mut tokio::task::JoinSet<Result<String, FailedSubmission>>,
+    pending: &mut std::collections::VecDeque<Vec<Vec<Instruction>>>,
     pipeline: &TxPipeline,
     signer: &Arc<dyn TransactionSigner>,
     fee_payer: &Pubkey,
 ) {
-    let Some(instructions) = pending.pop_front() else {
+    let Some(groups) = pending.pop_front() else {
         return;
     };
     let pipeline = pipeline.clone();
     let signer = Arc::clone(signer);
     let fee_payer = *fee_payer;
     in_flight.spawn(async move {
-        let blockhash = pipeline
-            .latest_blockhash()
-            .await
-            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let mut tx =
-            crate::core::tx::build_unsigned(version, &fee_payer, &instructions, blockhash, None)?;
-        crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        pipeline
-            .submit_verified(&tx)
-            .await
-            .map(|confirmed| confirmed.signature.to_string())
-            .map_err(|e| Error::Rpc(format!("settlement submission failed: {e}")))
+        let failed =
+            |error: Error, on_chain: bool, groups: Vec<Vec<Instruction>>| FailedSubmission {
+                error,
+                on_chain,
+                groups,
+            };
+        let instructions: Vec<Instruction> = groups.iter().flatten().cloned().collect();
+        let blockhash = match pipeline.latest_blockhash().await {
+            Ok(blockhash) => blockhash,
+            Err(e) => {
+                let error = Error::Rpc(format!("blockhash fetch failed: {e}"));
+                return Err(failed(error, false, groups));
+            }
+        };
+        let mut tx = match crate::core::tx::build_unsigned(
+            version,
+            &fee_payer,
+            &instructions,
+            blockhash,
+            None,
+        ) {
+            Ok(tx) => tx,
+            Err(error) => return Err(failed(error.into(), false, groups)),
+        };
+        if let Err(e) =
+            crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx).await
+        {
+            let error = Error::Other(format!("fee payer signing failed: {e}"));
+            return Err(failed(error, false, groups));
+        }
+        match pipeline.submit_verified(&tx).await {
+            Ok(confirmed) => Ok(confirmed.signature.to_string()),
+            Err(e) => {
+                let on_chain = matches!(
+                    e,
+                    crate::core::tx_pipeline::TxPipelineError::TransactionFailed { .. }
+                );
+                let error = Error::Rpc(format!("settlement submission failed: {e}"));
+                Err(failed(error, on_chain, groups))
+            }
+        }
     });
+}
+
+/// A settlement transaction that did not land, with the channel groups it
+/// carried.
+struct FailedSubmission {
+    error: Error,
+    /// It landed and failed, so none of its instructions applied.
+    on_chain: bool,
+    groups: Vec<Vec<Instruction>>,
 }
 
 /// Fetch and decode a channel account with the blocking RPC client. Factored out
@@ -341,6 +391,26 @@ fn decode_channel_account(
             pc::pubkey_string(program_id)
         )));
     }
+    // The account layout is decoded positionally, so a `ClosedChannel` (or any
+    // other account kind) at the channel address would otherwise read as a
+    // channel. It is not one: refuse it before any field is trusted.
+    match data.first() {
+        Some(&CHANNEL_ACCOUNT_DISCRIMINATOR) => {}
+        Some(&other) => {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                format!(
+                    "account {} carries discriminator {other}, not an open payment channel",
+                    pc::pubkey_string(channel_id)
+                ),
+            ))
+        }
+        None => {
+            return Err(Error::Other(
+                "channel decode failed: empty account data".into(),
+            ))
+        }
+    }
     Channel::from_bytes(data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
 }
 
@@ -432,13 +502,16 @@ pub struct BatchConfig {
     /// Seller-defined payment reference pinned into the setup transaction's
     /// Memo. When absent the client supplies a random hex nonce instead.
     pub memo: Option<String>,
-    /// Base58 server key advertised as `extra.receiverAuthorizer`.
+    /// Base58 server key advertised as `extra.receiverAuthorizer`, the key
+    /// every channel binds at open with its receiver-binding Memo (spec §3).
+    /// Defaults to the fee payer's key, which this self-facilitating server
+    /// controls.
     ///
-    /// Advertised only. This server is itself the channel `payee`, so it seals
-    /// a closing channel directly with its latest voucher (see
-    /// [`X402BatchSettlement::finalize_close`]) and never needs to sign a
+    /// This server is itself the channel `payee`, so it closes a channel bound
+    /// to this key directly (a cooperative refund, or
+    /// [`X402BatchSettlement::finalize_close`]) without signing a
     /// `CloseAuthorization` for a separate facilitator. Clients echo the key on
-    /// their `channelConfig`, and a mismatch is refused.
+    /// their `channelConfig`, and an open bound to any other key is refused.
     pub receiver_authorizer: Option<String>,
     /// Signer that co-signs client setup transactions as fee payer, holds the
     /// channel `rent_payer` and zero-share `payee` seats, and signs redemption
@@ -565,10 +638,11 @@ pub enum BatchAccess {
     /// not finish. Call [`X402BatchSettlement::finish_commit`] and return its
     /// response; the handler MUST NOT run again.
     Resume(BatchOutcome),
-    /// Already committed: return this stored response, and do not run the
-    /// handler. The second element is the resource handler's cached response
-    /// from the original serve, when one was stored for it — see
-    /// [`X402BatchSettlement::cache_response`].
+    /// Already committed: return this stored settlement response, and do
+    /// not run the handler. The resource body is never replayed (the voucher
+    /// that reaches this arm is public once a claim or a corrective 402
+    /// discloses it), so the second element is always `None`; it is kept for
+    /// compatibility.
     Replay(
         BatchSettlementResponse,
         Option<crate::core::store::CachedUpstreamResponse>,
@@ -651,6 +725,8 @@ pub struct X402BatchSettlement {
     accepted_versions: Vec<TxVersion>,
     config: BatchConfig,
     fee_payer: Pubkey,
+    /// `extra.receiverAuthorizer`: the configured key, or the fee payer's.
+    receiver_authorizer: Pubkey,
     store: Arc<dyn ChannelStore>,
     tx_pipeline: Arc<tokio::sync::OnceCell<TxPipeline>>,
     in_flight: InFlight,
@@ -700,10 +776,11 @@ impl X402BatchSettlement {
                 "batch-settlement payTo equals the fee payer; proceeds are not isolated"
             );
         }
-        if let Some(authorizer) = &config.receiver_authorizer {
-            Pubkey::from_str(authorizer)
-                .map_err(|e| Error::Other(format!("invalid receiverAuthorizer: {e}")))?;
-        }
+        let receiver_authorizer = match &config.receiver_authorizer {
+            Some(authorizer) => Pubkey::from_str(authorizer)
+                .map_err(|e| Error::Other(format!("invalid receiverAuthorizer: {e}")))?,
+            None => fee_payer,
+        };
         let rpc_url = config
             .rpc_url
             .clone()
@@ -715,6 +792,7 @@ impl X402BatchSettlement {
             rpc,
             config,
             fee_payer,
+            receiver_authorizer,
             store,
             tx_pipeline: Arc::new(tokio::sync::OnceCell::new()),
             in_flight: InFlight::default(),
@@ -730,6 +808,17 @@ impl X402BatchSettlement {
 
     fn tx_version(&self) -> TxVersion {
         crate::core::tx::highest(&self.accepted_versions)
+    }
+
+    /// Channels per claim and per settle redemption transaction: the
+    /// version-1 capacities when redemptions are built as version 1, four
+    /// otherwise (scheme_batch_settlement_svm.md, facilitator-built
+    /// transactions).
+    fn redemption_capacity(&self) -> (usize, usize) {
+        match self.tx_version() {
+            TxVersion::V1 => (V1_MAX_CLAIM_CHANNELS, V1_MAX_SETTLE_CHANNELS),
+            TxVersion::V0 => (MAX_CLAIMS_PER_BATCH, MAX_CLAIMS_PER_BATCH),
+        }
     }
 
     /// Route this handler's chain reads through `rpc` (a mock in tests).
@@ -834,7 +923,7 @@ impl X402BatchSettlement {
                 // `authorization` flow.
                 payment_flow: None,
                 fee_payer: self.fee_payer(),
-                receiver_authorizer: self.config.receiver_authorizer.clone(),
+                receiver_authorizer: Some(pc::pubkey_string(&self.receiver_authorizer)),
                 withdraw_delay: self.config.withdraw_delay,
                 token_program: pc::pubkey_string(&self.token_program()?),
                 memo: self.config.memo.clone(),
@@ -849,6 +938,12 @@ impl X402BatchSettlement {
                 voucher_signer: None,
                 operator: None,
                 max_idle_secs: None,
+                // The redemption capacity of the message version this server
+                // builds redemptions in; absent (four) when that is version 0.
+                max_claim_channels: (self.tx_version() == TxVersion::V1)
+                    .then_some(V1_MAX_CLAIM_CHANNELS as u32),
+                max_settle_channels: (self.tx_version() == TxVersion::V1)
+                    .then_some(V1_MAX_SETTLE_CHANNELS as u32),
             },
         })
     }
@@ -990,9 +1085,12 @@ impl X402BatchSettlement {
         error: &Error,
         resource: Option<&str>,
     ) -> Result<(String, String), Error> {
+        // Only a mismatch this server raised: the detail of any other error
+        // may quote client-supplied text, which must not be able to request
+        // the channel's snapshot.
         let is_mismatch =
-            crate::x402::protocol::schemes::batch_settlement::classify(&error.to_string())
-                == codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH;
+            crate::x402::protocol::schemes::batch_settlement::leading_code(&error.to_string())
+                == Some(codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH);
         if is_mismatch {
             if let Some(channel_id) = self.channel_id_for_header(header) {
                 if let Ok(envelope) = self
@@ -1038,8 +1136,11 @@ impl X402BatchSettlement {
         let envelope = self.parse_payment(header)?;
         if envelope.x402_version != X402_VERSION_V2 {
             return Err(batch_err(
-                codes::INVALID_CHANNEL_STATE,
-                "batch-settlement requires x402 version 2",
+                codes::INVALID_X402_VERSION,
+                format!(
+                    "batch-settlement requires x402Version 2, got {}",
+                    envelope.x402_version
+                ),
             ));
         }
         let requirements = self.requirements(amount)?;
@@ -1049,7 +1150,7 @@ impl X402BatchSettlement {
         check_channel_config(&config, &requirements)?;
         check_client_signed_payload(&payload)?;
         check_no_refund_amount(&payload)?;
-        check_no_cooperative_close(&payload)?;
+        check_no_client_close_authorization(&payload)?;
         self.check_accepted_matches(&envelope.accepted, &requirements)?;
 
         let program_id = self.program_id()?;
@@ -1066,26 +1167,10 @@ impl X402BatchSettlement {
                 codes::INVALID_PAYLOAD_TYPE,
                 "authorization payloads belong to server-signed channels",
             )),
-            BatchPayload::Refund { transaction, .. } => {
-                self.verify_refund(transaction, &config, &requirements, &channel_id)
+            BatchPayload::Refund(refund) => {
+                let max_claimable = self
+                    .verify_refund(refund, &config, &requirements, &channel_id)
                     .await?;
-                // A refund only needs the current watermark; read it out without
-                // cloning the record.
-                let max_claimable = Arc::new(Mutex::new(0u64));
-                let out = Arc::clone(&max_claimable);
-                self.store
-                    .read_channel(
-                        &channel_b58,
-                        Box::new(move |state| {
-                            if let Some(state) = state {
-                                *out.lock().unwrap_or_else(|e| e.into_inner()) = state.cumulative;
-                            }
-                            Ok(())
-                        }),
-                    )
-                    .await
-                    .map_err(|e| Error::Other(format!("store error: {e}")))?;
-                let max_claimable = *max_claimable.lock().unwrap_or_else(|e| e.into_inner());
                 Ok(BatchOutcome {
                     serve: false,
                     replay: false,
@@ -1259,6 +1344,7 @@ impl X402BatchSettlement {
                     token_program: &token_program,
                     receiver: &receiver,
                     memo: self.config.memo.as_deref(),
+                    receiver_authorizer: &self.receiver_authorizer,
                 };
                 // An `open` whose transaction already landed must not be
                 // re-validated against the open-slot window: by the time the
@@ -1298,6 +1384,20 @@ impl X402BatchSettlement {
                         recent_slot,
                     )?;
                 let deposit_signature = payer_signature(&validated.transaction);
+                // The deposit is broadcast only after the handler runs, so a
+                // transaction that cannot land must be refused now. One this
+                // server already recorded may be in flight or committed, and
+                // its funds already moved.
+                if !deposit_already_recorded(stored.as_ref(), deposit_signature.as_deref()) {
+                    self.check_deposit_can_land(
+                        &validated.transaction,
+                        &payer,
+                        &mint,
+                        &token_program,
+                        deposit_amount,
+                    )
+                    .await?;
+                }
                 let deposit_after = Self::deposit_ceiling(
                     stored.as_ref(),
                     deposit_amount,
@@ -1346,7 +1446,7 @@ impl X402BatchSettlement {
             || accepted.extra.memo != requirements.extra.memo;
         if mismatched {
             return Err(batch_err(
-                codes::INVALID_CHANNEL_STATE,
+                codes::INVALID_PAYMENT_REQUIREMENTS,
                 "paymentPayload.accepted does not match the route's paymentRequirements",
             ));
         }
@@ -1495,84 +1595,271 @@ impl X402BatchSettlement {
             ("payer", *payer),
         ] {
             let (ata, _) = pc::find_associated_token_address(&owner, mint, token_program);
+            // Spec §7: "setup or settlement-readiness simulation/checks failed
+            // before accepting the deposit".
             let reject = |detail: String| {
                 Err(batch_err(
-                    codes::INVALID_SETUP_TRANSACTION,
+                    codes::INVALID_SETTLEMENT_SIMULATION,
                     format!("{role} settlement ATA {ata} {detail}"),
                 ))
             };
             let account = self.rpc.get_account(&ata).map_err(|e| {
                 batch_err(
-                    codes::INVALID_SETUP_TRANSACTION,
+                    codes::INVALID_SETTLEMENT_SIMULATION,
                     format!("{role} settlement ATA {ata} is unavailable: {e}"),
                 )
             })?;
-            if pc::from_address(&account.owner) != *token_program {
-                return reject("is not owned by the declared token program".to_string());
-            }
-            let Some(decoded) = decode_token_account(&account.data) else {
-                return reject("is not an initialized token account".to_string());
-            };
-            if decoded.mint != *mint {
-                return reject(format!(
-                    "holds mint {} rather than {}",
-                    pc::pubkey_string(&decoded.mint),
-                    pc::pubkey_string(mint)
-                ));
-            }
-            if decoded.owner != owner {
-                return reject(format!(
-                    "is owned by {} rather than {}",
-                    pc::pubkey_string(&decoded.owner),
-                    pc::pubkey_string(&owner)
-                ));
-            }
-            if decoded.state == TOKEN_ACCOUNT_FROZEN {
-                return reject("is frozen".to_string());
-            }
-            if let Some(extension) = decoded.unsupported_extension {
-                return reject(format!(
-                    "carries token account extension {extension}, which this server \
-                     will not settle through"
-                ));
-            }
-            if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
-                return reject(format!("is in account state {}", decoded.state));
+            if let Some(problem) = unusable_settlement_account(
+                &pc::from_address(&account.owner),
+                &account.data,
+                &owner,
+                mint,
+                token_program,
+            ) {
+                return reject(problem);
             }
         }
         Ok(())
     }
 
+    /// The checks a deposit transaction must pass before the handler runs,
+    /// since it is only broadcast afterwards: its blockhash is still live and
+    /// the payer's token account holds the deposit (spec, canonical `open`
+    /// and `top_up`: "It MUST confirm the payer has sufficient tokens"). A
+    /// failed read is a refusal too. The blocking reads run on a blocking
+    /// thread (`spawn_blocking`).
+    async fn check_deposit_can_land(
+        &self,
+        transaction: &VersionedTransaction,
+        payer: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        deposit_amount: u64,
+    ) -> Result<(), Error> {
+        let rpc = Arc::clone(&self.rpc);
+        let blockhash = *transaction.message.recent_blockhash();
+        let (ata, _) = pc::find_associated_token_address(payer, mint, token_program);
+        tokio::task::spawn_blocking(move || {
+            deposit_can_land(&rpc, &blockhash, &ata, deposit_amount)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("deposit check task failed: {e}")))?
+    }
+
+    /// The clearance to send the sealed `distribute` of `channel`, sealed at
+    /// `settled` (at `sealed_at`, unix seconds), or `None` to defer it. The
+    /// program forfeits a due refund to the treasury when the payer's token
+    /// account cannot take it, so such a channel is sealed without its
+    /// distribute and a later pass retries: as soon as the account is usable
+    /// or the payer withdrew, and once the channel has been sealed for its
+    /// grace period, anyway, so the payer cannot hold the payout hostage.
+    fn sealed_distribute_clearance(
+        &self,
+        channel_id: &str,
+        channel: &Pubkey,
+        onchain: &Channel,
+        settled: u64,
+        sealed_at: i64,
+        now: i64,
+    ) -> Result<Option<DistributeClearance>, Error> {
+        use crate::core::payment_channel::payer_refund::{
+            payer_refund, ObservedAccount, PayerRefund, RefundDeadline, SealedRefundTerms,
+        };
+        let terms = SealedRefundTerms {
+            channel: *channel,
+            payer: pc::from_address(&onchain.payer),
+            mint: self.mint()?,
+            token_program: self.token_program()?,
+            deposit: onchain.deposit,
+            settled: settled.max(onchain.settlement.settled),
+            payer_withdrawn_at: onchain.payer_withdrawn_at,
+        };
+        let deadline = RefundDeadline {
+            sealed_at,
+            grace_period: onchain.grace_period,
+        };
+        if terms.refund_due() == 0 {
+            return Ok(payer_refund(&terms, None, deadline, now).clearance());
+        }
+        let address = terms.payer_token_account();
+        let account = self
+            .rpc
+            .get_account_with_commitment(&address, self.rpc.commitment())
+            .map_err(|e| Error::Rpc(format!("payer refund account {address}: {e}")))?
+            .value;
+        let observed = account.as_ref().map(|account| ObservedAccount {
+            owner: pc::from_address(&account.owner),
+            data: &account.data,
+        });
+        match payer_refund(&terms, observed, deadline, now) {
+            PayerRefund::Clear(clearance) => Ok(Some(clearance)),
+            PayerRefund::Deferred {
+                refund,
+                payer_token_account,
+                reason,
+                until,
+            } => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    %payer_token_account,
+                    refund,
+                    reason,
+                    until,
+                    "payer refund account cannot be paid; sealing without distributing \
+                     until it can, or until the deadline"
+                );
+                Ok(None)
+            }
+            PayerRefund::Forfeit {
+                clearance,
+                refund,
+                payer_token_account,
+                reason,
+            } => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    %payer_token_account,
+                    refund,
+                    reason,
+                    "payer refund account still unusable past the deadline; distributing, \
+                     the refund goes to the treasury"
+                );
+                Ok(Some(clearance))
+            }
+        }
+    }
+
+    /// When this server first saw `channel_id` sealed, recording `now` when it
+    /// had not; `now` for a channel this store has no record of.
+    async fn first_sealed_at(&self, channel_id: &str, now: i64) -> i64 {
+        self.store
+            .update_channel(
+                channel_id,
+                Box::new(move |current| {
+                    let mut state = current.ok_or_else(|| {
+                        crate::core::store::StoreError::Internal("channel not found".into())
+                    })?;
+                    state
+                        .extra
+                        .entry(SEALED_AT_KEY.to_string())
+                        .or_insert_with(|| now.into());
+                    Ok(state)
+                }),
+            )
+            .await
+            .ok()
+            .and_then(|state| state.extra.get(SEALED_AT_KEY)?.as_i64())
+            .unwrap_or(now)
+    }
+
+    /// Verify a client-mode `refund` and return the watermark it closes at.
+    ///
+    /// The voucher must be validly signed for the derived channel and equal
+    /// the cumulative this server accepted ("In client mode it MUST reject a
+    /// voucher whose `maxClaimableAmount` differs from its accepted cumulative
+    /// amount"), so a payer cannot close below what it was served. A carried
+    /// `request_close` (the retry after the binding was unavailable) must pass
+    /// the sponsor policy; without one, the channel's receiver binding must be
+    /// this server's key, or the client is told to retry with one. Either way
+    /// the payer's return ATA must be usable and the channel `Open` or
+    /// `Closing`.
     async fn verify_refund(
         &self,
-        transaction: &str,
+        refund: &BatchRefund,
         config: &BatchChannelConfig,
         requirements: &BatchRequirements,
         channel_id: &Pubkey,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
+        // `check_client_signed_payload` refused the server-mode variant.
+        let voucher = refund.voucher().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_PAYLOAD_TYPE,
+                "server-mode refunds belong to server-signed channels",
+            )
+        })?;
+        let max_claimable = check_voucher(voucher, config, channel_id)?;
+        let channel_b58 = pc::pubkey_string(channel_id);
+        let state = self
+            .store
+            .get_channel(&channel_b58)
+            .await
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, format!("store error: {e}")))?
+            .ok_or_else(|| {
+                batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    format!("no channel {channel_b58}; nothing to refund"),
+                )
+            })?;
+        state
+            .check_binding(&self.binding())
+            .map_err(|e| batch_err(codes::INVALID_CHANNEL_STATE, e.to_string()))?;
+        if max_claimable != state.cumulative {
+            return Err(batch_err(
+                codes::INVALID_CLOSE_STATE,
+                format!(
+                    "refund voucher closes at {max_claimable}, but the accepted cumulative is {}",
+                    state.cumulative
+                ),
+            ));
+        }
+        // A retry of a refund this server already closed (its response was
+        // lost): the channel is gone or `Distributed` now, so the live checks
+        // below would refuse it. `cooperative_close` replays the saved result.
+        if recorded_cooperative_close(&state).is_some_and(|done| done.cumulative == max_claimable) {
+            return Ok(max_claimable);
+        }
+
         let program_id = self.program_id()?;
         let token_program = self.token_program()?;
         let receiver = pc::parse_pubkey(&requirements.pay_to)?;
-        let expectations = TransactionExpectations {
-            program_id: &program_id,
-            fee_payer: &self.fee_payer,
-            accepted_versions: &self.accepted_versions,
-            config,
-            channel_id,
-            token_program: &token_program,
-            receiver: &receiver,
-            memo: self.config.memo.as_deref(),
-        };
-        crate::x402::protocol::schemes::batch_settlement::validate_request_close_transaction(
-            transaction,
-            &expectations,
-        )?;
-        // The close pays out through these accounts once the grace period
-        // ends; an unusable one would leave the escrow unrecoverable.
+        match &refund.transaction {
+            Some(transaction) => {
+                let expectations = TransactionExpectations {
+                    program_id: &program_id,
+                    fee_payer: &self.fee_payer,
+                    accepted_versions: &self.accepted_versions,
+                    config,
+                    channel_id,
+                    token_program: &token_program,
+                    receiver: &receiver,
+                    memo: self.config.memo.as_deref(),
+                    receiver_authorizer: &self.receiver_authorizer,
+                };
+                crate::x402::protocol::schemes::batch_settlement::validate_request_close_transaction(
+                    transaction,
+                    &expectations,
+                )?;
+            }
+            // The cooperative close is authenticated by the channel's bound
+            // receiver authorizer, which must be this server's own key.
+            None => match recorded_receiver_binding(&state) {
+                Some(bound) if bound == pc::pubkey_string(&self.receiver_authorizer) => {}
+                Some(bound) => {
+                    return Err(batch_err(
+                        codes::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+                        format!(
+                            "channel {channel_b58} is bound to receiver authorizer {bound}, not \
+                             this server's"
+                        ),
+                    ))
+                }
+                None => {
+                    return Err(batch_err(
+                        codes::INVALID_RECEIVER_BINDING_UNAVAILABLE,
+                        format!(
+                            "no receiver binding is recorded for channel {channel_b58}; retry \
+                             with a payer-signed request_close"
+                        ),
+                    ))
+                }
+            },
+        }
+        // The close pays out through these accounts; an unusable one would
+        // leave the escrow unrecoverable.
         let payer = pc::parse_pubkey(&config.payer)?;
         self.check_settlement_accounts(&self.mint()?, &token_program, &receiver, &payer)?;
         // The channel must still be closeable. `Closing` is accepted so a
-        // retried refund is idempotent rather than a second transition.
+        // retried refund reports the close in progress rather than failing.
         let channel = self.fetch_channel(channel_id).await?;
         if channel.status != CHANNEL_STATUS_OPEN && channel.status != CHANNEL_STATUS_CLOSING {
             return Err(batch_err(
@@ -1580,7 +1867,16 @@ impl X402BatchSettlement {
                 format!("channel status {} cannot be closed", channel.status),
             ));
         }
-        Ok(())
+        if channel.settlement.settled > max_claimable {
+            return Err(batch_err(
+                codes::INVALID_CLOSE_STATE,
+                format!(
+                    "refund voucher {max_claimable} is behind the onchain settled watermark {}",
+                    channel.settlement.settled
+                ),
+            ));
+        }
+        Ok(max_claimable)
     }
 
     // ── Reserve (before the resource handler) ──
@@ -1718,8 +2014,16 @@ impl X402BatchSettlement {
                 expires_at: now.saturating_add(lease.as_secs() as i64),
             }
         });
-        let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
-            .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
+        let seed = matches!(outcome.payload, BatchPayload::Deposit { .. }).then(|| {
+            let mut seed = self.seed_state(&outcome.channel_id, outcome.payload.channel_config());
+            // The open was validated to carry exactly one binding memo naming
+            // this server's receiver authorizer, and the payer signed it: that
+            // binding is what authenticates a later cooperative close.
+            if outcome.opens_channel {
+                record_receiver_binding(&mut seed, &self.receiver_authorizer);
+            }
+            seed
+        });
         let binding = self.binding();
         let withdraw_delay = self.config.withdraw_delay;
         let request = AuthorizationRequest {
@@ -1877,31 +2181,17 @@ impl X402BatchSettlement {
         Ok(())
     }
 
-    /// Cache the resource handler's response against an already-committed
-    /// authorization, so a future replay of the same voucher can return the
-    /// purchased representation itself rather than only the settlement
-    /// result — the `("access", channelId, maxClaimableAmount)` cache the
-    /// batch-settlement spec requires. Call after [`Self::finish_commit`] (or
-    /// [`Self::settle_payment`]) has already succeeded; this is a best-effort
-    /// improvement to a *future* request, so its own failure is not this
-    /// request's problem and callers should log, not propagate, an error.
+    /// Formerly cached the handler's response so a replay of the same
+    /// voucher returned it. A replay now returns the settlement response
+    /// only: the voucher that unlocks a replay is public once a claim or a
+    /// corrective 402 discloses it, so it cannot gate a payer's resource
+    /// body. This is a no-op kept for compatibility.
+    #[deprecated(note = "batch replays never return a cached body; this is a no-op")]
     pub async fn cache_response(
         &self,
-        outcome: &BatchOutcome,
-        cached: crate::core::store::CachedUpstreamResponse,
+        _outcome: &BatchOutcome,
+        _cached: crate::core::store::CachedUpstreamResponse,
     ) -> Result<(), Error> {
-        let Authorization { id, .. } = self.authorization_of(outcome)?;
-        self.store
-            .mutate_channel(
-                &outcome.channel_id,
-                None,
-                Box::new(move |state| {
-                    state.attach_cached_response(&id, cached);
-                    Ok(())
-                }),
-            )
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?;
         Ok(())
     }
 
@@ -2240,8 +2530,19 @@ impl X402BatchSettlement {
         outcome: BatchOutcome,
     ) -> Result<BatchSettlementResponse, Error> {
         let network = outcome.requirements.network.clone();
+        if let BatchPayload::Refund(_) = &outcome.payload {
+            if let Some(replayed) = self.replay_cooperative_close(&outcome).await? {
+                return Ok(replayed);
+            }
+        }
         match &outcome.payload {
-            BatchPayload::Refund { transaction, .. } => {
+            BatchPayload::Refund(BatchRefund {
+                transaction: None, ..
+            }) => self.cooperative_close(&outcome).await,
+            BatchPayload::Refund(BatchRefund {
+                transaction: Some(transaction),
+                ..
+            }) => {
                 let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
                 let mut channel = self.fetch_channel(&channel_id).await?;
                 self.upsert_channel(&outcome, &channel).await?;
@@ -2300,15 +2601,286 @@ impl X402BatchSettlement {
         }
     }
 
-    /// Rebuild the accepted response for an idempotent voucher retry, plus
-    /// the resource handler's cached response when one was stored for it
-    /// (see [`Self::cache_response`]) — together, the
-    /// `("access", channelId, maxClaimableAmount)` replay the batch-settlement
-    /// spec requires. The cached response is `None` when no response was
-    /// stored — a record that predates response storage, one whose response
-    /// exceeded the caller's size cap for caching, or one whose stored
-    /// response has aged out — in which case the caller falls back to a
-    /// settlement-only reply.
+    /// Close a channel cooperatively at the refund's voucher (spec §3, §4.5):
+    /// `settle_and_seal` — with the voucher's Ed25519 precompile when it is
+    /// above the onchain `settled`, with `has_voucher = 0` when equal — then
+    /// the sealed `distribute`, returning `deposit - settled` to the payer in
+    /// the same transaction.
+    ///
+    /// The close is fenced on the durable record first, in one transition
+    /// that refuses while a paid request is still reserved and freezes the
+    /// watermark at the voucher, so no replica can charge past the close.
+    async fn cooperative_close(
+        &self,
+        outcome: &BatchOutcome,
+    ) -> Result<BatchSettlementResponse, Error> {
+        let BatchPayload::Refund(refund) = &outcome.payload else {
+            return Err(batch_err(codes::INVALID_PAYLOAD_TYPE, "not a refund"));
+        };
+        let voucher = refund.voucher().ok_or_else(|| {
+            batch_err(
+                codes::INVALID_PAYLOAD_TYPE,
+                "server-mode refunds belong to server-signed channels",
+            )
+        })?;
+        let config = &refund.channel_config;
+        let cumulative = outcome.max_claimable;
+        let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
+        let mut onchain = self.fetch_channel(&channel_id).await?;
+        if onchain.status == CHANNEL_STATUS_CLOSING {
+            // "A refund for a channel that is already `Closing` reports that
+            // close."
+            let state = self.record_close(outcome, &onchain).await?;
+            return Ok(self.close_response(outcome, String::new(), String::new(), &state));
+        }
+        if onchain.status != CHANNEL_STATUS_OPEN {
+            return Err(batch_err(
+                codes::INVALID_CLOSE_STATE,
+                format!("channel status {} cannot be closed", onchain.status),
+            ));
+        }
+        self.check_channel_bindings(&onchain, config, &outcome.requirements.pay_to, cumulative)?;
+        let settled = onchain.settlement.settled;
+        if settled > cumulative {
+            return Err(batch_err(
+                codes::INVALID_CLOSE_STATE,
+                format!("refund voucher {cumulative} is behind the onchain settled {settled}"),
+            ));
+        }
+        self.fence_cooperative_close(&outcome.channel_id, cumulative)
+            .await?;
+
+        let authorized_signer = pc::parse_pubkey(&config.payer_authorizer)?;
+        let deposit = onchain.deposit;
+        let mut rebuilt = false;
+        let signature = loop {
+            let instructions = self.cooperative_close_instructions(
+                &channel_id,
+                &onchain,
+                &authorized_signer,
+                voucher,
+                cumulative,
+                &outcome.requirements.pay_to,
+            )?;
+            let submitted = self
+                .submit_groups(
+                    vec![ChannelInstructionGroup {
+                        channel_id: outcome.channel_id.clone(),
+                        instructions,
+                    }],
+                    1,
+                )
+                .await;
+            let err = match submitted {
+                Ok(signatures) => break signatures.into_iter().next().unwrap_or_default(),
+                Err(err) => err,
+            };
+            // The close was built from a read that a concurrent `claim` can
+            // overtake: once it lands at `cumulative`, the voucher no longer
+            // raises `settled` and the close fails. Read again and decide.
+            let after = self.lookup_channel(&channel_id).await?;
+            match close_retry_step(&onchain, after.as_ref(), cumulative, rebuilt) {
+                CloseRetry::Rebuild => {
+                    rebuilt = true;
+                    onchain = after.expect("Rebuild is chosen only for a present channel");
+                }
+                CloseRetry::Closed => break String::new(),
+                CloseRetry::Fail => return Err(err),
+            }
+        };
+        // The sealed distribute either deallocates the channel or leaves it
+        // `Distributed`; anything else did not close.
+        match self.lookup_channel(&channel_id).await? {
+            None => {}
+            Some(after) if after.status == CHANNEL_STATUS_DISTRIBUTED => {}
+            Some(after) => {
+                return Err(batch_err(
+                    codes::INVALID_CLOSE_STATE,
+                    format!(
+                        "cooperative close confirmed but the channel is in status {}",
+                        after.status
+                    ),
+                ))
+            }
+        }
+        // Saved with the seal so a retried refund whose response was lost
+        // gets this result back instead of a refusal of the closed channel.
+        let refunded = deposit.saturating_sub(cumulative).to_string();
+        let completed = CompletedClose {
+            cumulative,
+            transaction: signature.clone(),
+            refunded: refunded.clone(),
+        };
+        let state = self
+            .store
+            .update_channel(
+                &outcome.channel_id,
+                Box::new(move |current| {
+                    let mut state = current.ok_or_else(|| {
+                        crate::core::store::StoreError::Internal("channel not found".into())
+                    })?;
+                    state.sealed = true;
+                    state.settled_on_chain = state.settled_on_chain.max(cumulative);
+                    state.last_activity_at = now_unix();
+                    record_cooperative_close(&mut state, &completed);
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        Ok(self.close_response(outcome, signature, refunded, &state))
+    }
+
+    /// The saved result of the cooperative close this refund already completed
+    /// (its response was lost), if any. The channel is `Distributed` or gone by
+    /// then, so a retry must get this back rather than run the close again.
+    async fn replay_cooperative_close(
+        &self,
+        outcome: &BatchOutcome,
+    ) -> Result<Option<BatchSettlementResponse>, Error> {
+        let Some(state) = self
+            .store
+            .get_channel(&outcome.channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+        else {
+            return Ok(None);
+        };
+        Ok(recorded_cooperative_close(&state)
+            .filter(|done| done.cumulative == outcome.max_claimable)
+            .map(|done| self.close_response(outcome, done.transaction, done.refunded, &state)))
+    }
+
+    /// The cooperative close of `channel_id` at `cumulative`: the voucher's
+    /// Ed25519 precompile and `settle_and_seal` with `has_voucher = 1` when it
+    /// is above the onchain `settled`, `settle_and_seal` with
+    /// `has_voucher = 0` when equal (an equal voucher would fail the
+    /// program's strict monotonicity check), then the sealed `distribute`.
+    fn cooperative_close_instructions(
+        &self,
+        channel_id: &Pubkey,
+        onchain: &Channel,
+        authorized_signer: &Pubkey,
+        voucher: &crate::x402::protocol::schemes::batch_settlement::BatchVoucher,
+        cumulative: u64,
+        pay_to: &str,
+    ) -> Result<Vec<Instruction>, Error> {
+        let program_id = self.program_id()?;
+        let signature = decode_signature(&voucher.signature)?;
+        let mut instructions = pc::build_settle_and_seal_instructions(
+            &self.fee_payer,
+            channel_id,
+            authorized_signer,
+            (onchain.settlement.settled < cumulative).then_some(&signature),
+            cumulative,
+            voucher.expires_at,
+            &program_id,
+        )?;
+        instructions.push(pc::build_distribute_instruction(
+            channel_id,
+            &pc::from_address(&onchain.payer),
+            &self.fee_payer,
+            &self.fee_payer,
+            &self.treasury_owner(),
+            &self.mint()?,
+            &pc::sole_recipient(&pc::parse_pubkey(pay_to)?),
+            &self.token_program()?,
+            &program_id,
+        ));
+        Ok(instructions)
+    }
+
+    /// Mark the record closing at `cumulative` in one transition: refused
+    /// while a paid request is reserved ("A close transition MUST NOT be
+    /// accepted while any paid request remains reserved") or when the
+    /// accepted cumulative moved since verification; then the watermark is
+    /// frozen at the close, so a delayed commit cannot charge past it. A
+    /// retry of the same close finds its own fence and proceeds.
+    async fn fence_cooperative_close(
+        &self,
+        channel_id: &str,
+        cumulative: u64,
+    ) -> Result<(), Error> {
+        let now = now_unix();
+        self.store
+            .mutate_channel(
+                channel_id,
+                None,
+                Box::new(move |state| {
+                    let refuse = |detail: String| {
+                        crate::core::store::StoreError::Internal(format!(
+                            "{}: {detail}",
+                            codes::INVALID_CLOSE_STATE
+                        ))
+                    };
+                    if state.has_blocking_authorization(now as i64) {
+                        return Err(refuse(format!(
+                            "channel {} has a paid request in flight",
+                            state.channel_id
+                        )));
+                    }
+                    if state.cumulative != cumulative {
+                        return Err(refuse(format!(
+                            "accepted cumulative moved to {} since the refund was verified",
+                            state.cumulative
+                        )));
+                    }
+                    match state.final_cumulative {
+                        Some(frozen) if frozen != cumulative => {
+                            return Err(refuse(format!(
+                                "channel {} is already closing at {frozen}",
+                                state.channel_id
+                            )))
+                        }
+                        _ => {}
+                    }
+                    state.close_requested_at = Some(state.close_requested_at.unwrap_or(now));
+                    state.freeze_watermark_at(cumulative);
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| {
+                let message = e.to_string();
+                if message.contains(codes::INVALID_CLOSE_STATE) {
+                    Error::Other(message)
+                } else {
+                    Error::Other(format!("store error: {message}"))
+                }
+            })
+    }
+
+    /// The `PAYMENT-RESPONSE` of a refund: the close signature, the amount
+    /// returned to the payer (empty while a forced close's grace period
+    /// runs), and the channel snapshot.
+    fn close_response(
+        &self,
+        outcome: &BatchOutcome,
+        transaction: String,
+        amount: String,
+        state: &ChannelState,
+    ) -> BatchSettlementResponse {
+        BatchSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: Some(outcome.payer.clone()),
+            transaction,
+            network: outcome.requirements.network.clone(),
+            amount,
+            extra: Some(BatchSettlementExtra {
+                commitment_id: None,
+                charged_amount: None,
+                channel_state: Some(Self::snapshot(state)),
+                voucher: None,
+            }),
+        }
+    }
+
+    /// Rebuild the accepted settlement response for an idempotent voucher
+    /// retry. The second element is always `None`: possession of the voucher
+    /// proves nothing about who sent the original request (a claim publishes
+    /// it, and the corrective 402 returns it), so no resource body is ever
+    /// replayed against it (the scheme replays neither, Phase 3 step 6).
     pub async fn replay_response(
         &self,
         outcome: &BatchOutcome,
@@ -2345,12 +2917,11 @@ impl X402BatchSettlement {
                 ));
             }
         }
-        let cached = committed.and_then(|committed| committed.cached_response.clone());
         let stored = committed
             .and_then(|committed| committed.settlement_response.clone())
             .and_then(|value| serde_json::from_value(value).ok());
         if let Some(response) = stored {
-            return Ok((response, cached));
+            return Ok((response, None));
         }
         Ok((
             accepted_response(
@@ -2362,7 +2933,7 @@ impl X402BatchSettlement {
                 outcome.requirements.amount()?,
                 &state,
             ),
-            cached,
+            None,
         ))
     }
 
@@ -2825,7 +3396,9 @@ impl X402BatchSettlement {
             });
             claimed_watermarks.push((channel_id.clone(), state.cumulative));
         }
-        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        let signatures = self
+            .submit_groups(groups, self.redemption_capacity().0)
+            .await?;
         for (channel_id, claimed) in claimed_watermarks {
             self.store
                 .update_channel(
@@ -2889,7 +3462,9 @@ impl X402BatchSettlement {
             });
             distributed_watermarks.push((channel_id.clone(), onchain.settlement.settled));
         }
-        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        let signatures = self
+            .submit_groups(groups, self.redemption_capacity().1)
+            .await?;
         // A successful distribute proves the claim watermark was already
         // visible and paid. Persist it immediately so the next lifecycle tick
         // does not re-submit the same channel merely because the RPC account
@@ -2958,18 +3533,16 @@ impl X402BatchSettlement {
         // remote signing cannot age later batches before they are submitted.
         let mut pending = std::collections::VecDeque::with_capacity(batches.len());
         for batch in batches {
-            let instructions: Vec<_> = batch
-                .into_iter()
-                .flat_map(|group| group.instructions)
-                .collect();
-            pending.push_back(instructions);
+            let groups: Vec<Vec<Instruction>> =
+                batch.into_iter().map(|group| group.instructions).collect();
+            pending.push_back(groups);
         }
 
         // Feed each independent transaction into the shared pipeline. This
         // local bound limits task creation; the pipeline supplies the global
         // send bound, pacing, retry policy, and batched confirmation tracker
         // across every concurrent lifecycle chunk.
-        let total = pending.len();
+        let mut total = pending.len();
         let pipeline = self.transaction_pipeline().await;
         let mut in_flight = tokio::task::JoinSet::new();
         for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
@@ -2985,18 +3558,34 @@ impl X402BatchSettlement {
         let mut signatures = Vec::with_capacity(total);
         let mut failures = Vec::new();
         while let Some(joined) = in_flight.join_next().await {
-            spawn_next_submission(
-                self.tx_version(),
-                &mut in_flight,
-                &mut pending,
-                &pipeline,
-                &self.config.fee_payer_signer,
-                &self.fee_payer,
-            );
             match joined {
                 Ok(Ok(signature)) => signatures.push(signature),
-                Ok(Err(error)) => failures.push(error.to_string()),
+                // A transaction is atomic, so nothing in it applied: one
+                // channel failing deterministically must not fail the others
+                // packed with it. Each is submitted again alone.
+                Ok(Err(failed)) if failed.on_chain && failed.groups.len() > 1 => {
+                    tracing::warn!(
+                        error = %failed.error,
+                        channels = failed.groups.len(),
+                        "packed settlement failed on-chain; submitting each channel alone",
+                    );
+                    total += failed.groups.len() - 1;
+                    for group in failed.groups {
+                        pending.push_back(vec![group]);
+                    }
+                }
+                Ok(Err(failed)) => failures.push(failed.error.to_string()),
                 Err(error) => failures.push(format!("submit join error: {error}")),
+            }
+            while in_flight.len() < SUBMIT_GROUPS_CONCURRENCY && !pending.is_empty() {
+                spawn_next_submission(
+                    self.tx_version(),
+                    &mut in_flight,
+                    &mut pending,
+                    &pipeline,
+                    &self.config.fee_payer_signer,
+                    &self.fee_payer,
+                );
             }
         }
         if !failures.is_empty() {
@@ -3076,6 +3665,20 @@ impl X402BatchSettlement {
             let distribute = match terminal_step(onchain.status, distribute) {
                 TerminalStep::PlanClose(distribute) => distribute,
                 TerminalStep::Submit(instructions) => {
+                    let sealed_at = self.first_sealed_at(channel_id, now).await;
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id,
+                            &channel,
+                            &onchain,
+                            onchain.settlement.settled,
+                            sealed_at,
+                            now,
+                        )?
+                        .is_none()
+                    {
+                        continue;
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
                         instructions,
@@ -3121,9 +3724,23 @@ impl X402BatchSettlement {
             let seal_ix = pc::build_seal_instruction(&channel, &program_id);
             match plan {
                 None | Some((GraceSealPlan::SealFrozen, _)) => {
+                    let mut instructions = vec![seal_ix];
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id,
+                            &channel,
+                            &onchain,
+                            onchain.settlement.settled,
+                            now,
+                            now,
+                        )?
+                        .is_some()
+                    {
+                        instructions.push(distribute);
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
-                        instructions: vec![seal_ix, distribute],
+                        instructions,
                     });
                 }
                 Some((GraceSealPlan::InFlight, _)) => {
@@ -3163,7 +3780,14 @@ impl X402BatchSettlement {
                         expires_at,
                         &program_id,
                     )?;
-                    instructions.push(distribute);
+                    if self
+                        .sealed_distribute_clearance(
+                            channel_id, &channel, &onchain, cumulative, now, now,
+                        )?
+                        .is_some()
+                    {
+                        instructions.push(distribute);
+                    }
                     groups.push(ChannelInstructionGroup {
                         channel_id: channel_id.clone(),
                         instructions,
@@ -3192,6 +3816,10 @@ impl X402BatchSettlement {
                             crate::core::store::StoreError::Internal("channel not found".into())
                         })?;
                         state.sealed = true;
+                        state
+                            .extra
+                            .entry(SEALED_AT_KEY.to_string())
+                            .or_insert_with(|| now.into());
                         if let Some(watermark) = applied {
                             state.settled_on_chain = state.settled_on_chain.max(watermark);
                         }
@@ -3431,93 +4059,186 @@ fn payer_signature(transaction: &VersionedTransaction) -> Option<String> {
     Some(signature.to_string())
 }
 
-/// Base length of an SPL token account. Token-2022 appends its extensions
-/// after the same fixed layout, so one decoder covers both programs.
-const TOKEN_ACCOUNT_LEN: usize = 165;
-
-/// `AccountState::Initialized`, at offset 108.
-const TOKEN_ACCOUNT_INITIALIZED: u8 = 1;
-
-/// `AccountState::Frozen`: the account cannot receive or send.
-const TOKEN_ACCOUNT_FROZEN: u8 = 2;
-
-/// `AccountType::Account`, the discriminant a Token-2022 account carries at
-/// offset 165 before its extensions.
-const TOKEN_ACCOUNT_TYPE: u8 = 2;
-
-/// `ExtensionType::ImmutableOwner`.
-///
-/// The only account extension a settlement destination may carry. It is inert
-/// — it fixes the owner, nothing else — and every associated token account has
-/// it, so requiring its absence would reject ordinary ATAs.
-const EXTENSION_IMMUTABLE_OWNER: u16 = 7;
-
-/// The fields of an SPL token account this server cares about.
-struct TokenAccount {
-    mint: Pubkey,
-    owner: Pubkey,
-    state: u8,
-    /// An account extension this server will not settle through, if any.
-    unsupported_extension: Option<u16>,
-}
-
-/// Decode a token account, or `None` when the data is too short to be one —
-/// which is what an uninitialized (or non-token) account looks like.
-///
-/// Token-2022 appends a type byte and a TLV extension list after the same
-/// 165-byte base. Those extensions are not cosmetic: one can withhold part of a
-/// transfer, require a memo to precede it, block it from a CPI, or move the
-/// balance out of the classic ledger entirely — so an account carrying one is
-/// reported rather than silently accepted as a payout destination.
-fn decode_token_account(data: &[u8]) -> Option<TokenAccount> {
-    if data.len() < TOKEN_ACCOUNT_LEN {
-        return None;
+/// Why the account at `owner`'s associated token address for `mint`, owned
+/// by `program` and holding `data`, cannot receive a settlement payout, or
+/// `None` when it can: it must be an
+/// initialized, unfrozen account of the declared token program holding
+/// `mint` for `owner`, with no extension outside the allowlist. The program
+/// forfeits a payout to an unusable account to the treasury, so a server
+/// checks before it accepts a deposit that would settle there.
+pub(crate) fn unusable_settlement_account(
+    program: &Pubkey,
+    data: &[u8],
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Option<String> {
+    if program != token_program {
+        return Some("is not owned by the declared token program".to_string());
     }
-    Some(TokenAccount {
-        mint: Pubkey::try_from(&data[0..32]).ok()?,
-        owner: Pubkey::try_from(&data[32..64]).ok()?,
-        state: data[108],
-        unsupported_extension: unsupported_account_extension(data),
-    })
-}
-
-/// The first account extension outside the allowlist, if the account has one.
-///
-/// A malformed or truncated TLV is reported as unsupported rather than skipped:
-/// this decides whether to accept an escrow, so anything it cannot read is
-/// something it should not settle through.
-fn unsupported_account_extension(data: &[u8]) -> Option<u16> {
-    // A classic SPL Token account is exactly the base length and has no
-    // extension list at all.
-    if data.len() == TOKEN_ACCOUNT_LEN {
-        return None;
+    let Some(decoded) = decode_token_account(data) else {
+        return Some("is not an initialized token account".to_string());
+    };
+    if decoded.mint != *mint {
+        return Some(format!(
+            "holds mint {} rather than {}",
+            pc::pubkey_string(&decoded.mint),
+            pc::pubkey_string(mint)
+        ));
     }
-    if data[TOKEN_ACCOUNT_LEN] != TOKEN_ACCOUNT_TYPE {
-        return Some(u16::from(data[TOKEN_ACCOUNT_LEN]));
+    if decoded.owner != *owner {
+        return Some(format!(
+            "is owned by {} rather than {}",
+            pc::pubkey_string(&decoded.owner),
+            pc::pubkey_string(owner)
+        ));
     }
-    let mut cursor = TOKEN_ACCOUNT_LEN + 1;
-    while cursor < data.len() {
-        // A run of zero padding is the end of the list, not an extension.
-        if data[cursor..].iter().all(|byte| *byte == 0) {
-            return None;
-        }
-        let Some(header) = data.get(cursor..cursor + 4) else {
-            return Some(u16::MAX);
-        };
-        let extension = u16::from_le_bytes([header[0], header[1]]);
-        let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
-        if extension != EXTENSION_IMMUTABLE_OWNER {
-            return Some(extension);
-        }
-        let Some(next) = cursor.checked_add(4).and_then(|c| c.checked_add(length)) else {
-            return Some(u16::MAX);
-        };
-        if next > data.len() {
-            return Some(u16::MAX);
-        }
-        cursor = next;
+    if decoded.state == TOKEN_ACCOUNT_FROZEN {
+        return Some("is frozen".to_string());
+    }
+    if let Some(extension) = decoded.unsupported_extension {
+        return Some(format!(
+            "carries token account extension {extension}, which this server \
+             will not settle through"
+        ));
+    }
+    if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
+        return Some(format!("is in account state {}", decoded.state));
     }
     None
+}
+
+/// Whether `signature` is a deposit this server already recorded for the
+/// channel: still pending, or committed (a byte-identical retry). Its landing
+/// was checked when it was first presented.
+fn deposit_already_recorded(stored: Option<&ChannelState>, signature: Option<&str>) -> bool {
+    let (Some(state), Some(signature)) = (stored, signature) else {
+        return false;
+    };
+    state
+        .pending_setup
+        .as_ref()
+        .is_some_and(|setup| setup.payer_signature == signature)
+        || state
+            .processed_topup_signatures
+            .iter()
+            .any(|recorded| recorded == signature)
+}
+
+/// [`X402BatchSettlement::check_deposit_can_land`]'s blocking reads.
+fn deposit_can_land(
+    rpc: &RpcClient,
+    blockhash: &solana_hash::Hash,
+    ata: &Pubkey,
+    deposit_amount: u64,
+) -> Result<(), Error> {
+    let not_ready = |detail: String| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, detail);
+    let live = rpc
+        .is_blockhash_valid(blockhash, rpc.commitment())
+        .map_err(|e| not_ready(format!("deposit blockhash check failed: {e}")))?;
+    if !live {
+        return Err(not_ready(format!(
+            "deposit transaction blockhash {blockhash} is not live"
+        )));
+    }
+    let account = rpc
+        .get_account(ata)
+        .map_err(|e| not_ready(format!("payer token account {ata} is unavailable: {e}")))?;
+    let balance = account
+        .data
+        .get(64..72)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| not_ready(format!("payer token account {ata} is not a token account")))?;
+    if balance < deposit_amount {
+        return Err(not_ready(format!(
+            "payer token account {ata} holds {balance}, less than the {deposit_amount} deposit"
+        )));
+    }
+    Ok(())
+}
+
+/// Where a record keeps when this server first saw its channel sealed (unix
+/// seconds), inside [`ChannelState::extra`]: the program records no seal
+/// time, and a deferred distribute's deadline counts from it.
+const SEALED_AT_KEY: &str = "x402BatchSealedAt";
+
+/// Where a record keeps the receiver authorizer its channel's open bound
+/// (spec §3), inside [`ChannelState::extra`].
+const RECEIVER_BINDING_KEY: &str = "x402BatchReceiverAuthorizer";
+
+/// The receiver authorizer recorded at open, if this record was opened here.
+fn recorded_receiver_binding(state: &ChannelState) -> Option<&str> {
+    state.extra.get(RECEIVER_BINDING_KEY)?.as_str()
+}
+
+fn record_receiver_binding(state: &mut ChannelState, receiver_authorizer: &Pubkey) {
+    state.extra.insert(
+        RECEIVER_BINDING_KEY.to_string(),
+        pc::pubkey_string(receiver_authorizer).into(),
+    );
+}
+
+/// Where a record keeps the result of its completed cooperative close,
+/// inside [`ChannelState::extra`].
+const COOPERATIVE_CLOSE_KEY: &str = "x402BatchCooperativeClose";
+
+/// A cooperative close this server completed: replayed to a retry of the same
+/// refund, whose channel no longer passes the live close checks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletedClose {
+    cumulative: u64,
+    /// The close signature; empty when the close was observed landed after
+    /// its submission reported an error.
+    transaction: String,
+    refunded: String,
+}
+
+fn recorded_cooperative_close(state: &ChannelState) -> Option<CompletedClose> {
+    serde_json::from_value(state.extra.get(COOPERATIVE_CLOSE_KEY)?.clone()).ok()
+}
+
+fn record_cooperative_close(state: &mut ChannelState, close: &CompletedClose) {
+    state.extra.insert(
+        COOPERATIVE_CLOSE_KEY.to_string(),
+        serde_json::to_value(close).expect("CompletedClose serializes"),
+    );
+}
+
+/// What a failed cooperative close submission leads to.
+#[derive(Debug, PartialEq, Eq)]
+enum CloseRetry {
+    /// A concurrent claim moved `settled` up to at most the voucher while the
+    /// channel stayed `Open`: rebuild against the new read and submit once more.
+    Rebuild,
+    /// The channel is `Distributed` or deallocated: the close landed.
+    Closed,
+    /// Anything else: report the submission error.
+    Fail,
+}
+
+/// Decide from the channel read after a failed close submission. `before` is
+/// the read the failed close was built from; one rebuild at most.
+fn close_retry_step(
+    before: &Channel,
+    after: Option<&Channel>,
+    cumulative: u64,
+    rebuilt: bool,
+) -> CloseRetry {
+    match after {
+        None => CloseRetry::Closed,
+        Some(after) if after.status == CHANNEL_STATUS_DISTRIBUTED => CloseRetry::Closed,
+        Some(after)
+            if !rebuilt
+                && after.status == CHANNEL_STATUS_OPEN
+                && after.settlement.settled != before.settlement.settled
+                && after.settlement.settled <= cumulative =>
+        {
+            CloseRetry::Rebuild
+        }
+        Some(_) => CloseRetry::Fail,
+    }
 }
 
 /// The voucher a payload authorizes with, if any.
@@ -3526,9 +4247,8 @@ fn voucher_of(
 ) -> Option<&crate::x402::protocol::schemes::batch_settlement::BatchVoucher> {
     match payload {
         BatchPayload::Voucher { voucher, .. } => Some(voucher),
-        BatchPayload::Deposit { voucher, .. } | BatchPayload::Refund { voucher, .. } => {
-            voucher.as_ref()
-        }
+        BatchPayload::Deposit { voucher, .. } => voucher.as_ref(),
+        BatchPayload::Refund(refund) => refund.voucher(),
         BatchPayload::Authorization { .. } => None,
     }
 }
@@ -3710,7 +4430,7 @@ mod tests {
             payer: payer.clone(),
             payer_authorizer: payer,
             receiver: requirements.pay_to.clone(),
-            receiver_authorizer: None,
+            receiver_authorizer: requirements.extra.receiver_authorizer.clone(),
             token: requirements.asset.clone(),
             withdraw_delay: requirements.extra.withdraw_delay,
             salt: "42".to_string(),
@@ -3892,6 +4612,8 @@ mod tests {
                 voucher_signer: None,
                 operator: None,
                 max_idle_secs: None,
+                max_claim_channels: None,
+                max_settle_channels: None,
             },
         };
         let (_, config, channel) = client(&fee_payer, &requirements);
@@ -3946,6 +4668,67 @@ mod tests {
         let json = serde_json::to_value(&requirements).unwrap();
         assert!(json["extra"].get("paymentFlow").is_none());
         assert!(json["extra"].get("channelProgram").is_none());
+    }
+
+    /// The advertised version-1 claim capacity packs into one transaction:
+    /// 18 Ed25519+settle pairs fit 4096 bytes, where version 0 needs five.
+    #[test]
+    fn eighteen_claims_pack_into_one_version_1_transaction() {
+        let program_id = Pubkey::from_str(pc::PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
+        let groups: Vec<ChannelInstructionGroup> = (0..V1_MAX_CLAIM_CHANNELS)
+            .map(|_| ChannelInstructionGroup {
+                channel_id: Pubkey::new_unique().to_string(),
+                instructions: pc::build_settle_instructions(
+                    &Pubkey::new_unique(),
+                    &Pubkey::new_unique(),
+                    &[7u8; 64],
+                    123_456_789,
+                    0,
+                    &program_id,
+                )
+                .unwrap(),
+            })
+            .collect();
+        let fee_payer = Pubkey::new_unique();
+        let v1 = pack(
+            TxVersion::V1,
+            groups.clone(),
+            &fee_payer,
+            None,
+            V1_MAX_CLAIM_CHANNELS,
+        );
+        assert_eq!(v1.len(), 1);
+        let v0 = pack(
+            TxVersion::V0,
+            groups,
+            &fee_payer,
+            None,
+            MAX_CLAIMS_PER_BATCH,
+        );
+        assert_eq!(
+            v0.len(),
+            V1_MAX_CLAIM_CHANNELS.div_ceil(MAX_CLAIMS_PER_BATCH)
+        );
+    }
+
+    #[test]
+    fn requirements_advertise_the_redemption_capacity_of_version_1() {
+        let (mut handler, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let v0 = handler.requirements("0.001").unwrap();
+        assert_eq!(handler.redemption_capacity(), (4, 4));
+        assert_eq!(v0.extra.max_claim_channels, None);
+        assert_eq!(v0.extra.max_settle_channels, None);
+
+        handler.accepted_versions = vec![TxVersion::V0, TxVersion::V1];
+        let v1 = handler.requirements("0.001").unwrap();
+        assert_eq!(handler.redemption_capacity(), (18, 13));
+        let json = serde_json::to_value(&v1).unwrap();
+        assert_eq!(json["extra"]["maxClaimChannels"], 18);
+        assert_eq!(json["extra"]["maxSettleChannels"], 13);
+        assert_eq!(
+            json["extra"]["transactionVersions"],
+            serde_json::json!([0, 1])
+        );
     }
 
     #[tokio::test]
@@ -4198,12 +4981,11 @@ mod tests {
         );
     }
 
-    /// A replay returns the resource handler's own cached response when one
-    /// was stored for it — the spec's `("access", channelId,
-    /// maxClaimableAmount)` cache — not only the settlement result layered
-    /// on top of it.
+    /// A replay returns the settlement only, never a stored resource body:
+    /// the voucher that reaches it is public once a claim publishes it or a
+    /// corrective 402 returns it, so it cannot gate a payer's response.
     #[tokio::test]
-    async fn a_replay_surfaces_the_cached_upstream_response() {
+    async fn a_replay_never_returns_a_stored_response_body() {
         let store = Arc::new(MemoryChannelStore::new());
         let (handler, fee_payer) = handler(store.clone());
         let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
@@ -4216,33 +4998,50 @@ mod tests {
             panic!("a fresh authorization must be served");
         };
         handler.mark_handler_succeeded(&outcome).await.unwrap();
-        handler.finish_commit(&outcome).await.expect("commits");
-        let cached = crate::core::store::CachedUpstreamResponse {
-            status: 200,
-            content_type: Some("application/json".to_string()),
-            headers: vec![("etag".to_string(), "\"v1\"".to_string())],
-            body: br#"{"result":42}"#.to_vec(),
-        };
-        handler
-            .cache_response(&outcome, cached.clone())
+        let settled = handler.finish_commit(&outcome).await.expect("commits");
+        // A body stored against the authorization, as an earlier release
+        // cached it.
+        let id = handler.authorization_of(&outcome).unwrap().id;
+        store
+            .mutate_channel(
+                &outcome.channel_id,
+                None,
+                Box::new(move |state| {
+                    state.attach_cached_response(
+                        &id,
+                        crate::core::store::CachedUpstreamResponse {
+                            status: 200,
+                            content_type: Some("application/json".to_string()),
+                            headers: vec![],
+                            body: br#"{"secret":42}"#.to_vec(),
+                        },
+                    );
+                    Ok(())
+                }),
+            )
             .await
-            .expect("caching a response is best-effort but should succeed here");
+            .unwrap();
         drop(outcome);
 
-        let BatchAccess::Replay(_, replayed_cached) = handler
+        let BatchAccess::Replay(replayed, replayed_body) = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
             .expect("the same voucher verifies")
         else {
             panic!("a committed authorization must replay");
         };
-        assert_eq!(replayed_cached, Some(cached));
+        assert_eq!(replayed_body, None);
+        // Positive control: the settlement result itself still replays.
+        assert_eq!(
+            replayed.extra.and_then(|extra| extra.charged_amount),
+            settled.extra.and_then(|extra| extra.charged_amount)
+        );
     }
 
     /// A repeat of a committed voucher presented to a higher-priced route,
     /// with `accepted.amount` rewritten to match it, is refused rather than
-    /// replayed: the original settlement and cached body belong to the route
-    /// that was paid for.
+    /// replayed: the original settlement belongs to the route that was paid
+    /// for.
     #[tokio::test]
     async fn a_replay_is_bound_to_the_route_that_committed_it() {
         let store = Arc::new(MemoryChannelStore::new());
@@ -4273,18 +5072,6 @@ mod tests {
         };
         handler.mark_handler_succeeded(&first).await.unwrap();
         handler.finish_commit(&first).await.unwrap();
-        handler
-            .cache_response(
-                &first,
-                crate::core::store::CachedUpstreamResponse {
-                    status: 200,
-                    content_type: None,
-                    headers: vec![],
-                    body: b"low-route body".to_vec(),
-                },
-            )
-            .await
-            .unwrap();
         drop(first);
 
         let err = handler
@@ -4309,7 +5096,7 @@ mod tests {
                 .verify_and_reserve_payment(&low_request, "0.001")
                 .await
                 .unwrap(),
-            BatchAccess::Replay(_, Some(_))
+            BatchAccess::Replay(_, None)
         ));
     }
 
@@ -4443,7 +5230,7 @@ mod tests {
         let receiver = pc::parse_pubkey(&requirements.pay_to).unwrap();
         let onchain = |mutate: &dyn Fn(&mut Channel)| {
             let mut channel = Channel {
-                discriminator: 0,
+                discriminator: CHANNEL_ACCOUNT_DISCRIMINATOR,
                 version: 1,
                 bump: 0,
                 status: CHANNEL_STATUS_OPEN,
@@ -5450,7 +6237,7 @@ mod tests {
         use crate::core::payment_channels::generated::types::SettlementWatermarks;
         let receiver = pc::parse_pubkey(&config.receiver).unwrap();
         Channel {
-            discriminator: 0,
+            discriminator: CHANNEL_ACCOUNT_DISCRIMINATOR,
             version: 1,
             bump: 0,
             status: CHANNEL_STATUS_OPEN,
@@ -5471,6 +6258,232 @@ mod tests {
             rent_payer: pc::to_address(fee_payer),
             open_slot: config.open_slot,
         }
+    }
+
+    /// A pipeline RPC that confirms every broadcast and records the program
+    /// ids each sent transaction invokes.
+    async fn recording_pipeline_rpc() -> (
+        String,
+        Arc<Mutex<Vec<Vec<Pubkey>>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{routing::post, Json, Router};
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&sent);
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    let result = match request["method"].as_str().unwrap() {
+                        "getLatestBlockhash" => serde_json::json!({
+                            "context": { "slot": 1 },
+                            "value": {
+                                "blockhash": solana_hash::Hash::new_unique().to_string(),
+                                "lastValidBlockHeight": 100
+                            }
+                        }),
+                        "sendTransaction" => {
+                            let tx =
+                                crate::core::tx::decode(request["params"][0].as_str().unwrap())
+                                    .unwrap();
+                            let keys = tx.message.static_account_keys();
+                            recorded.lock().unwrap().push(
+                                tx.message
+                                    .instructions()
+                                    .iter()
+                                    .map(|ix| keys[ix.program_id_index as usize])
+                                    .collect(),
+                            );
+                            serde_json::json!(tx.signatures[0].to_string())
+                        }
+                        "getSignatureStatuses" => {
+                            let statuses = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|_| {
+                                    serde_json::json!({
+                                        "slot": 2, "confirmations": null, "err": null,
+                                        "confirmationStatus": "finalized",
+                                        "status": { "Ok": null }
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            serde_json::json!({ "context": { "slot": 2 }, "value": statuses })
+                        }
+                        method => panic!("unexpected RPC method {method}"),
+                    };
+                    Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": result
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, sent, server)
+    }
+
+    /// The program forfeits a due refund to the treasury when the payer's
+    /// token account cannot take it, so `finalize_close` seals such a
+    /// channel without distributing it.
+    /// Run `finalize_close` over one channel at onchain `status`, its payer
+    /// refund account usable or not, its record seeded with `sealed_at`.
+    /// Returns the payment-channels instructions sent and the seal time the
+    /// record holds afterwards.
+    async fn finalize_close_once(
+        status: u8,
+        payable: bool,
+        sealed_at: Option<i64>,
+    ) -> (usize, Option<i64>) {
+        use base64::Engine as _;
+        use solana_rpc_client_api::request::RpcRequest;
+
+        {
+            let (url, sent, rpc) = recording_pipeline_rpc().await;
+            let key = SigningKey::from_bytes(&[21; 32]);
+            let mut keypair = [0u8; 64];
+            keypair[..32].copy_from_slice(key.as_bytes());
+            keypair[32..].copy_from_slice(key.verifying_key().as_bytes());
+            let signer = solana_keychain::MemorySigner::from_bytes(&keypair).unwrap();
+            let fee_payer = signer.pubkey();
+            let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(signer));
+            config.withdraw_delay = 3600;
+            config.rpc_url = Some(url);
+            let store = Arc::new(MemoryChannelStore::new());
+            let handler = X402BatchSettlement::with_store(config, store.clone()).unwrap();
+            let requirements = handler.requirements("0.001").unwrap();
+            let (_, client_config, channel) = client(&fee_payer, &requirements);
+            let channel_b58 = pc::pubkey_string(&channel);
+            let mut seeded = handler.seed_state(&channel_b58, &client_config);
+            if let Some(sealed_at) = sealed_at {
+                seeded
+                    .extra
+                    .insert(SEALED_AT_KEY.to_string(), sealed_at.into());
+            }
+            store.put_channel(&channel_b58, seeded).await.unwrap();
+            // 4_000 of the 5_000 deposit is due back to the payer; the
+            // closing channel is past its grace deadline.
+            let mut onchain = onchain_channel(&client_config, &fee_payer, 5_000);
+            onchain.status = status;
+            onchain.settlement.settled = 1_000;
+            onchain.closure_started_at = 1;
+            let mint = handler.mint().unwrap();
+            let token_program = handler.token_program().unwrap();
+            let payer = pc::from_address(&onchain.payer);
+            let mut token_account = vec![0u8; 165];
+            token_account[..32].copy_from_slice(mint.as_ref());
+            token_account[32..64].copy_from_slice(payer.as_ref());
+            token_account[108] = 1;
+            let account = |data: &[u8], owner: &Pubkey| {
+                serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "lamports": 1_000_000,
+                        "data": [base64::engine::general_purpose::STANDARD.encode(data), "base64"],
+                        "owner": pc::pubkey_string(owner),
+                        "executable": false,
+                        "rentEpoch": 0,
+                        "space": data.len(),
+                    }
+                })
+            };
+            let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                account(&borsh::to_vec(&onchain).unwrap(), &pc::default_program_id()),
+            );
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                if payable {
+                    account(&token_account, &token_program)
+                } else {
+                    serde_json::json!({ "context": { "slot": 1 }, "value": null })
+                },
+            );
+            let handler = handler.with_rpc_client(RpcClient::new_mock_with_mocks_map(
+                "succeeds".to_string(),
+                mocks,
+            ));
+
+            handler
+                .finalize_close(std::slice::from_ref(&channel_b58))
+                .await
+                .unwrap();
+            let program_id = pc::default_program_id();
+            let sent = sent.lock().unwrap().clone();
+            let distributes = sent
+                .iter()
+                .flatten()
+                .filter(|program| **program == program_id)
+                .count();
+            rpc.abort();
+            let recorded = store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .and_then(|state| state.extra.get(SEALED_AT_KEY)?.as_i64());
+            (distributes, recorded)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finalize_close_never_distributes_into_an_unusable_refund_account() {
+        // (on-chain status, payer refund account usable) → programs invoked.
+        for (status, payable) in [
+            (CHANNEL_STATUS_SEALED, false),
+            (CHANNEL_STATUS_SEALED, true),
+            (CHANNEL_STATUS_CLOSING, false),
+            (CHANNEL_STATUS_CLOSING, true),
+        ] {
+            let (distributes, sealed_at) = finalize_close_once(status, payable, None).await;
+            let expected = match (status, payable) {
+                // Already sealed: distribute only, or nothing this pass.
+                (CHANNEL_STATUS_SEALED, true) => 1,
+                (CHANNEL_STATUS_SEALED, false) => 0,
+                // Closing: seal + distribute, or the seal alone.
+                (_, true) => 2,
+                (_, false) => 1,
+            };
+            assert_eq!(distributes, expected, "status {status}, payable {payable}");
+            // The seal time a deferred distribute's deadline counts from.
+            let now = now_unix() as i64;
+            assert!(
+                sealed_at.is_some_and(|at| now - at <= 1),
+                "status {status}, payable {payable}: {sealed_at:?}"
+            );
+        }
+    }
+
+    /// A deferred distribute is retried on every later pass and, once the
+    /// channel has been sealed for its grace period, sent anyway: a payer
+    /// keeping its refund account unusable cannot hold the payout. The first
+    /// seal time recorded is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deferred_distribute_runs_once_the_grace_period_after_the_seal_ends() {
+        let now = now_unix() as i64;
+        // Grace 3600 s: inside it the distribute still waits. The margin
+        // keeps a slow run from crossing the deadline between `now` here and
+        // the check in `finalize_close`.
+        let inside = now - 3_000;
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, false, Some(inside)).await,
+            (0, Some(inside))
+        );
+        let past = now - 3_600;
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, false, Some(past)).await,
+            (1, Some(past))
+        );
+        // Positive control: a payable account distributes inside the grace.
+        assert_eq!(
+            finalize_close_once(CHANNEL_STATUS_SEALED, true, Some(inside))
+                .await
+                .0,
+            1
+        );
     }
 
     /// A replayed opening deposit for a channel the chain already holds, sent
@@ -5520,6 +6533,242 @@ mod tests {
             .await
             .expect_err("the placeholder transaction does not decode");
         assert!(!err.to_string().contains("has no record"), "{err}");
+    }
+
+    /// One channel whose settlement fails on-chain fails the transaction it
+    /// was packed into; the other channels are submitted again alone and
+    /// land, and only the failing one is reported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failing_channel_does_not_fail_the_channels_packed_with_it() {
+        use axum::{routing::post, Json, Router};
+        use std::collections::HashSet;
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Clone, Default)]
+        struct Chain {
+            poison: Arc<StdMutex<Option<Pubkey>>>,
+            failing: Arc<StdMutex<HashSet<String>>>,
+            sends: Arc<StdMutex<Vec<usize>>>,
+        }
+        async fn rpc(
+            axum::extract::State(chain): axum::extract::State<Chain>,
+            Json(request): Json<serde_json::Value>,
+        ) -> Json<serde_json::Value> {
+            let result = match request["method"].as_str().unwrap_or_default() {
+                "getLatestBlockhash" => serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "blockhash": solana_hash::Hash::new_unique().to_string(),
+                        "lastValidBlockHeight": 100
+                    }
+                }),
+                "sendTransaction" => {
+                    let tx =
+                        crate::core::tx::decode(request["params"][0].as_str().unwrap()).unwrap();
+                    let signature = tx.signatures[0].to_string();
+                    chain
+                        .sends
+                        .lock()
+                        .unwrap()
+                        .push(tx.message.instructions().len());
+                    let poison = *chain.poison.lock().unwrap();
+                    if poison.is_some_and(|p| tx.message.static_account_keys().contains(&p)) {
+                        chain.failing.lock().unwrap().insert(signature.clone());
+                    }
+                    serde_json::json!(signature)
+                }
+                "getSignatureStatuses" => {
+                    let failing = chain.failing.lock().unwrap().clone();
+                    let values: Vec<_> = request["params"][0]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|sig| {
+                            let err = failing
+                                .contains(sig.as_str().unwrap())
+                                .then(|| serde_json::json!({ "InstructionError": [0, { "Custom": 1 }] }));
+                            serde_json::json!({
+                                "slot": 1,
+                                "confirmations": null,
+                                "err": err,
+                                "status": match &err { Some(e) => serde_json::json!({ "Err": e }), None => serde_json::json!({ "Ok": null }) },
+                                "confirmationStatus": "confirmed"
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "context": { "slot": 1 }, "value": values })
+                }
+                other => panic!("unexpected RPC method {other}"),
+            };
+            Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+        }
+
+        let chain = Chain::default();
+        let app = Router::new()
+            .route("/", post(rpc))
+            .with_state(chain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let pipeline = TxPipeline::new(
+            url,
+            TxPipelineConfig {
+                batch_coalesce_interval: std::time::Duration::from_millis(10),
+                confirmation_poll_interval: std::time::Duration::from_millis(10),
+                confirmation_timeout: std::time::Duration::from_secs(2),
+                ..TxPipelineConfig::default()
+            },
+        );
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(key.as_bytes());
+        keypair[32..].copy_from_slice(key.verifying_key().as_bytes());
+        let signer = solana_keychain::MemorySigner::from_bytes(&keypair).unwrap();
+        let handler = X402BatchSettlement::with_store(
+            BatchConfig::new(PAY_TO, "localnet", Arc::new(signer)),
+            Arc::new(MemoryChannelStore::new()),
+        )
+        .unwrap()
+        .with_tx_pipeline(pipeline);
+        let groups = |accounts: &[Pubkey]| -> Vec<ChannelInstructionGroup> {
+            accounts
+                .iter()
+                .map(|account| ChannelInstructionGroup {
+                    channel_id: pc::pubkey_string(account),
+                    instructions: vec![Instruction::new_with_bytes(
+                        Pubkey::new_unique(),
+                        &[0],
+                        vec![solana_instruction::AccountMeta::new(*account, false)],
+                    )],
+                })
+                .collect()
+        };
+        let accounts: Vec<Pubkey> = (0..3).map(|_| Pubkey::new_unique()).collect();
+        *chain.poison.lock().unwrap() = Some(accounts[1]);
+
+        let err = handler
+            .submit_groups(groups(&accounts), MAX_CLAIMS_PER_BATCH)
+            .await
+            .expect_err("the failing channel is reported");
+        assert!(err.to_string().contains("1 of 3"), "{err}");
+        // The packed attempt, then one transaction per channel.
+        assert_eq!(chain.sends.lock().unwrap().clone(), vec![3, 1, 1, 1]);
+
+        // Positive control: without a failing channel the pack lands as one.
+        *chain.poison.lock().unwrap() = None;
+        chain.sends.lock().unwrap().clear();
+        let accounts: Vec<Pubkey> = (0..3).map(|_| Pubkey::new_unique()).collect();
+        let signatures = handler
+            .submit_groups(groups(&accounts), MAX_CLAIMS_PER_BATCH)
+            .await
+            .unwrap();
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(chain.sends.lock().unwrap().clone(), vec![3]);
+    }
+
+    /// A deposit is broadcast only after the handler runs, so one that cannot
+    /// land (an expired blockhash, a payer short of the deposit) is refused
+    /// before the handler, and a failed read refuses too.
+    /// A retry of a deposit already committed skips the landing check like a
+    /// pending one: its funds moved, so a balance read now would refuse it.
+    #[test]
+    fn a_committed_deposit_retry_skips_the_landing_check() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let mut state = seeded(&channel, &config, 5_000, 0);
+        state.processed_topup_signatures = vec!["committed".to_string()];
+        assert!(deposit_already_recorded(Some(&state), Some("committed")));
+        // Positive controls: an unknown deposit, or none at all, is checked.
+        assert!(!deposit_already_recorded(Some(&state), Some("fresh")));
+        assert!(!deposit_already_recorded(None, Some("committed")));
+        assert!(!deposit_already_recorded(Some(&state), None));
+        state.processed_topup_signatures.clear();
+        assert!(!deposit_already_recorded(Some(&state), Some("committed")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deposit_that_cannot_land_is_refused_before_serving() {
+        use base64::Engine as _;
+        let (probe, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let (payer, mint, token_program) = (
+            Pubkey::new_unique(),
+            probe.mint().unwrap(),
+            probe.token_program().unwrap(),
+        );
+        let tx = VersionedTransaction {
+            signatures: vec![solana_signature::Signature::default()],
+            message: solana_message::VersionedMessage::V0(
+                solana_message::v0::Message::try_compile(
+                    &fee_payer,
+                    &[],
+                    &[],
+                    solana_hash::Hash::new_unique(),
+                )
+                .unwrap(),
+            ),
+        };
+        let chain = |live: bool, balance: u64| {
+            let mut data = vec![0u8; 165];
+            data[..32].copy_from_slice(mint.as_ref());
+            data[32..64].copy_from_slice(payer.as_ref());
+            data[64..72].copy_from_slice(&balance.to_le_bytes());
+            data[108] = 1;
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::IsBlockhashValid,
+                serde_json::json!({ "context": { "slot": 1 }, "value": live }),
+            );
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "lamports": 2_039_280,
+                        "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+                        "owner": pc::pubkey_string(&token_program),
+                        "executable": false,
+                        "rentEpoch": 0,
+                        "space": 165,
+                    }
+                }),
+            );
+            let (handler, _) = handler(Arc::new(MemoryChannelStore::new()));
+            handler.with_rpc_client(RpcClient::new_mock_with_mocks(
+                "succeeds".to_string(),
+                mocks,
+            ))
+        };
+        let check = |handler: X402BatchSettlement| {
+            let tx = tx.clone();
+            async move {
+                handler
+                    .check_deposit_can_land(&tx, &payer, &mint, &token_program, 5_000)
+                    .await
+            }
+        };
+        let refused = |result: Result<(), Error>, detail: &str| {
+            let err = result.expect_err(detail);
+            assert_eq!(
+                crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+                codes::INVALID_SETTLEMENT_SIMULATION,
+                "{err}"
+            );
+            assert!(err.to_string().contains(detail), "{err}");
+        };
+
+        refused(
+            check(chain(true, 4_999)).await,
+            "less than the 5000 deposit",
+        );
+        refused(check(chain(false, 5_000)).await, "is not live");
+        let (unreachable, _) = handler(Arc::new(MemoryChannelStore::new()));
+        let unreachable = unreachable.with_rpc_client(RpcClient::new_mock("fails".to_string()));
+        refused(check(unreachable).await, "blockhash check failed");
+        // Positive control: a live blockhash and exactly the deposit.
+        check(chain(true, 5_000))
+            .await
+            .expect("a fundable deposit passes");
     }
 
     /// Channel reads run off the async worker. The blocking RPC client parks
@@ -5592,6 +6841,44 @@ mod tests {
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
         assert!(state.onchain_observed_at() > 0);
         assert_eq!(state.onchain_observed_slot(), 600);
+    }
+
+    /// A stale snapshot refreshed from an account carrying the
+    /// `ClosedChannel` discriminator is refused with `channel_state`: every
+    /// other field may still read as the open channel the record describes,
+    /// but the account is not an open payment channel (Phase 3 step 3).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refresh_onto_a_closed_channel_account_refuses_the_voucher() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (probe, fee_payer) = handler(store.clone());
+        let requirements = probe.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        // Last observed at the epoch: the snapshot is stale and must refresh.
+        state.record_onchain_observation(open_observation(), 0);
+        state.onchain_checked_at = 0;
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let mut closed = onchain_channel(&config, &fee_payer, 5_000);
+        closed.discriminator = 2;
+
+        let (refreshing, _) = handler(store.clone());
+        let refreshing = refreshing.with_rpc_client(chain_with(Some(&closed)));
+        let err = refreshing
+            .reconcile_channel(&channel_b58)
+            .await
+            .expect_err("a ClosedChannel account is not an open channel");
+        assert_eq!(
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+            codes::INVALID_CHANNEL_STATE,
+            "{err}"
+        );
+
+        // Positive control: the same account with the Channel discriminator.
+        let open = onchain_channel(&config, &fee_payer, 5_000);
+        let (current, _) = handler(store.clone());
+        let current = current.with_rpc_client(chain_with(Some(&open)));
+        current.reconcile_channel(&channel_b58).await.unwrap();
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a
@@ -5768,32 +7055,348 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
-            codes::INVALID_CHANNEL_STATE
+            codes::INVALID_PAYMENT_REQUIREMENTS
         );
     }
 
-    #[tokio::test]
-    async fn a_refund_carrying_a_cooperative_hint_is_refused() {
+    /// A client-mode refund closes only at the accepted cumulative, needs
+    /// the channel's receiver binding to be this server's key unless it
+    /// carries the `request_close` retry, and never carries a client-authored
+    /// close authorization.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refund_closes_only_at_the_accepted_cumulative_of_a_bound_channel() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .put_channel(&channel_b58, seeded(&channel, &config, 5_000, 1_000))
+            .await
+            .unwrap();
+        let refund = |cumulative: u64| {
+            BatchPayload::Refund(BatchRefund::client(
+                config.clone(),
+                voucher(&key, &channel, cumulative),
+            ))
+        };
+        let code = |err: Error| {
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string())
+        };
+        let verify = |payload: BatchPayload| {
+            let handler = handler.clone();
+            let header = header(&requirements, payload);
+            async move { handler.verify_payment(&header, "0.001").await }
+        };
+
+        // No binding recorded (a channel opened before bindings): the client
+        // must retry with a request_close.
+        assert_eq!(
+            code(verify(refund(1_000)).await.unwrap_err()),
+            codes::INVALID_RECEIVER_BINDING_UNAVAILABLE
+        );
+        // Bound to another key: not this server's channel to close.
+        let stamp = |key: Pubkey| {
+            let store = store.clone();
+            let channel_b58 = channel_b58.clone();
+            async move {
+                store
+                    .update_channel(
+                        &channel_b58,
+                        Box::new(move |current| {
+                            let mut state = current.unwrap();
+                            record_receiver_binding(&mut state, &key);
+                            Ok(state)
+                        }),
+                    )
+                    .await
+                    .unwrap();
+            }
+        };
+        stamp(Pubkey::new_unique()).await;
+        assert_eq!(
+            code(verify(refund(1_000)).await.unwrap_err()),
+            codes::INVALID_RECEIVER_AUTHORIZER_MISMATCH
+        );
+        stamp(handler.receiver_authorizer).await;
+        // An older watermark: a payer cannot close below what it was served.
+        assert_eq!(
+            code(verify(refund(900)).await.unwrap_err()),
+            codes::INVALID_CLOSE_STATE
+        );
+        // A close authorization is the server's to add, never the client's.
+        let forged = BatchPayload::Refund(BatchRefund {
+            close_authorization: Some(
+                crate::x402::protocol::schemes::batch_settlement::CloseAuthorization {
+                    valid_before: 1,
+                    signature: "sig".to_string(),
+                },
+            ),
+            ..BatchRefund::client(config.clone(), voucher(&key, &channel, 1_000))
+        });
+        assert_eq!(
+            code(verify(forged).await.unwrap_err()),
+            codes::INVALID_CLOSE_AUTHORIZATION
+        );
+        // Without the REQUIRED voucher the payload is not a client refund.
+        let bare = serde_json::json!({
+            "x402Version": 2,
+            "accepted": requirements,
+            "payload": { "type": "refund", "channelConfig": config, "transaction": "AQID" },
+        });
+        let bare = encode_json(&bare).unwrap();
+        assert_eq!(
+            code(handler.verify_payment(&bare, "0.001").await.unwrap_err()),
+            codes::INVALID_PAYLOAD_TYPE
+        );
+        // Positive control: the accepted cumulative on a channel bound to this
+        // server passes every refund check and reaches the chain reads (none
+        // are served here).
+        let err = verify(refund(1_000)).await.unwrap_err().to_string();
+        let reached = crate::x402::protocol::schemes::batch_settlement::classify(&err);
+        for refused in [
+            codes::INVALID_RECEIVER_BINDING_UNAVAILABLE,
+            codes::INVALID_RECEIVER_AUTHORIZER_MISMATCH,
+            codes::INVALID_CLOSE_STATE,
+            codes::INVALID_PAYLOAD_TYPE,
+        ] {
+            assert_ne!(reached, refused, "{err}");
+        }
+        assert!(err.contains("settlement ATA"), "{err}");
+    }
+
+    /// A cooperative close applies the voucher only above the onchain
+    /// watermark, and always pays out with the sealed distribute.
+    #[test]
+    fn a_cooperative_close_applies_the_voucher_only_above_settled() {
         let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
         let requirements = handler.requirements("0.001").unwrap();
         let (key, config, channel) = client(&fee_payer, &requirements);
-        let payload = BatchPayload::Refund {
-            channel_config: config,
-            transaction: "b64".to_string(),
-            voucher: Some(voucher(&key, &channel, 1_000)),
-            close_authorization: None,
-            amount: None,
+        let signer = pc::parse_pubkey(&config.payer_authorizer).unwrap();
+        let program_id = pc::default_program_id();
+        let ed25519 = pc::to_address(&pc::parse_pubkey(pc::ED25519_PROGRAM_ID).unwrap());
+        let build = |settled: u64| {
+            let mut onchain = onchain_channel(&config, &fee_payer, 5_000);
+            onchain.settlement.settled = settled;
+            handler
+                .cooperative_close_instructions(
+                    &channel,
+                    &onchain,
+                    &signer,
+                    &voucher(&key, &channel, 3_000),
+                    3_000,
+                    &requirements.pay_to,
+                )
+                .unwrap()
         };
+        let above = build(1_000);
+        assert_eq!(above.len(), 3, "precompile, settle_and_seal, distribute");
+        assert_eq!(above[0].program_id, ed25519);
+        assert!(above[1..]
+            .iter()
+            .all(|ix| ix.program_id == pc::to_address(&program_id)));
+        let equal = build(3_000);
+        assert_eq!(
+            equal.len(),
+            2,
+            "settle_and_seal (has_voucher = 0), distribute"
+        );
+        assert!(equal.iter().all(|ix| ix.program_id != ed25519));
+    }
+
+    /// A refund retried after its cooperative close completed (the response
+    /// was lost) gets the saved result back, with no chain read: the channel
+    /// is `Distributed` or gone by then and would fail every live check. A
+    /// record without a saved close still goes to the chain.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_retried_refund_replays_its_completed_close() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        record_receiver_binding(&mut state, &handler.receiver_authorizer);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let refund = || {
+            header(
+                &requirements,
+                BatchPayload::Refund(BatchRefund::client(
+                    config.clone(),
+                    voucher(&key, &channel, 1_000),
+                )),
+            )
+        };
+
+        // Control: no saved close, so verification reaches the chain reads
+        // (none are served here).
         let err = handler
-            .verify_payment(&header(&requirements, payload), "0.001")
+            .verify_payment(&refund(), "0.001")
             .await
             .unwrap_err();
-        // A receiver-authorizer key in an untrusted request is not a trust
-        // anchor, so the shortcut is refused rather than silently ignored.
+        assert!(err.to_string().contains("settlement ATA"), "{err}");
+
+        let completed = CompletedClose {
+            cumulative: 1_000,
+            transaction: "closeSig".to_string(),
+            refunded: "4000".to_string(),
+        };
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(move |current| {
+                    let mut state = current.unwrap();
+                    state.sealed = true;
+                    record_cooperative_close(&mut state, &completed);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let outcome = handler
+            .verify_payment(&refund(), "0.001")
+            .await
+            .expect("a retry of the completed refund verifies");
+        let response = handler.settle_payment(outcome).await.unwrap();
+        assert!(response.success);
+        assert_eq!(response.transaction, "closeSig");
+        assert_eq!(response.amount, "4000");
+    }
+
+    /// After a failed close submission, a concurrent claim that moved
+    /// `settled` up to the voucher triggers one rebuild; a channel that is
+    /// distributed or gone has closed; anything else reports the failure.
+    #[test]
+    fn a_failed_cooperative_close_rebuilds_once_after_a_concurrent_claim() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, _) = client(&fee_payer, &requirements);
+        let at = |status: u8, settled: u64| {
+            let mut channel = onchain_channel(&config, &fee_payer, 5_000);
+            channel.status = status;
+            channel.settlement.settled = settled;
+            channel
+        };
+        let before = at(CHANNEL_STATUS_OPEN, 1_000);
+        let step = |after: Option<Channel>, rebuilt: bool| {
+            close_retry_step(&before, after.as_ref(), 3_000, rebuilt)
+        };
+        // The claim landed at the voucher's cumulative.
         assert_eq!(
-            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
-            codes::INVALID_CLOSE_AUTHORIZATION
+            step(Some(at(CHANNEL_STATUS_OPEN, 3_000)), false),
+            CloseRetry::Rebuild
         );
+        // Only once.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 3_000)), true),
+            CloseRetry::Fail
+        );
+        // Nothing moved: the failure has another cause.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 1_000)), false),
+            CloseRetry::Fail
+        );
+        // Settled past the voucher: the refund is behind the chain.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_OPEN, 4_000)), false),
+            CloseRetry::Fail
+        );
+        // A forced close started meanwhile.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_CLOSING, 3_000)), false),
+            CloseRetry::Fail
+        );
+        // The close landed although its submission reported an error.
+        assert_eq!(
+            step(Some(at(CHANNEL_STATUS_DISTRIBUTED, 3_000)), false),
+            CloseRetry::Closed
+        );
+        assert_eq!(step(None, false), CloseRetry::Closed);
+
+        // The rebuilt close against the claimed read drops the voucher, which
+        // would no longer raise `settled`.
+        let (key, config, channel) = client(&fee_payer, &requirements);
+        let rebuilt = handler
+            .cooperative_close_instructions(
+                &channel,
+                &at(CHANNEL_STATUS_OPEN, 3_000),
+                &pc::parse_pubkey(&config.payer_authorizer).unwrap(),
+                &voucher(&key, &channel, 3_000),
+                3_000,
+                &requirements.pay_to,
+            )
+            .unwrap();
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "settle_and_seal (has_voucher = 0), distribute"
+        );
+    }
+
+    /// The cooperative close fences the record in one transition: refused
+    /// while a paid request is reserved or once the watermark moved, then
+    /// frozen at the close so no later commit can charge past it.
+    #[tokio::test]
+    async fn a_cooperative_close_fences_the_record_at_its_voucher() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let channel_b58 = pc::pubkey_string(&channel);
+        let mut state = seeded(&channel, &config, 5_000, 1_000);
+        state.pending_setup = Some(PendingSetup {
+            payer_signature: "sig".to_string(),
+            deposit: 1,
+            opens_channel: false,
+            expires_at: now_unix() as i64 + 600,
+        });
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let code = |err: Error| {
+            crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string())
+        };
+        assert_eq!(
+            code(
+                handler
+                    .fence_cooperative_close(&channel_b58, 1_000)
+                    .await
+                    .unwrap_err()
+            ),
+            codes::INVALID_CLOSE_STATE,
+            "a reserved request blocks the close"
+        );
+        store
+            .update_channel(
+                &channel_b58,
+                Box::new(|current| {
+                    let mut state = current.unwrap();
+                    state.pending_setup = None;
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            code(
+                handler
+                    .fence_cooperative_close(&channel_b58, 900)
+                    .await
+                    .unwrap_err()
+            ),
+            codes::INVALID_CLOSE_STATE,
+            "the watermark moved since verification"
+        );
+        handler
+            .fence_cooperative_close(&channel_b58, 1_000)
+            .await
+            .unwrap();
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.close_requested_at.is_some());
+        assert_eq!(state.final_cumulative, Some(1_000));
+        // A retry of the same close proceeds.
+        handler
+            .fence_cooperative_close(&channel_b58, 1_000)
+            .await
+            .unwrap();
     }
 
     /// The refusals the spec names for requests this server never serves are
@@ -5804,13 +7407,10 @@ mod tests {
         let requirements = handler.requirements("0.001").unwrap();
         let (key, config, channel) = client(&fee_payer, &requirements);
 
-        let partial = BatchPayload::Refund {
-            channel_config: config.clone(),
-            transaction: "b64".to_string(),
-            voucher: None,
-            close_authorization: None,
+        let partial = BatchPayload::Refund(BatchRefund {
             amount: Some("1500".to_string()),
-        };
+            ..BatchRefund::client(config.clone(), voucher(&key, &channel, 1_000))
+        });
         let err = handler
             .verify_payment(&header(&requirements, partial), "0.001")
             .await

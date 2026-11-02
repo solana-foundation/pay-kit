@@ -5,5 +5,9 @@ export {
     assertPeriodHoursInRange,
     deriveSubscriptionAuthorityPda,
     deriveSubscriptionPda,
+    encodeSubscribeInstructionData,
+    encodeTransferSubscriptionInstructionData,
     mapSubscriptionPeriodToHours,
+    type SubscribeInstructionDataFields,
+    type TransferSubscriptionInstructionDataFields,
 } from './shared/subscription.js';

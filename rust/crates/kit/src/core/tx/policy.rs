@@ -76,6 +76,15 @@ pub fn negotiate(
     max_signable: Option<TxVersion>,
 ) -> Result<TxVersion> {
     let accepted = super::version::accepted_versions(advertised);
+    if accepted.is_empty() {
+        // RULINGS T2: present and empty is not absent. MPP "Clients MUST
+        // build one of the advertised versions"; x402 "MUST fail with
+        // unsupported_transaction_version when the intersection is empty".
+        return Err(Error::Other(
+            "the counterparty advertises no transaction version (transactionVersions is empty)"
+                .into(),
+        ));
+    }
     accepted
         .iter()
         .copied()
@@ -104,6 +113,31 @@ pub fn check_v1_budget_caps(
     max_unit_limit: u32,
     max_unit_price_micro_lamports: u64,
 ) -> Result<Option<DeclaredBudget>> {
+    check_v1_budget_caps_with(
+        message,
+        max_unit_limit,
+        max_unit_price_micro_lamports,
+        LoadedDataLimitRule::Maximum,
+    )
+}
+
+/// What a version-1 header's `loadedAccountsDataSizeLimit` must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadedDataLimitRule {
+    /// Exactly the runtime maximum (64 MiB), what version 0 always gets.
+    Maximum,
+    /// Present and nonzero, any size up to the maximum (x402-txv1
+    /// scheme_upto_svm.md: “loadedAccountsDataSizeLimit MUST be present”).
+    Present,
+}
+
+/// [`check_v1_budget_caps`] with the loaded-data rule spelled out.
+pub fn check_v1_budget_caps_with(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+    loaded: LoadedDataLimitRule,
+) -> Result<Option<DeclaredBudget>> {
     if TxVersion::of(message)? != TxVersion::V1 {
         return Ok(None);
     }
@@ -128,12 +162,40 @@ pub fn check_v1_budget_caps(
     }
     // An absent or smaller loaded-data limit can fail the transaction at
     // load time, after fees are charged; version 0 always gets the maximum.
-    if declared.loaded_accounts_data_size_limit != Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES) {
-        return Err(Error::Other(format!(
-            "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
-        )));
+    let loaded_limit = declared.loaded_accounts_data_size_limit;
+    let accepted = match loaded {
+        LoadedDataLimitRule::Maximum => loaded_limit == Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES),
+        // Zero loads nothing, so the transaction fails after the fee is
+        // charged, like a zero compute-unit limit.
+        LoadedDataLimitRule::Present => loaded_limit
+            .is_some_and(|limit| limit > 0 && limit <= MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES),
+    };
+    if !accepted {
+        return Err(Error::Other(match loaded {
+            LoadedDataLimitRule::Maximum => format!(
+                "version 1 loaded accounts data size limit must be {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            ),
+            LoadedDataLimitRule::Present => format!(
+                "version 1 loaded accounts data size limit must be present, nonzero and at most {MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES}"
+            ),
+        }));
     }
     Ok(Some(declared))
+}
+
+/// Reject a version-1 message that requests a heap size. A sponsor bounds
+/// the compute a co-signed transaction may buy; version 0 refuses
+/// `RequestHeapFrame` for the same reason (x402 scheme_*_svm.md §2.2.1: other
+/// ComputeBudget instruction types "SHOULD be rejected"). Other versions pass.
+pub fn reject_v1_heap_request(message: &VersionedMessage) -> Result<()> {
+    if let VersionedMessage::V1(v1) = message {
+        if v1.config.heap_size.is_some() {
+            return Err(Error::Other(
+                "version 1 transaction config must not request a heap size".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Version-0 (and legacy) counterpart of [`check_v1_budget_caps`] for a
@@ -307,6 +369,35 @@ pub fn check_envelope(tx: &VersionedTransaction, accepted: &[TxVersion]) -> Resu
     Ok(version)
 }
 
+/// [`check_envelope`] for the MPP methods (charge, session), which do not
+/// support legacy messages (draft-solana-charge-00, Transaction Versions:
+/// "servers MUST NOT advertise \"legacy\" and MUST reject a legacy
+/// message"). x402 keeps the legacy-as-version-0 tolerance (§1.5) and calls
+/// [`check_envelope`] directly.
+pub fn check_envelope_without_legacy(
+    tx: &VersionedTransaction,
+    accepted: &[TxVersion],
+) -> Result<TxVersion> {
+    refuse_legacy(&tx.message, accepted)?;
+    check_envelope(tx, accepted)
+}
+
+/// A legacy (unprefixed) message, refused with the same "not accepted"
+/// diagnostic an unadvertised version gets.
+fn refuse_legacy(message: &VersionedMessage, accepted: &[TxVersion]) -> Result<()> {
+    if matches!(message, VersionedMessage::Legacy(_)) {
+        return Err(Error::Other(format!(
+            "legacy transaction version is not accepted; accepted versions: {}",
+            accepted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(())
+}
+
 /// Verify every signature a client already placed on a transaction the server
 /// is about to co-sign, before it signs, simulates or pays for anything.
 ///
@@ -346,6 +437,26 @@ pub fn require_presigned(
     Ok(())
 }
 
+/// [`check_reported_version`] for the MPP methods: a transaction the RPC
+/// reports as `legacy` is refused rather than policed as version 0 (see
+/// [`check_envelope_without_legacy`]).
+pub fn check_reported_version_without_legacy(
+    reported: Option<&TransactionVersion>,
+    accepted: &[TxVersion],
+) -> Result<TxVersion> {
+    if matches!(reported, Some(TransactionVersion::Legacy(_))) {
+        return Err(Error::Other(format!(
+            "legacy transaction version is not accepted; accepted versions: {}",
+            accepted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    check_reported_version(reported, accepted)
+}
+
 /// Version policy for a transaction read back from the RPC by signature.
 /// `maxSupportedTransactionVersion` only bounds what the node returns; the
 /// server still accepts only its configured versions, exactly as for a
@@ -381,6 +492,15 @@ pub fn check_reported_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RULINGS T2: an empty advertisement offers nothing to build; only an
+    /// absent one defaults to version 0.
+    #[test]
+    fn negotiate_refuses_an_empty_advertisement() {
+        let err = negotiate(Some(&[]), None).unwrap_err().to_string();
+        assert!(err.contains("advertises no transaction version"), "{err}");
+        assert_eq!(negotiate(None, None).unwrap(), TxVersion::V0);
+    }
 
     #[test]
     fn negotiate_picks_the_highest_version_the_signer_can_sign() {
@@ -436,6 +556,49 @@ mod tests {
     use solana_pubkey::Pubkey;
     use solana_signature::Signature;
     use solana_system_interface::instruction as system_instruction;
+
+    /// MPP (draft-solana-charge-00, Transaction Versions): "MUST reject a
+    /// legacy message", even where version 0 is accepted. The same transfer
+    /// as version 0 passes; x402's `check_envelope` keeps the tolerance.
+    #[test]
+    fn mpp_envelope_refuses_legacy_messages() {
+        let payer = Pubkey::new_unique();
+        let ixs = [system_instruction::transfer(
+            &payer,
+            &Pubkey::new_unique(),
+            1,
+        )];
+        let legacy = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::Legacy(solana_message::Message::new(&ixs, Some(&payer))),
+        };
+        let v0 = build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), None).unwrap();
+        let both = [TxVersion::V0, TxVersion::V1];
+        let err = check_envelope_without_legacy(&legacy, &both)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("legacy transaction version is not accepted"),
+            "{err}"
+        );
+        assert_eq!(
+            check_envelope_without_legacy(&v0, &both).unwrap(),
+            TxVersion::V0
+        );
+        assert_eq!(check_envelope(&legacy, &both).unwrap(), TxVersion::V0);
+
+        use solana_transaction::versioned::Legacy;
+        assert!(check_reported_version_without_legacy(
+            Some(&TransactionVersion::Legacy(Legacy::Legacy)),
+            &both
+        )
+        .is_err());
+        assert_eq!(
+            check_reported_version_without_legacy(Some(&TransactionVersion::Number(0)), &both)
+                .unwrap(),
+            TxVersion::V0
+        );
+    }
 
     #[test]
     fn envelope_enforces_the_advertised_set() {
@@ -525,6 +688,35 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("loaded accounts data size"));
+            // The present-only rule admits a smaller positive limit and
+            // nothing else.
+            let present =
+                check_v1_budget_caps_with(&msg, 200_000, 5_000_000, LoadedDataLimitRule::Present);
+            assert_eq!(present.is_ok(), loaded == Some(1), "{loaded:?}");
+        }
+        // Under the presence rule any nonzero limit up to the maximum passes.
+        for (loaded, ok) in [
+            (Some(1), true),
+            (Some(1024 * 1024), true),
+            (Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES), true),
+            (Some(0), false),
+            (Some(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES + 1), false),
+            (None, false),
+        ] {
+            let mut config = budget.v1_config();
+            config.loaded_accounts_data_size_limit = loaded;
+            let msg = VersionedMessage::V1(
+                solana_message::v1::Message::try_compile_with_config(
+                    &payer,
+                    &ixs,
+                    Hash::default(),
+                    config,
+                )
+                .unwrap(),
+            );
+            let result =
+                check_v1_budget_caps_with(&msg, 200_000, 5_000_000, LoadedDataLimitRule::Present);
+            assert_eq!(result.is_ok(), ok, "{loaded:?}: {result:?}");
         }
         let zero = ComputeBudget::new(0, 0);
         let tx = build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), Some(&zero)).unwrap();

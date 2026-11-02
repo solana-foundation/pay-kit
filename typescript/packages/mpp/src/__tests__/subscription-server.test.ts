@@ -7,7 +7,7 @@
  * SubscriptionDelegation decoder) are exercised directly through the
  * `__testing` export.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
     AccountRole,
     address,
@@ -24,11 +24,12 @@ import {
     setTransactionMessageLifetimeUsingBlockhash,
     type TransactionSigner,
 } from '@solana/kit';
-import { findAssociatedTokenPda } from '@solana-program/token';
+import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 import { Challenge, Credential } from 'mppx';
 import { Mppx, Store } from 'mppx/server';
 
 import {
+    SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
@@ -48,18 +49,53 @@ const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const PULLER = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 
+/** The route request Mppx.create hands to verify(): this route's per-period amount. */
+const ROUTE_REQUEST = { amount: '10000000' };
+
+/** A challenge request bound to the default test route (mainnet-beta). */
+const ROUTE_CHALLENGE_REQUEST = {
+    amount: '10000000',
+    currency: MINT,
+    methodDetails: {
+        decimals: 6,
+        mint: MINT,
+        planAddress: PLAN_ID,
+        puller: PULLER,
+        subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+        tokenProgram: TOKEN_PROGRAM,
+    },
+    periodCount: '30',
+    periodUnit: 'day',
+    recipient: RECIPIENT,
+};
+
+const TEST_SECRET = 'subscription-server-test-secret-of-32-bytes';
+const TEST_REALM = 'subscription-test.example.com';
+
 // ── Test setup ──
 
 let originalFetch: typeof globalThis.fetch;
 
 beforeEach(() => {
     originalFetch = globalThis.fetch;
-    process.env.MPP_SECRET_KEY = 'test-secret';
+    process.env.MPP_SECRET_KEY = TEST_SECRET;
+    process.env.MPP_REALM = TEST_REALM;
 });
 
 afterEach(() => {
     globalThis.fetch = originalFetch;
+    delete process.env.MPP_SECRET_KEY;
+    delete process.env.MPP_REALM;
+    vi.useRealTimers();
 });
+
+/**
+ * Issue a challenge under the secret and realm `subscription()` resolves from
+ * the environment, so the echoed challenge passes the HMAC binding in verify().
+ */
+function issueChallenge(fields: { expires?: string; intent: string; method: string; request: unknown }) {
+    return Challenge.from({ ...fields, realm: TEST_REALM, secretKey: TEST_SECRET } as never);
+}
 
 // ── Helpers ──
 
@@ -113,9 +149,17 @@ async function buildActivationTransactionBase64(
             | 'reorder'
             | 'no-subscribe'
             | 'no-transfer';
+        /** Create an ATA idempotently for this owner before subscribe. */
+        ataOwner?: 'recipient' | 'subscriber';
+        /** Override the ATA instruction's data (e.g. empty: non-idempotent Create). */
+        ataData?: Uint8Array;
+        /** Prepend an initialize_subscription_authority for this authority. */
+        authorityInit?: 'subscriber' | 'unrelated';
         feePayerKey?: string;
         memo?: string;
         receiver?: string;
+        /** Plan account named by the subscribe instruction (defaults to PLAN_ID). */
+        subscribePlan?: string;
         version?: 'legacy' | 0;
     } = {},
 ): Promise<{
@@ -124,11 +168,74 @@ async function buildActivationTransactionBase64(
     transaction: string;
 }> {
     const subscriber = await generateKeyPairSigner();
+    const subscriptionAuthority = await deriveSubscriptionAuthorityPda({
+        mint: address(MINT),
+        programId: address(SUBSCRIPTIONS_PROGRAM),
+        subscriber: subscriber.address,
+    });
+    const subscribePlan = address(options.subscribePlan ?? PLAN_ID);
+    const subscriptionDelegation = await deriveSubscriptionPda({
+        planPda: subscribePlan,
+        programId: address(SUBSCRIPTIONS_PROGRAM),
+        subscriber: subscriber.address,
+    });
+    // Codama layout: subscriber, merchant, planPda, subscriptionPda,
+    // subscriptionAuthorityPda, systemProgram, eventAuthority, selfProgram, payer.
     const subscribeIx: Instruction = {
-        accounts: [{ address: subscriber.address, role: AccountRole.WRITABLE_SIGNER }],
+        accounts: [
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+            { address: address(PULLER), role: AccountRole.READONLY },
+            { address: subscribePlan, role: AccountRole.READONLY },
+            { address: subscriptionDelegation, role: AccountRole.WRITABLE },
+            { address: subscriptionAuthority, role: AccountRole.READONLY },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+            { address: address(RECIPIENT), role: AccountRole.READONLY },
+            { address: address(SUBSCRIPTIONS_PROGRAM), role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+        ],
         data: new Uint8Array([SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR]),
         programAddress: address(SUBSCRIPTIONS_PROGRAM),
     };
+    const [subscriberAta] = await findAssociatedTokenPda({
+        mint: address(MINT),
+        owner: subscriber.address,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const unrelated = await generateKeyPairSigner();
+    const initAuthorityOwner = options.authorityInit === 'unrelated' ? unrelated.address : subscriber.address;
+    const initAuthorityIx: Instruction = {
+        accounts: [
+            { address: subscriber.address, role: AccountRole.WRITABLE_SIGNER },
+            {
+                address: await deriveSubscriptionAuthorityPda({
+                    mint: address(MINT),
+                    programId: address(SUBSCRIPTIONS_PROGRAM),
+                    subscriber: initAuthorityOwner,
+                }),
+                role: AccountRole.WRITABLE,
+            },
+            { address: address(MINT), role: AccountRole.READONLY },
+            { address: subscriberAta, role: AccountRole.WRITABLE },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+            { address: address(TOKEN_PROGRAM), role: AccountRole.READONLY },
+        ],
+        data: new Uint8Array([SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR]),
+        programAddress: address(SUBSCRIPTIONS_PROGRAM),
+    };
+    const ataOwner = options.ataOwner === 'recipient' ? address(RECIPIENT) : subscriber.address;
+    const [createdAta] = await findAssociatedTokenPda({
+        mint: address(MINT),
+        owner: ataOwner,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const idempotentAtaIx = getCreateAssociatedTokenIdempotentInstruction({
+        ata: createdAta,
+        mint: address(MINT),
+        owner: ataOwner,
+        payer: subscriber,
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const ataIx: Instruction = { ...idempotentAtaIx, data: options.ataData ?? idempotentAtaIx.data };
     const [recipientAta] = await findAssociatedTokenPda({
         mint: address(MINT),
         owner: address(options.receiver ?? RECIPIENT),
@@ -185,6 +292,8 @@ async function buildActivationTransactionBase64(
             instructions = [subscribeIx, transferIx];
     }
     if (options.memo !== undefined) instructions.push(memoIx);
+    if (options.authorityInit !== undefined) instructions.unshift(initAuthorityIx);
+    if (options.ataOwner !== undefined) instructions.unshift(ataIx);
 
     const txMessage = pipe(
         createTransactionMessage({ version: options.version ?? 0 }),
@@ -445,6 +554,7 @@ describe('validateActivationInstructions', () => {
         amount: '10000000',
         methodDetails: {
             mint: MINT,
+            planAddress: PLAN_ID,
             subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
             tokenProgram: TOKEN_PROGRAM,
         },
@@ -524,6 +634,64 @@ describe('validateActivationInstructions', () => {
         await expect(
             __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
         ).resolves.toBeUndefined();
+    });
+
+    test("accepts an idempotent creation of the subscriber's own ATA", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ ataOwner: 'subscriber' });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).resolves.toBeUndefined();
+    });
+
+    // draft-solana-subscription-00: the activation contains "no instructions
+    // other than those above plus optional compute-budget and memo
+    // instructions"; the recipient's ATA is not the server's to create.
+    test("rejects creation of the recipient's ATA", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ ataOwner: 'recipient' });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/ATA creation owner does not match the activation subscriber/);
+    });
+
+    // §Authorization Scope Verification: "uses methodDetails.planAddress as the Plan account".
+    test('rejects a subscribe instruction naming another Plan account', async () => {
+        const other = await generateKeyPairSigner();
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            subscribePlan: other.address,
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/subscribe accounts do not match the challenged activation/);
+    });
+
+    test("accepts initialize_subscription_authority for the subscriber's (subscriber, mint) authority", async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            authorityInit: 'subscriber',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).resolves.toBeUndefined();
+    });
+
+    test('rejects initialize_subscription_authority for an unrelated authority', async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            authorityInit: 'unrelated',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/initialize_subscription_authority is not allowed/);
+    });
+
+    test('rejects an ATA instruction with empty data instead of crashing', async () => {
+        // Empty data is the non-idempotent CreateAssociatedTokenAccount; the
+        // kit decoder omits `data` for it.
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            ataData: new Uint8Array(),
+            ataOwner: 'subscriber',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/Only idempotent ATA creation is allowed/);
     });
 
     test('rejects transfer_subscription to an ATA owned by another recipient', async () => {
@@ -689,10 +857,30 @@ describe('encoding helpers', () => {
 // verify() — end-to-end push-mode happy path
 // ══════════════════════════════════════════════════════════════════════
 
-describe('subscription().verify() (push mode)', () => {
+describe('subscription().verify()', () => {
     test('rejects activation when first-period charge did not execute', async () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('test-challenge', subscriber);
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         const txSignature = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
 
         // Build a `SubscriptionDelegation` byte buffer with amount_pulled = 0 so
@@ -748,33 +936,15 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        id: 'test-challenge',
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                network: 'devnet',
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
+                    challenge: issued,
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/first-period charge/);
     });
 
-    test('rejects type="signature" with feePayer=true', async () => {
+    test('rejects type="signature" with feePayer=true as push mode', async () => {
         globalThis.fetch = async () => rpcSuccess({});
         const method = subscription({
             decimals: 6,
@@ -789,7 +959,9 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
+                    challenge: issueChallenge({
+                        intent: 'subscription',
+                        method: 'solana',
                         request: {
                             amount: '10000000',
                             currency: MINT,
@@ -797,7 +969,8 @@ describe('subscription().verify() (push mode)', () => {
                                 decimals: 6,
                                 feePayer: true,
                                 mint: MINT,
-                                planId: PLAN_ID,
+                                planAddress: PLAN_ID,
+                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                                 puller: PULLER,
                                 tokenProgram: TOKEN_PROGRAM,
                             },
@@ -805,12 +978,12 @@ describe('subscription().verify() (push mode)', () => {
                             periodUnit: 'day',
                             recipient: RECIPIENT,
                         },
-                    },
+                    }),
                     payload: { signature: 'abc', type: 'signature' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
-        ).rejects.toThrow(/fee sponsorship/);
+        ).rejects.toThrow(/Push-mode/);
     });
 
     test('rejects an unknown payload type', async () => {
@@ -827,10 +1000,14 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: { request: { methodDetails: {} } },
+                    challenge: issueChallenge({
+                        intent: 'subscription',
+                        method: 'solana',
+                        request: ROUTE_CHALLENGE_REQUEST,
+                    }),
                     payload: { type: 'mystery' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/payload type/);
     });
@@ -839,7 +1016,30 @@ describe('subscription().verify() (push mode)', () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64({
             memo: 'order-99',
         });
-        const authentication = await buildAuthentication('test-challenge', subscriber);
+        const activationExpires = new Date(Date.now() + 60_000).toISOString();
+        const issued = issueChallenge({
+            expires: activationExpires,
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                externalId: 'order-99',
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         const txSignature = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
         const data = buildDelegationData(
             subscriberAddress,
@@ -856,13 +1056,15 @@ describe('subscription().verify() (push mode)', () => {
         const authorityB64 = Buffer.from(buildAuthorityData()).toString('base64');
 
         const rpcMethods: string[] = [];
+        const sendOptions: unknown[] = [];
         globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string] };
+            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string, unknown?] };
             if (body.method) rpcMethods.push(body.method);
             switch (body.method) {
                 case 'simulateTransaction':
                     return rpcSuccess({ value: { err: null, logs: [] } });
                 case 'sendTransaction':
+                    sendOptions.push(body.params?.[1]);
                     return rpcSuccess(txSignature);
                 case 'getSignatureStatuses':
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
@@ -896,26 +1098,7 @@ describe('subscription().verify() (push mode)', () => {
             tokenProgram: TOKEN_PROGRAM,
         });
         const credential = {
-            challenge: {
-                id: 'test-challenge',
-                request: {
-                    amount: '10000000',
-                    currency: MINT,
-                    externalId: 'order-99',
-                    methodDetails: {
-                        decimals: 6,
-                        mint: MINT,
-                        network: 'devnet',
-                        planAddress: PLAN_ID,
-                        subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                        puller: PULLER,
-                        tokenProgram: TOKEN_PROGRAM,
-                    },
-                    periodCount: '30',
-                    periodUnit: 'day',
-                    recipient: RECIPIENT,
-                },
-            },
+            challenge: issued,
             payload: { authentication, transaction, type: 'transaction' },
         };
         const subscriptionDelegation = await deriveSubscriptionPda({
@@ -933,34 +1116,34 @@ describe('subscription().verify() (push mode)', () => {
         });
         const receipt = await method.verify!({
             credential: credential as never,
-            request: {} as never,
+            request: ROUTE_REQUEST as never,
         });
         expect((receipt as { status: string }).status).toBe('success');
         expect(await store.get(bindingKey)).toMatchObject({
             authentication,
-            challengeId: 'test-challenge',
+            challengeId: issued.id,
         });
 
-        const recovered = await method.verify!({ credential: credential as never, request: {} as never });
+        const recovered = await method.verify!({ credential: credential as never, request: ROUTE_REQUEST as never });
         expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
         expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
         expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
+        expect(sendOptions).toEqual([{ encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }]);
 
         const accessCredential = {
-            challenge: {
-                ...credential.challenge,
-                // Once activation has bound the proof, the opening challenge
-                // expiry no longer invalidates that bearer proof.
-                expires: '2000-01-01T00:00:00Z',
-            },
+            challenge: credential.challenge,
             payload: {
                 authentication,
                 subscriptionDelegation: subscriptionDelegation.toString(),
                 type: 'proof',
             },
         } as never;
-        const firstAccess = await method.verify!({ credential: accessCredential, request: {} as never });
-        const repeatedAccess = await method.verify!({ credential: accessCredential, request: {} as never });
+        // Once activation has bound the proof, the opening challenge expiry
+        // no longer invalidates that bearer proof.
+        vi.useFakeTimers({ now: Date.parse(activationExpires) + 60_000, toFake: ['Date'] });
+        const firstAccess = await method.verify!({ credential: accessCredential, request: ROUTE_REQUEST as never });
+        const repeatedAccess = await method.verify!({ credential: accessCredential, request: ROUTE_REQUEST as never });
+        vi.useRealTimers();
         expect((firstAccess as { status: string }).status).toBe('success');
         expect((repeatedAccess as { status: string }).status).toBe('success');
         expect(firstAccess).toMatchObject({
@@ -1091,15 +1274,17 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
+                    challenge: issueChallenge({
+                        intent: 'subscription',
+                        method: 'solana',
                         expires: '2000-01-01T00:00:00Z',
-                        id: 'expired-activation',
                         request: {
                             amount: '10000000',
                             currency: MINT,
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 puller: PULLER,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
@@ -1109,10 +1294,10 @@ describe('subscription().verify() (push mode)', () => {
                             periodUnit: 'day',
                             recipient: RECIPIENT,
                         },
-                    },
+                    }),
                     payload: { transaction: 'not-a-transaction', type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/challenge expired/);
     });
@@ -1134,14 +1319,16 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        id: 'expired-subscription',
+                    challenge: issueChallenge({
+                        intent: 'subscription',
+                        method: 'solana',
                         request: {
                             amount: '10000000',
                             currency: MINT,
                             methodDetails: {
                                 decimals: 6,
                                 mint: MINT,
+                                network: 'devnet',
                                 planAddress: PLAN_ID,
                                 puller: PULLER,
                                 subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
@@ -1152,17 +1339,37 @@ describe('subscription().verify() (push mode)', () => {
                             recipient: RECIPIENT,
                             subscriptionExpires: '2000-01-01T00:00:00Z',
                         },
-                    },
+                    }),
                     payload: { transaction: 'not-a-transaction', type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/subscription expired/);
     });
 
     test('rejects when on-chain delegation references a different plan', async () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('wrong-plan-challenge', subscriber);
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         const wrongPlan = '11111111111111111111111111111111';
         const data = buildDelegationData(subscriberAddress, wrongPlan, 10_000_000n);
         const accountB64 = Buffer.from(data).toString('base64');
@@ -1205,34 +1412,37 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        id: 'wrong-plan-challenge',
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
+                    challenge: issued,
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/plan mismatch/);
     });
 
     test('rejects when SubscriptionDelegation account is absent after activation', async () => {
         const { subscriber, transaction } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('absent-account-challenge', subscriber);
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             switch (body.method) {
@@ -1263,34 +1473,37 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        id: 'absent-account-challenge',
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
+                    challenge: issued,
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/SubscriptionDelegation account not found/);
     });
 
     test('rejects on simulation failure', async () => {
         const { subscriber, transaction } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('simulation-challenge', subscriber);
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         const errorSpy = ((): { calls: number; restore: () => void } => {
             const original = console.error;
             let calls = 0;
@@ -1327,27 +1540,10 @@ describe('subscription().verify() (push mode)', () => {
             await expect(
                 method.verify!({
                     credential: {
-                        challenge: {
-                            id: 'simulation-challenge',
-                            request: {
-                                amount: '10000000',
-                                currency: MINT,
-                                methodDetails: {
-                                    decimals: 6,
-                                    mint: MINT,
-                                    planAddress: PLAN_ID,
-                                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                    puller: PULLER,
-                                    tokenProgram: TOKEN_PROGRAM,
-                                },
-                                periodCount: '30',
-                                periodUnit: 'day',
-                                recipient: RECIPIENT,
-                            },
-                        },
+                        challenge: issued,
                         payload: { authentication, transaction, type: 'transaction' },
                     } as never,
-                    request: {} as never,
+                    request: ROUTE_REQUEST as never,
                 }),
             ).rejects.toThrow(/simulation failed/);
         } finally {
@@ -1357,7 +1553,27 @@ describe('subscription().verify() (push mode)', () => {
 
     test('rejects on broadcast RPC error', async () => {
         const { subscriber, transaction } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('broadcast-challenge', subscriber);
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             if (body.method === 'simulateTransaction') {
@@ -1388,36 +1604,45 @@ describe('subscription().verify() (push mode)', () => {
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        id: 'broadcast-challenge',
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
+                    challenge: issued,
                     payload: { authentication, transaction, type: 'transaction' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
         ).rejects.toThrow(/RPC error/);
     });
 
-    test('rejects when push-mode signature is replayed (consumed)', async () => {
-        const store = Store.memory();
-        const sig = 'replayedSig0000000000000000000000000000000000';
-        await store.put(`solana-subscription:consumed:${sig}`, true);
-        globalThis.fetch = async () => rpcSuccess({});
+    // draft-solana-subscription-00 §Payload: "Solana subscription activation
+    // uses type=\"transaction\"". A client-broadcast signature is refused as an
+    // invalid payload before the server reads anything from the RPC.
+    test('rejects a push-mode (type="signature") activation without touching the RPC', async () => {
+        const { subscriber } = await buildActivationTransactionBase64();
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
+        let rpcCalls = 0;
+        globalThis.fetch = async () => {
+            rpcCalls += 1;
+            return rpcSuccess({});
+        };
         const method = subscription({
             decimals: 6,
             mint: MINT,
@@ -1428,59 +1653,56 @@ describe('subscription().verify() (push mode)', () => {
             puller: PULLER,
             recipient: RECIPIENT,
             rpcUrl: 'https://mock-rpc',
-            store,
             tokenProgram: TOKEN_PROGRAM,
         });
         await expect(
             method.verify!({
                 credential: {
-                    challenge: {
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
-                    payload: { signature: sig, type: 'signature' },
+                    challenge: issued,
+                    payload: { authentication, signature: 'activation-signature', type: 'signature' },
                 } as never,
-                request: {} as never,
+                request: ROUTE_REQUEST as never,
             }),
-        ).rejects.toThrow(/already consumed/);
+        ).rejects.toThrow(/Push-mode \(type="signature"\) subscription activation is not supported/);
+        expect(rpcCalls).toBe(0);
     });
 
-    test('concurrent push-mode activation returns exactly one receipt', async () => {
-        const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-        const authentication = await buildAuthentication('concurrent-challenge', subscriber);
-        const accountB64 = Buffer.from(buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n)).toString('base64');
-        globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            if (body.method === 'getTransaction') {
-                await Promise.resolve();
-                return rpcSuccess({ meta: { err: null }, transaction: [transaction, 'base64'], version: 0 });
-            }
-            if (body.method === 'getAccountInfo') {
-                return rpcSuccess({
-                    value: {
-                        data: [accountB64, 'base64'],
-                        executable: false,
-                        lamports: 0,
-                        owner: SUBSCRIPTIONS_PROGRAM,
-                        rentEpoch: 0,
-                    },
-                });
-            }
-            return rpcSuccess({});
-        };
+    function writeU64Le(buf: Uint8Array, offset: number, value: bigint) {
+        for (let i = 0; i < 8; i += 1) {
+            buf[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
+        }
+    }
+});
+
+// draft-solana-subscription-00 §Source Verification: "If source is present,
+// servers MUST verify that it uses the did:pkh:solana: method and that its
+// address matches the subscriber signer extracted from the activation
+// transaction."
+describe('subscription().verify() credential source', () => {
+    async function verifyWithSource(source: (subscriber: string) => string | undefined) {
+        const { subscriber, subscriberAddress, transaction } = await buildActivationTransactionBase64();
+        const issued = issueChallenge({
+            intent: 'subscription',
+            method: 'solana',
+            request: {
+                amount: '10000000',
+                currency: MINT,
+                methodDetails: {
+                    decimals: 6,
+                    mint: MINT,
+                    network: 'devnet',
+                    planAddress: PLAN_ID,
+                    puller: PULLER,
+                    subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                periodCount: '30',
+                periodUnit: 'day',
+                recipient: RECIPIENT,
+            },
+        });
+        const authentication = await buildAuthentication(issued.id, subscriber);
+        globalThis.fetch = () => Promise.reject(new Error('RPC reached'));
         const method = subscription({
             decimals: 6,
             mint: MINT,
@@ -1494,151 +1716,114 @@ describe('subscription().verify() (push mode)', () => {
             store: Store.memory(),
             tokenProgram: TOKEN_PROGRAM,
         });
-        const credential = {
-            challenge: {
-                id: 'concurrent-challenge',
-                request: {
-                    amount: '10000000',
-                    currency: MINT,
-                    methodDetails: {
-                        decimals: 6,
-                        mint: MINT,
-                        planAddress: PLAN_ID,
-                        subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                        puller: PULLER,
-                        tokenProgram: TOKEN_PROGRAM,
-                    },
-                    periodCount: '30',
-                    periodUnit: 'day',
-                    recipient: RECIPIENT,
-                },
-            },
-            payload: { authentication, signature: 'same-activation-signature', type: 'signature' },
-        } as never;
+        const value = source(subscriberAddress);
+        return method.verify!({
+            credential: {
+                challenge: issued,
+                payload: { authentication, transaction, type: 'transaction' },
+                ...(value === undefined ? {} : { source: value }),
+            } as never,
+            request: ROUTE_REQUEST as never,
+        });
+    }
 
-        const results = await Promise.allSettled(
-            Array.from({ length: 16 }, () => method.verify!({ credential, request: {} as never })),
+    test('rejects a source naming another address', async () => {
+        const other = (await generateKeyPairSigner()).address;
+        await expect(verifyWithSource(() => `did:pkh:solana:devnet:${other}`)).rejects.toThrow(
+            /Credential source does not match the activation subscriber/,
         );
-        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-        expect(results.filter(result => result.status === 'rejected')).toHaveLength(15);
     });
 
-    describe('push-mode reported transaction version', () => {
-        function pushModeMethod(store = Store.memory()) {
-            return subscription({
-                decimals: 6,
-                mint: MINT,
-                network: 'devnet',
-                periodCount: 30,
-                periodUnit: 'day',
-                planId: PLAN_ID,
-                puller: PULLER,
-                recipient: RECIPIENT,
-                rpcUrl: 'https://mock-rpc',
-                store,
-                tokenProgram: TOKEN_PROGRAM,
-            });
-        }
+    test('rejects a source using another DID method', async () => {
+        await expect(verifyWithSource(subscriber => `did:pkh:eip155:1:${subscriber}`)).rejects.toThrow(
+            /Credential source must be a did:pkh:solana DID/,
+        );
+        await expect(verifyWithSource(subscriber => `did:pkh:solana:${subscriber}`)).rejects.toThrow(
+            /Credential source must be a did:pkh:solana DID/,
+        );
+    });
 
-        function pushModeCredential(challengeId: string, authentication: unknown, signature: string) {
-            return {
-                challenge: {
-                    id: challengeId,
-                    request: {
-                        amount: '10000000',
-                        currency: MINT,
-                        methodDetails: {
-                            decimals: 6,
-                            mint: MINT,
-                            planAddress: PLAN_ID,
-                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                            puller: PULLER,
-                            tokenProgram: TOKEN_PROGRAM,
-                        },
-                        periodCount: '30',
-                        periodUnit: 'day',
-                        recipient: RECIPIENT,
-                    },
-                },
-                payload: { authentication, signature, type: 'signature' },
-            } as never;
-        }
+    test('accepts a source matching the subscriber and an absent source', async () => {
+        await expect(verifyWithSource(subscriber => `did:pkh:solana:devnet:${subscriber}`)).rejects.toThrow(
+            /RPC reached/,
+        );
+        await expect(verifyWithSource(() => undefined)).rejects.toThrow(/RPC reached/);
+    });
+});
 
-        function mockPushModeFetch(transaction: string, subscriberAddress: string, version: unknown) {
-            const accountB64 = Buffer.from(buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n)).toString(
-                'base64',
-            );
-            globalThis.fetch = async (_input, init) => {
-                const body = JSON.parse(init?.body as string) as { method?: string };
-                if (body.method === 'getTransaction') {
-                    return rpcSuccess({
-                        meta: { err: null },
-                        transaction: [transaction, 'base64'],
-                        ...(version === undefined ? {} : { version }),
-                    });
-                }
-                if (body.method === 'getAccountInfo') {
+// ══════════════════════════════════════════════════════════════════════
+// Secret and realm supplied only to Mppx.create
+// ══════════════════════════════════════════════════════════════════════
+
+describe('subscription() served through Mppx.create', () => {
+    const FRAMEWORK_SECRET = 'framework-only-secret-at-least-32-bytes!';
+    const FRAMEWORK_REALM = 'api.example.com';
+    const ROUTE = {
+        amount: '10000000',
+        currency: MINT,
+        methodDetails: {
+            decimals: 6,
+            mint: MINT,
+            planAddress: PLAN_ID,
+            puller: PULLER,
+            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+            tokenProgram: TOKEN_PROGRAM,
+        },
+        periodCount: '30',
+        periodUnit: 'day' as const,
+        recipient: RECIPIENT,
+    };
+    const SIGNATURE = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
+
+    beforeEach(() => {
+        // Only Mppx.create carries the secret and realm.
+        delete process.env.MPP_SECRET_KEY;
+        delete process.env.MPP_REALM;
+    });
+
+    /** Stub an RPC on which activation by `subscriberAddress` confirms and its delegation is live. */
+    async function stubActivatingChain(subscriberAddress: string) {
+        const delegationB64 = Buffer.from(
+            buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n, BigInt(Math.floor(Date.now() / 1000) - 60)),
+        ).toString('base64');
+        const authorityB64 = Buffer.from(buildAuthorityData()).toString('base64');
+        const authorityPda = await deriveSubscriptionAuthorityPda({
+            mint: address(MINT),
+            programId: address(SUBSCRIPTIONS_PROGRAM),
+            subscriber: address(subscriberAddress),
+        });
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string] };
+            switch (body.method) {
+                case 'getLatestBlockhash':
+                    return rpcSuccess({ value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
+                case 'simulateTransaction':
+                    return rpcSuccess({ value: { err: null, logs: [] } });
+                case 'sendTransaction':
+                    return rpcSuccess(SIGNATURE);
+                case 'getSignatureStatuses':
+                    return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+                case 'getAccountInfo':
                     return rpcSuccess({
                         value: {
-                            data: [accountB64, 'base64'],
+                            data: [
+                                body.params?.[0] === authorityPda.toString() ? authorityB64 : delegationB64,
+                                'base64',
+                            ],
                             executable: false,
                             lamports: 0,
                             owner: SUBSCRIPTIONS_PROGRAM,
                             rentEpoch: 0,
                         },
                     });
-                }
-                return rpcSuccess({});
-            };
-        }
-
-        test('settles a legacy activation reported by the RPC like a version-0 one', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64({
-                version: 'legacy',
-            });
-            const authentication = await buildAuthentication('version-challenge', subscriber);
-            const store = Store.memory();
-            const method = pushModeMethod(store);
-            const credential = pushModeCredential('version-challenge', authentication, 'legacy-activation-signature');
-
-            mockPushModeFetch(transaction, subscriberAddress, 'legacy');
-            const receipt = await method.verify!({ credential, request: {} as never });
-            expect(receipt.status).toBe('success');
-            expect(await store.get('solana-subscription:consumed:legacy-activation-signature')).not.toBeNull();
-        });
-
-        test('rejects when the RPC does not report the activation transaction version', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-            const authentication = await buildAuthentication('no-version-challenge', subscriber);
-            mockPushModeFetch(transaction, subscriberAddress, undefined);
-            await expect(
-                pushModeMethod().verify!({
-                    credential: pushModeCredential('no-version-challenge', authentication, 'no-version-signature'),
-                    request: {} as never,
-                }),
-            ).rejects.toThrow('RPC did not report the transaction version');
-        });
-
-        test('accepts a version 0 activation reported by the RPC', async () => {
-            const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
-            const authentication = await buildAuthentication('v0-challenge', subscriber);
-            mockPushModeFetch(transaction, subscriberAddress, 0);
-            const receipt = await pushModeMethod().verify!({
-                credential: pushModeCredential('v0-challenge', authentication, 'v0-activation-signature'),
-                request: {} as never,
-            });
-            expect(receipt.status).toBe('success');
-            expect(receipt.reference).toBe('v0-activation-signature');
-        });
-    });
-
-    test('rejects when push-mode getTransaction returns null', async () => {
-        globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            if (body.method === 'getTransaction') return rpcSuccess(null);
-            return rpcSuccess({});
+                default:
+                    return rpcSuccess({});
+            }
         };
-        const method = subscription({
+    }
+
+    function method(overrides: Partial<Parameters<typeof subscription>[0]> = {}) {
+        return subscription({
             decimals: 6,
             mint: MINT,
             network: 'devnet',
@@ -1648,38 +1833,122 @@ describe('subscription().verify() (push mode)', () => {
             puller: PULLER,
             recipient: RECIPIENT,
             rpcUrl: 'https://mock-rpc',
+            store: Store.memory(),
             tokenProgram: TOKEN_PROGRAM,
+            ...overrides,
         });
-        await expect(
-            method.verify!({
-                credential: {
-                    challenge: {
-                        request: {
-                            amount: '10000000',
-                            currency: MINT,
-                            methodDetails: {
-                                decimals: 6,
-                                mint: MINT,
-                                planAddress: PLAN_ID,
-                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
-                                puller: PULLER,
-                                tokenProgram: TOKEN_PROGRAM,
-                            },
-                            periodCount: '30',
-                            periodUnit: 'day',
-                            recipient: RECIPIENT,
-                        },
-                    },
-                    payload: { signature: 'newsig', type: 'signature' },
-                } as never,
-                request: {} as never,
+    }
+
+    async function activate(mppx: object, challenge?: Challenge.Challenge) {
+        const { subscriber, subscriberAddress, transaction } = await buildActivationTransactionBase64();
+        await stubActivatingChain(subscriberAddress);
+        const handler = (
+            mppx as unknown as { subscription: (route: unknown) => (input: Request) => Promise<any> }
+        ).subscription(ROUTE);
+        let issued = challenge;
+        if (!issued) {
+            const first = await handler(new Request(`https://${FRAMEWORK_REALM}/member`));
+            expect(first.status).toBe(402);
+            issued = Challenge.fromResponse(first.challenge);
+        }
+        const credential = Credential.from({
+            challenge: issued,
+            payload: {
+                authentication: await buildAuthentication(issued.id, subscriber),
+                transaction,
+                type: 'transaction',
+            },
+        });
+        return handler(
+            new Request(`https://${FRAMEWORK_REALM}/member`, {
+                headers: { Authorization: Credential.serialize(credential) },
             }),
-        ).rejects.toThrow(/not found/);
+        );
+    }
+
+    test('verifies an activation when only Mppx.create has the secret and realm', async () => {
+        const mppx = Mppx.create({ methods: [method()], realm: FRAMEWORK_REALM, secretKey: FRAMEWORK_SECRET });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+        const receipt = result.withReceipt(new Response('member content')).headers.get('Payment-Receipt');
+        expect(receipt).toBeTruthy();
     });
 
-    function writeU64Le(buf: Uint8Array, offset: number, value: bigint) {
-        for (let i = 0; i < 8; i += 1) {
-            buf[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
-        }
-    }
+    test('verifies an activation under the request-derived realm when Mppx.create has none', async () => {
+        const mppx = Mppx.create({ methods: [method()], secretKey: FRAMEWORK_SECRET });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+    });
+
+    test('prefers the framework secret and realm over differing method parameters', async () => {
+        const mppx = Mppx.create({
+            methods: [method({ realm: 'method.example.com', secretKey: 'method-level-secret-that-differs-32b' })],
+            realm: FRAMEWORK_REALM,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        const result = await activate(mppx);
+        expect(result.status).toBe(200);
+    });
+
+    test('refuses an activation challenge issued under another secret or realm', async () => {
+        const mppx = Mppx.create({ methods: [method()], realm: FRAMEWORK_REALM, secretKey: FRAMEWORK_SECRET });
+        const request = { ...ROUTE, methodDetails: { ...ROUTE.methodDetails, network: 'devnet' } };
+        const otherSecret = Challenge.from({
+            intent: 'subscription',
+            method: 'solana',
+            realm: FRAMEWORK_REALM,
+            request,
+            secretKey: 'another-secret-entirely-of-32-bytes!',
+        });
+        expect((await activate(mppx, otherSecret)).status).toBe(402);
+        const otherRealm = Challenge.from({
+            intent: 'subscription',
+            method: 'solana',
+            realm: 'sibling.example.com',
+            request,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        expect((await activate(mppx, otherRealm)).status).toBe(402);
+    });
+
+    test('verify() binds to the secret and realm preflight received for the same request', async () => {
+        const server = method();
+        const capturedRequest = {
+            headers: new Headers(),
+            method: 'GET',
+            url: new URL(`https://${FRAMEWORK_REALM}/member`),
+        };
+        await server.preflight!({
+            capturedRequest,
+            credential: null,
+            input: new Request(`https://${FRAMEWORK_REALM}/member`),
+            options: {} as never,
+            realm: FRAMEWORK_REALM,
+            secretKey: FRAMEWORK_SECRET,
+        });
+        const request = { ...ROUTE, methodDetails: { ...ROUTE.methodDetails, network: 'devnet' } };
+        const verifyWith = (challenge: Challenge.Challenge, captured: typeof capturedRequest) =>
+            server.verify!({
+                credential: { challenge, payload: { type: 'transaction' } } as never,
+                envelope: { capturedRequest: captured } as never,
+                request: ROUTE_REQUEST as never,
+            });
+        const issue = (realm: string, secretKey: string) =>
+            Challenge.from({ intent: 'subscription', method: 'solana', realm, request, secretKey });
+
+        await expect(verifyWith(issue(FRAMEWORK_REALM, FRAMEWORK_SECRET), capturedRequest)).rejects.toThrow(
+            /Missing transaction data/,
+        );
+        await expect(
+            verifyWith(issue(FRAMEWORK_REALM, 'another-secret-entirely-of-32-bytes!'), capturedRequest),
+        ).rejects.toThrow(/HMAC mismatch/);
+        await expect(verifyWith(issue('sibling.example.com', FRAMEWORK_SECRET), capturedRequest)).rejects.toThrow(
+            /realm `sibling.example.com` does not match this server/,
+        );
+        // A request snapshot preflight never saw carries no framework binding,
+        // so a method without its own secret and realm still fails closed.
+        await expect(verifyWith(issue(FRAMEWORK_REALM, FRAMEWORK_SECRET), { ...capturedRequest })).rejects.toThrow(
+            /requires secretKey and realm/,
+        );
+    });
 });

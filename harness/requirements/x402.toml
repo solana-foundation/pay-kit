@@ -1,5 +1,5 @@
 repo = "x402"
-commit = "03b3919b3d422d2b094ea3539e0b577558e1ae86"
+commit = "f7043a123097e674fca864c39c58adcb0c9c649d"
 files = [
   "specs/x402-specification-v2.md",
   "specs/schemes/exact/scheme_exact.md",
@@ -113,9 +113,9 @@ text = "These are wallet-injected user protection mechanisms and MUST be allowed
 required = true
 
 [[requirement]]
-id = "X402-a8bd75d71b"
+id = "X402-05c2aacafc"
 doc = "specs/schemes/exact/scheme_exact_svm.md"
-text = "The decompiled transaction MUST contain 3 to 7 instructions in this order:"
+text = "For a single-payee charge (no extra.splits and no ATA creation), a legacy or version-0 transaction MUST contain 3 to 7 instructions in this order:"
 required = true
 
 [[requirement]]
@@ -289,9 +289,9 @@ text = "The payload.from signature MUST be present and valid before the facilita
 required = true
 
 [[requirement]]
-id = "X402-c1174b72d8"
+id = "X402-4de59a1f27"
 doc = "specs/schemes/upto/scheme_upto_svm.md"
-text = "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."
+text = "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."
 required = true
 
 [[requirement]]
@@ -587,6 +587,18 @@ text = "| authorization | BatchAuthorization | REQUIRED in server mode and absen
 required = true
 
 [[requirement]]
+id = "X402-0ff4cabcb4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST confirm the payer has sufficient tokens for the deposit and the sponsor has sufficient SOL for the transaction fee plus the channel PDA and escrow ATA rent."
+required = true
+
+[[requirement]]
+id = "X402-014270dc81"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "It MUST confirm the payer has sufficient tokens."
+required = true
+
+[[requirement]]
 id = "X402-4cedb5114b"
 doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
 text = "It MAY use a facilitator-built composite simulation or targeted account checks in addition to the setup simulation, but it MUST reject before escrowing when a settlement account is missing, frozen, has the wrong owner or mint, or is otherwise unusable under the program rules."
@@ -659,9 +671,21 @@ text = "MUST be an integer from 900 through 2592000 (15 minutes through 30 days)
 required = true
 
 [[requirement]]
-id = "X402-7f4ee54a73"
+id = "X402-76654742e7"
 doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
-text = "claims[] MUST contain between one and four entries so the instruction pairs fit in a legacy Solana transaction without address lookup tables."
+text = "claims[] MUST contain at least one entry and at most extra.maxClaimChannels entries, or four when the facilitator advertises no maxClaimChannels, so the instruction pairs fit in one transaction without address lookup tables."
+required = true
+
+[[requirement]]
+id = "X402-c2ca42b7a4"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "channels[] MUST contain at least one entry and at most extra.maxSettleChannels entries, or four when the facilitator advertises no maxSettleChannels."
+required = true
+
+[[requirement]]
+id = "X402-8f57677e36"
+doc = "specs/schemes/batch-settlement/scheme_batch_settlement_svm.md"
+text = "The server MUST copy feePayer, transactionVersions, maxClaimChannels, maxSettleChannels, and maxIdleSecs into PaymentRequirements.extra, MUST NOT author a claim or settle request with more entries than the copied capacity (four when absent), then set extra.tokenProgram from the selected asset's verified mint owner."
 required = true
 
 [[requirement]]

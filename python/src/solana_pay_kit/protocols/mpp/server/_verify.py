@@ -36,6 +36,9 @@ from solana_pay_kit.protocols.mpp.server._tx_decode import (
     _SYSTEM_PROGRAM,
     _SYSTEM_TRANSFER_INSTRUCTION,
     _TOKEN_TRANSFER_CHECKED_INSTRUCTION,
+    MAX_COMPUTE_UNIT_LIMIT,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
     _build_expected_transfers,
     _decode_legacy_payment_instructions,
     _expected_memos,
@@ -56,13 +59,13 @@ async def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: TransactionSi
 
     Mirrors the cosign step in rust/src/server/charge.rs verify_pull.
     """
-    from solders.transaction import VersionedTransaction
+    from solana_pay_kit._paycore.txv1 import TransactionV1, decode_transaction
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = fee_payer.pubkey
 
     try:
-        vtx = VersionedTransaction.from_bytes(raw)
+        vtx = decode_transaction(raw)
     except Exception as exc:
         raise PaymentError(
             f"could not decode transaction for fee payer co-sign: {exc}",
@@ -78,6 +81,12 @@ async def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: TransactionSi
         ) from exc
     num_required = int(vtx.message.header.num_required_signatures)
     _assert_signature_slot(idx, num_required)
+    if isinstance(vtx, TransactionV1):
+        # solders (and so ``sign_transaction``) cannot represent version 1:
+        # sign the exact message bytes and fill the fee-payer slot.
+        signatures = list(vtx.signatures)
+        signatures[idx] = await fee_payer.sign_message(bytes(vtx.message))
+        return base64.b64encode(bytes(TransactionV1.populate(vtx.message, signatures))).decode("ascii")
     signed = await fee_payer.sign_transaction(vtx)
     return base64.b64encode(bytes(signed.transaction)).decode("ascii")
 
@@ -293,11 +302,11 @@ def _validate_instruction_allowlist(
     burn, BPF program calls, sysvar reads, etc.) is rejected before
     broadcast with a ``payment-invalid`` canonical code.
     """
-    from solders.transaction import VersionedTransaction
+    from solana_pay_kit._paycore.txv1 import decode_transaction
 
     raw = base64.b64decode(transaction_b64)
     try:
-        vtx = VersionedTransaction.from_bytes(raw)
+        vtx = decode_transaction(raw)
     except Exception as exc:
         raise PaymentError(
             "unsupported transaction shape for instruction allowlist",
@@ -600,10 +609,11 @@ def _verify_signatures(raw_tx: bytes, *, unsigned_fee_payer: str | None = None) 
     signature.
     """
     from solders.pubkey import Pubkey
-    from solders.transaction import VersionedTransaction
+
+    from solana_pay_kit._paycore.txv1 import decode_transaction
 
     try:
-        transaction = VersionedTransaction.from_bytes(raw_tx)
+        transaction = decode_transaction(raw_tx)
     except Exception as exc:  # noqa: BLE001
         raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
     try:
@@ -614,6 +624,57 @@ def _verify_signatures(raw_tx: bytes, *, unsigned_fee_payer: str | None = None) 
         verify_required_signatures(transaction, unsigned=unsigned)
     except SignatureCheckError as exc:
         raise PaymentError(f"transaction signature verification failed: {exc}", code="invalid-payload") from exc
+
+
+def _verify_envelope(transaction_b64: str, request: ChargeRequest, details: MethodDetails) -> None:
+    """The checks that precede the instruction walk (Rust ``verify_versioned_transaction_pre_broadcast``).
+
+    Envelope first: a message version the challenge advertises in
+    ``methodDetails.transactionVersions`` (``[0]`` when absent; a legacy
+    message is refused outright), no address lookup tables, and the
+    version's size, account, instruction and signature limits. Version 1
+    then holds its header compute config to the caps the ComputeBudget
+    instructions get on version 0, and carries no ComputeBudget
+    instruction. Then the challenge rules the transaction alone cannot
+    settle: a sponsored charge's fee payer (account 0) is its
+    ``feePayerKey``, and ``ataCreationRequired`` is only meaningful for an
+    SPL charge (draft-solana-charge-00, Method Details).
+    """
+    from solana_pay_kit._paycore.txv1 import (
+        TransactionVersionError,
+        accepted_versions,
+        check_envelope,
+        check_v1_budget_caps,
+        decode_transaction,
+    )
+
+    try:
+        transaction = decode_transaction(base64.b64decode(transaction_b64))
+    except Exception as exc:
+        raise PaymentError(
+            "unsupported transaction shape for pre-broadcast verification",
+            code="invalid-payload-type",
+        ) from exc
+    max_price = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+    if details.fee_payer:
+        max_price = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+    try:
+        check_envelope(transaction, accepted_versions(details.transaction_versions), allow_legacy=False)
+        check_v1_budget_caps(transaction.message, MAX_COMPUTE_UNIT_LIMIT, max_price)
+    except TransactionVersionError as exc:
+        raise PaymentError(str(exc), code="invalid-payload") from exc
+
+    if details.fee_payer:
+        if not details.fee_payer_key:
+            raise PaymentError("feePayer=true requires feePayerKey in methodDetails", code="invalid-payload")
+        account_keys = list(transaction.message.account_keys)
+        if not account_keys or str(account_keys[0]) != details.fee_payer_key:
+            raise PaymentError(
+                f"transaction fee payer must be {details.fee_payer_key}",
+                code="invalid-payload",
+            )
+    if is_native_sol(request.currency) and any(split.ata_creation_required for split in details.splits):
+        raise PaymentError("ataCreationRequired requires an SPL token charge", code="invalid-payload")
 
 
 def _verify_local_transaction_intent(
@@ -643,6 +704,7 @@ def _verify_local_transaction_intent(
             "methodDetails.feePayerKey does not match the server fee-payer signer",
             code="invalid-payload",
         )
+    _verify_envelope(transaction_b64, request, details)
     instructions = _decode_legacy_payment_instructions(transaction_b64)
     if is_native_sol(request.currency):
         _verify_parsed_sol_transfers(instructions, request, details)

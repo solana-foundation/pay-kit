@@ -37,12 +37,8 @@ import {
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
-import {
-    assertReportedTransactionVersion,
-    coSignBase64Transaction,
-    transactionSignatureFromBase64,
-} from '../utils/transactions.js';
-import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
+import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
+import { claimReplayKey, confirmReplayKey, inspectReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -95,6 +91,22 @@ export function subscription(parameters: subscription.Parameters) {
         subscriptionExpires,
     } = parameters;
 
+    if (parameters.secretKey !== undefined && parameters.secretKey.length === 0) {
+        throw new Error('secretKey must be a non-empty string when set');
+    }
+    if (parameters.realm !== undefined && parameters.realm.length === 0) {
+        throw new Error('realm must be a non-empty string when set');
+    }
+    // Resolve the HMAC secret and realm the way `Mppx.create` does, so a host
+    // that configures them through the environment gets the same binding.
+    const secretKey = parameters.secretKey ?? readEnv(SECRET_KEY_ENV);
+    const realm = parameters.realm ?? readEnv(REALM_ENV);
+    if (parameters.secretKey !== undefined && realm === undefined) {
+        // The HMAC covers the echoed realm; without a configured realm two
+        // services sharing a secret would accept each other's challenges.
+        throw new Error('realm is required when secretKey is set (pass realm or set MPP_REALM)');
+    }
+
     if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
         throw new Error(`tokenProgram must be ${TOKEN_PROGRAM} or ${TOKEN_2022_PROGRAM}`);
     }
@@ -117,6 +129,21 @@ export function subscription(parameters: subscription.Parameters) {
     }
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const routeBinding: RouteBinding = {
+        mint,
+        network,
+        periodHours: mapSubscriptionPeriodToHours(periodUnit, periodCount),
+        planAddress: planId,
+        realm,
+        recipient,
+        secretKey,
+        subscriptionProgram,
+    };
+    // The secret and realm `Mppx.create` issued this request's challenge under,
+    // keyed by the frozen request snapshot mppx hands to both `preflight` and
+    // `verify` (`envelope.capturedRequest`). A host may configure them only on
+    // `Mppx.create`, so `routeBinding` alone would refuse its valid activations.
+    const frameworkBindings = new WeakMap<object, FrameworkBinding>();
     const pendingAccessProofs = new WeakMap<Request, { credential: Credential.Credential; secretKey?: string }>();
     const httpTransport = Transport.http();
     const subscriptionTransport = Transport.from({
@@ -166,7 +193,10 @@ export function subscription(parameters: subscription.Parameters) {
             recipient,
         },
 
-        preflight({ input, secretKey }) {
+        preflight({ capturedRequest, input, realm: frameworkRealm, secretKey }) {
+            // mppx passes its configured realm, or the request hostname it
+            // derives the challenge realm from when none is configured.
+            if (capturedRequest) frameworkBindings.set(capturedRequest, { realm: frameworkRealm, secretKey });
             const pending = pendingAccessProofs.get(input);
             if (pending) pending.secretKey = secretKey;
             return undefined;
@@ -227,8 +257,25 @@ export function subscription(parameters: subscription.Parameters) {
         // its five-minute challenge expiry does not terminate a paid term.
         transport: subscriptionTransport,
 
-        async verify({ credential }) {
+        async verify({ credential, envelope, request }) {
             const cred = credential as unknown as CredentialPayload;
+            // Bind the echoed challenge to this server and route before reading
+            // anything else from it: verify() is reachable outside Mppx.create,
+            // which is where mppx would otherwise check the HMAC and the route.
+            //
+            // Under Mppx.create the framework's secret and realm take precedence
+            // over the method's own (parameters or environment): mppx issued the
+            // challenge with them and has already checked its HMAC and realm, so
+            // a differing method-level value could only refuse every activation.
+            // Called directly, verify() falls back to the method's values and
+            // fails closed when it has none.
+            const framework = envelope?.capturedRequest ? frameworkBindings.get(envelope.capturedRequest) : undefined;
+            const verifyBinding = framework ? { ...routeBinding, ...framework } : routeBinding;
+            assertChallengeBoundToRoute(
+                cred.challenge,
+                request as Partial<ChallengeRequest> | undefined,
+                verifyBinding,
+            );
             const challenge = cred.challenge.request;
             const payloadType = resolvePayloadType(cred.payload);
 
@@ -236,14 +283,20 @@ export function subscription(parameters: subscription.Parameters) {
                 return await verifySubscriptionAccess(cred, challenge, rpcUrl, store);
             }
 
+            // draft-solana-subscription-00 §Payload: "Solana subscription
+            // activation uses type=\"transaction\"". The profile defines no
+            // push mode, so a client-broadcast signature is refused before any
+            // RPC lookup.
+            if (payloadType === 'signature') {
+                throw new Error(
+                    'Push-mode (type="signature") subscription activation is not supported: the Solana profile activates with type="transaction" only',
+                );
+            }
+
             assertActivationChallengeNotExpired(cred.challenge.expires);
             assertSubscriptionNotExpired(challenge.subscriptionExpires);
 
-            if (payloadType === 'signature' && challenge.methodDetails.feePayer) {
-                throw new Error('type="signature" credentials cannot be used with fee sponsorship (feePayer: true)');
-            }
-
-            const settlement = await settleActivation(cred, challenge, rpcUrl, store, signer, payloadType);
+            const settlement = await settleActivation(cred, challenge, rpcUrl, store, signer);
             const subscriberAddress = settlement.subscriberAddress;
 
             const subscriptionPda = await deriveSubscriptionPda({
@@ -252,10 +305,7 @@ export function subscription(parameters: subscription.Parameters) {
                 subscriber: address(subscriberAddress),
             });
 
-            const expectedPeriodHours = mapSubscriptionPeriodToHours(
-                challenge.periodUnit,
-                Number(challenge.periodCount),
-            );
+            const expectedPeriodHours = mapSubscriptionPeriodToHours(challenge.periodUnit, challenge.periodCount);
 
             const delegation = await fetchSubscriptionDelegation(
                 rpcUrl,
@@ -341,6 +391,122 @@ export function subscription(parameters: subscription.Parameters) {
     return method;
 }
 
+/** The secret and realm `Mppx.create` hands to `preflight` for one request. */
+type FrameworkBinding = { realm: string; secretKey: string };
+
+type RouteBinding = {
+    mint: string;
+    network: string;
+    periodHours: number;
+    planAddress: string;
+    realm?: string;
+    recipient: string;
+    secretKey?: string;
+    subscriptionProgram: string;
+};
+
+/** Environment variables `Mppx.create` reads for its secret and realm, checked in order. */
+const SECRET_KEY_ENV = ['MPP_SECRET_KEY'] as const;
+const REALM_ENV = [
+    'MPP_REALM',
+    'FLY_APP_NAME',
+    'HEROKU_APP_NAME',
+    'RAILWAY_PUBLIC_DOMAIN',
+    'RENDER_EXTERNAL_HOSTNAME',
+    'VERCEL_URL',
+    'WEBSITE_HOSTNAME',
+] as const;
+
+function readEnv(names: readonly string[]): string | undefined {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    if (!env) return undefined;
+    for (const name of names) {
+        const value = env[name];
+        if (value) return value;
+    }
+    return undefined;
+}
+
+/** `mainnet-beta` and `mainnet` name the same cluster; an omitted network means mainnet. */
+function canonicalNetwork(network: string | undefined): string {
+    if (network === undefined || network === 'mainnet-beta') return 'mainnet';
+    return network;
+}
+
+/**
+ * Refuse a credential whose echoed challenge this server did not issue for
+ * this route, mirroring the Rust server's tier-1 (HMAC) and tier-2 (pinned
+ * fields and route terms) checks. `route` is the authoritative route request
+ * (`VerifyContext.request`); its `amount` is the route's per-period price.
+ */
+function assertChallengeBoundToRoute(
+    challenge: CredentialPayload['challenge'],
+    route: Partial<ChallengeRequest> | undefined,
+    binding: RouteBinding,
+): void {
+    // Fail closed: without both a secret and a realm the SDK cannot prove the
+    // echoed challenge is its own, so it refuses rather than trusting it
+    // (the Rust server makes both required for the same reason).
+    if (binding.secretKey === undefined || binding.realm === undefined) {
+        throw new Error(
+            'Subscription verify requires secretKey and realm (pass them to subscription() or Mppx.create(), or set MPP_SECRET_KEY and MPP_REALM)',
+        );
+    }
+    if (
+        typeof challenge.id !== 'string' ||
+        !Challenge.verify(challenge as unknown as Challenge.Challenge, { secretKey: binding.secretKey })
+    ) {
+        throw new Error('Challenge HMAC mismatch: this server did not issue the echoed challenge');
+    }
+    if (challenge.method !== Methods.subscription.name) {
+        throw new Error(
+            `Credential method \`${String(challenge.method)}\` does not match this server (expected \`${Methods.subscription.name}\`)`,
+        );
+    }
+    if (challenge.intent !== Methods.subscription.intent) {
+        throw new Error(`Credential intent \`${String(challenge.intent)}\` is not a subscription`);
+    }
+    if (challenge.realm !== binding.realm) {
+        throw new Error(
+            `Credential realm \`${String(challenge.realm)}\` does not match this server (expected \`${binding.realm}\`)`,
+        );
+    }
+
+    const request = challenge.request as Partial<ChallengeRequest> | undefined;
+    const details = (request?.methodDetails ?? {}) as Partial<ChallengeRequest['methodDetails']>;
+    if (request?.currency !== binding.mint) {
+        throw new Error(`Credential mint does not match this server (expected \`${binding.mint}\`)`);
+    }
+    if (request?.recipient !== binding.recipient) {
+        throw new Error('Credential recipient does not match this server');
+    }
+    if (details.subscriptionProgram !== binding.subscriptionProgram) {
+        throw new Error('methodDetails.subscriptionProgram does not match this server');
+    }
+    if (details.planAddress !== binding.planAddress) {
+        throw new Error('methodDetails.planAddress does not match this server');
+    }
+    if (canonicalNetwork(details.network) !== canonicalNetwork(binding.network)) {
+        throw new Error(`methodDetails.network does not match this server (expected \`${binding.network}\`)`);
+    }
+    const routeAmount = route?.amount;
+    if (typeof routeAmount !== 'string') {
+        throw new Error('Subscription verify requires the route request with its amount');
+    }
+    let periodHours: number | undefined;
+    try {
+        periodHours =
+            request?.periodUnit === undefined || request.periodCount === undefined
+                ? undefined
+                : mapSubscriptionPeriodToHours(request.periodUnit, request.periodCount);
+    } catch {
+        periodHours = undefined;
+    }
+    if (request?.amount !== routeAmount || periodHours !== binding.periodHours) {
+        throw new Error('Subscription terms do not match this server');
+    }
+}
+
 function assertActivationChallengeNotExpired(expires: string | undefined): void {
     if (expires === undefined) return;
     const expiresAt = Date.parse(expires);
@@ -403,98 +569,96 @@ async function settleActivation(
     rpcUrl: string,
     store: Store.Store,
     signer: TransactionPartialSigner | undefined,
-    payloadType: 'signature' | 'transaction',
 ): Promise<{
     activationSignature: string;
     replay?: { binding: string; key: string };
     subscriberAddress: string;
 }> {
-    if (payloadType === 'transaction') {
-        const { transaction: clientTxBase64 } = credential.payload;
-        if (!clientTxBase64) {
-            throw new Error('Missing transaction data in credential payload');
-        }
+    const { transaction: clientTxBase64 } = credential.payload;
+    if (!clientTxBase64) {
+        throw new Error('Missing transaction data in credential payload');
+    }
 
-        const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
-        await verifyActivationAuthentication(credential, challenge, subscriber);
-        await validateActivationInstructions(clientTxBase64, challenge, subscriber);
+    const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
+    verifyCredentialSource(credential.source, subscriber);
+    await verifyActivationAuthentication(credential, challenge, subscriber);
+    await validateActivationInstructions(clientTxBase64, challenge, subscriber);
 
-        let txToSend = clientTxBase64;
-        if (signer) {
-            if (challenge.methodDetails.feePayerKey !== signer.address) {
-                throw new Error('Configured fee-payer signer does not match challenge feePayerKey');
-            }
-            txToSend = await coSignBase64Transaction(signer, clientTxBase64);
+    let txToSend = clientTxBase64;
+    if (signer) {
+        if (challenge.methodDetails.feePayerKey !== signer.address) {
+            throw new Error('Configured fee-payer signer does not match challenge feePayerKey');
         }
+        txToSend = await coSignBase64Transaction(signer, clientTxBase64);
+    }
 
-        const signature = transactionSignatureFromBase64(txToSend);
-        const key = `solana-subscription:consumed:${signature}`;
-        const binding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
-        const replayStatus = await inspectReplayKey(store, key, binding);
-        if (replayStatus === 'conflict') {
-            throw new Error('Activation signature already consumed');
-        }
-        if (replayStatus === 'pending') {
+    const signature = transactionSignatureFromBase64(txToSend);
+    const key = `solana-subscription:consumed:${signature}`;
+    const binding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
+    const replayStatus = await inspectReplayKey(store, key, binding);
+    if (replayStatus === 'conflict') {
+        throw new Error('Activation signature already consumed');
+    }
+    if (replayStatus === 'pending') {
+        throw new Error('Activation settlement is already in progress; retry shortly');
+    }
+
+    let needsConfirmation = replayStatus !== 'retry';
+    if (replayStatus === 'expired') {
+        const recoveryClaim = await claimReplayKey(store, key, binding);
+        if (recoveryClaim === 'conflict') throw new Error('Activation signature already consumed');
+        if (recoveryClaim === 'pending') {
             throw new Error('Activation settlement is already in progress; retry shortly');
         }
-
-        let needsConfirmation = replayStatus !== 'retry';
-        if (replayStatus === 'expired') {
-            const recoveryClaim = await claimReplayKey(store, key, binding);
-            if (recoveryClaim === 'conflict') throw new Error('Activation signature already consumed');
-            if (recoveryClaim === 'pending') {
-                throw new Error('Activation settlement is already in progress; retry shortly');
-            }
-            needsConfirmation = recoveryClaim !== 'retry';
-        } else if (replayStatus === 'available') {
-            const replayClaim = await claimReplayKey(store, key, binding);
-            if (replayClaim === 'conflict') throw new Error('Activation signature already consumed');
-            if (replayClaim === 'pending') {
-                throw new Error('Activation settlement is already in progress; retry shortly');
-            }
-            needsConfirmation = replayClaim !== 'retry';
-            if (replayClaim === 'reserved') {
-                try {
-                    await simulateTransaction(rpcUrl, txToSend);
-                } catch (error) {
-                    // No transaction was submitted, so releasing this reservation
-                    // is safe and lets the client correct and retry the activation.
-                    await store.delete(key);
-                    throw error;
-                }
-                // Keep the reservation on an ambiguous send failure: the RPC may
-                // have accepted the transaction even if the response was lost.
-                await broadcastTransaction(rpcUrl, txToSend);
-            }
+        needsConfirmation = recoveryClaim !== 'retry';
+    } else if (replayStatus === 'available') {
+        const replayClaim = await claimReplayKey(store, key, binding);
+        if (replayClaim === 'conflict') throw new Error('Activation signature already consumed');
+        if (replayClaim === 'pending') {
+            throw new Error('Activation settlement is already in progress; retry shortly');
         }
-        if (needsConfirmation) {
-            await waitForConfirmation(rpcUrl, signature);
+        needsConfirmation = replayClaim !== 'retry';
+        if (replayClaim === 'reserved') {
+            try {
+                await simulateTransaction(rpcUrl, txToSend);
+            } catch (error) {
+                // No transaction was submitted, so releasing this reservation
+                // is safe and lets the client correct and retry the activation.
+                await store.delete(key);
+                throw error;
+            }
+            // Keep the reservation on an ambiguous send failure: the RPC may
+            // have accepted the transaction even if the response was lost.
+            await broadcastTransaction(rpcUrl, txToSend);
         }
-        return { activationSignature: signature, replay: { binding, key }, subscriberAddress: subscriber };
     }
+    if (needsConfirmation) {
+        await waitForConfirmation(rpcUrl, signature);
+    }
+    return { activationSignature: signature, replay: { binding, key }, subscriberAddress: subscriber };
+}
 
-    // ── Push mode (type="signature") ──
-    const { signature } = credential.payload;
-    if (!signature) {
-        throw new Error('Missing signature in credential payload');
+/**
+ * draft-solana-subscription-00 §Source Verification: "If `source` is present,
+ * servers MUST verify that it uses the `did:pkh:solana:` method and that its
+ * address matches the subscriber signer extracted from the activation
+ * transaction." Mirrors the Rust kit's `verify_credential_source`.
+ */
+function verifyCredentialSource(source: string | undefined, subscriber: string): void {
+    if (source === undefined) return;
+    const prefix = 'did:pkh:solana:';
+    if (!source.startsWith(prefix)) {
+        throw new Error('Credential source must be a did:pkh:solana DID');
     }
-    const consumedKey = `solana-subscription:consumed:${signature}`;
-    if ((await store.get(consumedKey)) !== null) {
-        throw new Error('Activation signature already consumed');
+    const rest = source.slice(prefix.length);
+    const separator = rest.indexOf(':');
+    if (separator <= 0) {
+        throw new Error('Credential source must be a did:pkh:solana DID');
     }
-    const tx = await fetchTransactionRaw(rpcUrl, signature);
-    if (!tx) throw new Error('Transaction not found or not yet confirmed');
-    assertReportedTransactionVersion(tx.version);
-    if (tx.meta?.err) throw new Error('Transaction failed on-chain');
-    const [transactionBase64] = tx.transaction;
-    const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
-    await verifyActivationAuthentication(credential, challenge, subscriber);
-    await validateActivationInstructions(transactionBase64, challenge, subscriber);
-
-    if (!(await reserveReplayKey(store, consumedKey))) {
-        throw new Error('Activation signature already consumed');
+    const sourceAddress = rest.slice(separator + 1);
+    if (sourceAddress !== subscriber) {
+        throw new Error('Credential source does not match the activation subscriber');
     }
-    return { activationSignature: signature, subscriberAddress: subscriber };
 }
 
 async function verifyActivationAuthentication(
@@ -554,43 +718,20 @@ async function verifySubscriptionAccess(
         throw new Error('Subscription proof does not match the activation binding');
     }
 
-    const delegation = await fetchSubscriptionDelegation(rpcUrl, expectedDelegation, address(programId));
-    if (!delegation) throw new Error('SubscriptionDelegation account not found');
-    if (delegation.planPda !== challenge.methodDetails.planAddress || delegation.subscriber !== authentication.payer) {
-        throw new Error('SubscriptionDelegation does not match the bound plan and payer');
-    }
-    const authorityPda = await deriveSubscriptionAuthorityPda({
-        mint: address(challenge.methodDetails.mint),
-        programId: address(programId),
-        subscriber: address(authentication.payer),
+    const { delegation, periodEndTs } = await loadActiveDelegation({
+        amount: challenge.amount,
+        mint: challenge.methodDetails.mint,
+        periodHours: mapSubscriptionPeriodToHours(challenge.periodUnit, challenge.periodCount),
+        planAddress: challenge.methodDetails.planAddress,
+        rpcUrl,
+        subscriber: authentication.payer,
+        subscriptionProgram: programId,
     });
-    const authorityInitId = await fetchSubscriptionAuthorityInitId(rpcUrl, authorityPda, address(programId));
-    if (authorityInitId !== delegation.authorityInitId) {
-        throw new Error('Subscription authority has been invalidated');
-    }
-
-    const expectedPeriodHours = mapSubscriptionPeriodToHours(challenge.periodUnit, Number(challenge.periodCount));
-    if (
-        delegation.amountPerPeriod !== challenge.amount ||
-        delegation.periodHours !== expectedPeriodHours ||
-        delegation.amountPulledInPeriod !== challenge.amount
-    ) {
-        throw new Error('Subscription is not paid for the current billing period');
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const periodLengthSeconds = expectedPeriodHours * 3600;
-    const periodEndTs = delegation.currentPeriodStartTs + periodLengthSeconds;
-    if (now < delegation.currentPeriodStartTs || now >= periodEndTs) {
-        throw new Error('Subscription is not paid for the current billing period');
-    }
-    if (delegation.expiresAtTs !== 0 && now >= delegation.expiresAtTs) {
-        throw new Error('Subscription cancellation has taken effect');
-    }
     if (binding.subscriptionExpires && Date.parse(binding.subscriptionExpires) <= Date.now()) {
         throw new Error('Subscription has expired');
     }
 
+    const periodLengthSeconds = delegation.periodHours * 3600;
     const elapsed = delegation.currentPeriodStartTs - binding.periodStartTs;
     if (elapsed < 0 || elapsed % periodLengthSeconds !== 0) {
         throw new Error('Subscription billing anchor does not align with the current period');
@@ -609,6 +750,147 @@ async function verifySubscriptionAccess(
         subscriptionId: binding.subscriptionId,
         timestamp: new Date().toISOString(),
     });
+}
+
+/**
+ * Inputs of {@link verifyActiveSubscription}: the route's subscription terms
+ * (as configured on {@link subscription}) and the subscriber to check.
+ */
+export type VerifyActiveSubscriptionParameters = {
+    /** Per-period price in base units the subscriber must be paying. */
+    amount: string;
+    /** Base58 of the SPL token mint the subscription authority was initialised for. */
+    mint: string;
+    /** Positive integer count of `periodUnit` values per billing period. */
+    periodCount: number | string;
+    /** Billing period unit (`day` or `week`). */
+    periodUnit: 'day' | 'week';
+    /** Base58 of the on-chain Plan PDA. */
+    planId: string;
+    /** RPC URL to read the delegation and authority accounts from. */
+    rpcUrl: string;
+    /** Base58 of the subscriber wallet. */
+    subscriber: string;
+    /** Optional RFC3339 expiry of the recurring authorization configured on the route. */
+    subscriptionExpires?: string;
+    /** Base58 of the subscriptions program. Defaults to the canonical deployment. */
+    subscriptionProgram?: string;
+};
+
+/** The live delegation returned by {@link verifyActiveSubscription}. */
+export type ActiveSubscription = {
+    amountPerPeriod: string;
+    amountPulledInPeriod: string;
+    /** Unix seconds at which the subscriber's cancellation takes effect, or 0. */
+    expiresAtTs: number;
+    /** Unix seconds at which the current, paid billing period ends. */
+    periodEndTs: number;
+    periodHours: number;
+    /** Unix seconds at which the current billing period started. */
+    periodStartTs: number;
+    planAddress: string;
+    subscriber: string;
+    /** Base58 of the `SubscriptionDelegation` PDA. */
+    subscriptionDelegation: string;
+};
+
+/**
+ * Check on-chain that `subscriber` holds a live, paid subscription to the
+ * Plan at `amount` per period, at the current clock: the delegation exists
+ * and is owned by the subscriptions program, its `SubscriptionAuthority` is
+ * the generation it was created under, the current period is paid, and
+ * neither a cancellation nor `subscriptionExpires` has taken effect.
+ *
+ * It is stateless: it reads no server store. Use it after an identity-only
+ * check before serving subscription-gated work.
+ *
+ * @throws If the subscription is not usable; the message names the reason.
+ */
+export async function verifyActiveSubscription(
+    parameters: VerifyActiveSubscriptionParameters,
+): Promise<ActiveSubscription> {
+    const amount = parameters.amount;
+    if (typeof amount !== 'string' || !/^(0|[1-9][0-9]*)$/.test(amount) || BigInt(amount) >= 1n << 64n) {
+        throw new Error('Subscription amount must be an unsigned integer');
+    }
+    const periodHours = mapSubscriptionPeriodToHours(parameters.periodUnit, parameters.periodCount);
+    const subscriptionProgram = parameters.subscriptionProgram ?? SUBSCRIPTIONS_PROGRAM;
+    const { delegation, delegationAddress, periodEndTs } = await loadActiveDelegation({
+        amount,
+        mint: parameters.mint,
+        periodHours,
+        planAddress: parameters.planId,
+        rpcUrl: parameters.rpcUrl,
+        subscriber: parameters.subscriber,
+        subscriptionProgram,
+    });
+    if (parameters.subscriptionExpires !== undefined) {
+        const expiresAt = Date.parse(parameters.subscriptionExpires);
+        if (!Number.isFinite(expiresAt)) throw new Error('Invalid subscriptionExpires: must be an RFC3339 timestamp');
+        if (expiresAt <= Date.now()) throw new Error('Subscription has expired');
+    }
+    return {
+        amountPerPeriod: delegation.amountPerPeriod,
+        amountPulledInPeriod: delegation.amountPulledInPeriod,
+        expiresAtTs: delegation.expiresAtTs,
+        periodEndTs,
+        periodHours: delegation.periodHours,
+        periodStartTs: delegation.currentPeriodStartTs,
+        planAddress: delegation.planPda,
+        subscriber: delegation.subscriber,
+        subscriptionDelegation: delegationAddress,
+    };
+}
+
+/**
+ * Load the subscriber's delegation and require it to be live now. Shared by
+ * {@link verifyActiveSubscription} and the bearer-proof access path.
+ */
+async function loadActiveDelegation(parameters: {
+    amount: string;
+    mint: string;
+    periodHours: number;
+    planAddress: string;
+    rpcUrl: string;
+    subscriber: string;
+    subscriptionProgram: string;
+}): Promise<{ delegation: SubscriptionDelegation; delegationAddress: string; periodEndTs: number }> {
+    const programId = address(parameters.subscriptionProgram);
+    const delegationAddress = await deriveSubscriptionPda({
+        planPda: address(parameters.planAddress),
+        programId,
+        subscriber: address(parameters.subscriber),
+    });
+    const delegation = await fetchSubscriptionDelegation(parameters.rpcUrl, delegationAddress, programId);
+    if (!delegation) throw new Error(`SubscriptionDelegation account ${delegationAddress} not found`);
+    if (delegation.planPda !== parameters.planAddress || delegation.subscriber !== parameters.subscriber) {
+        throw new Error('SubscriptionDelegation does not match the bound plan and payer');
+    }
+    const authorityPda = await deriveSubscriptionAuthorityPda({
+        mint: address(parameters.mint),
+        programId,
+        subscriber: address(parameters.subscriber),
+    });
+    const authorityInitId = await fetchSubscriptionAuthorityInitId(parameters.rpcUrl, authorityPda, programId);
+    if (authorityInitId !== delegation.authorityInitId) {
+        throw new Error('Subscription authority has been invalidated');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const periodEndTs = delegation.currentPeriodStartTs + parameters.periodHours * 3600;
+    if (
+        now < delegation.currentPeriodStartTs ||
+        delegation.amountPerPeriod !== parameters.amount ||
+        delegation.periodHours !== parameters.periodHours ||
+        delegation.amountPulledInPeriod !== parameters.amount ||
+        now >= periodEndTs
+    ) {
+        throw new Error('Subscription is not paid for the current billing period');
+    }
+    if (delegation.expiresAtTs !== 0 && now >= delegation.expiresAtTs) {
+        throw new Error('Subscription cancellation has taken effect');
+    }
+    return { delegation, delegationAddress: delegationAddress.toString(), periodEndTs };
 }
 
 function requireSubscriptionAuthentication(payload: CredentialPayload['payload']): SubscriptionAuthentication {
@@ -674,9 +956,19 @@ function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
         // and v0 messages both decode to this shape.
         const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
             CompiledMessage,
-            'signerAccounts'
-        >;
-        return { ...message, signerAccounts: Object.keys(decoded.signatures) };
+            'instructions' | 'signerAccounts'
+        > & { instructions: readonly Partial<CompiledInstruction>[] };
+        // The decoder omits `accountIndices` / `data` when an instruction has
+        // none; normalize so the policy checks reject rather than crash.
+        return {
+            ...message,
+            instructions: message.instructions.map(ix => ({
+                accountIndices: ix.accountIndices ?? [],
+                data: ix.data ?? new Uint8Array(),
+                programAddressIndex: ix.programAddressIndex ?? -1,
+            })),
+            signerAccounts: Object.keys(decoded.signatures),
+        };
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -728,6 +1020,20 @@ async function validateActivationInstructions(
     let sawMemo = false;
     let sawComputeUnitLimit = false;
     let sawComputeUnitPrice = false;
+    let sawAtaCreation = false;
+
+    // §Authorization Scope Verification: the activation "uses
+    // methodDetails.planAddress as the Plan account", and a
+    // subscription-authority initialization is allowed "only if the
+    // (subscriber, mint) authority does not yet exist". Pin the accounts the
+    // subscribe and initialize_subscription_authority instructions name.
+    const expectedAuthority = (subscriberAddress: string) =>
+        deriveSubscriptionAuthorityPda({
+            mint: address(challenge.methodDetails.mint),
+            programId: address(programId),
+            subscriber: address(subscriberAddress),
+        });
+    const txFeePayer = message.staticAccounts[0];
 
     for (const [index, ix] of message.instructions.entries()) {
         const program = message.staticAccounts[ix.programAddressIndex];
@@ -765,10 +1071,16 @@ async function validateActivationInstructions(
             if (!subscriber || ix.accountIndices.length !== 6) {
                 throw new Error('Invalid ATA creation instruction in activation transaction');
             }
+            if (sawAtaCreation) {
+                throw new Error('Only one idempotent subscriber ATA creation is allowed in activation transaction');
+            }
             const account = (position: number) => message.staticAccounts[ix.accountIndices[position]];
             const ataOwner = account(2);
-            if (ataOwner !== subscriber && ataOwner !== challenge.recipient) {
-                throw new Error('ATA creation owner does not match the activation subscriber or recipient');
+            // Only the subscriber's own ATA (the funding source) may be created,
+            // as in the Rust kit; the spec's activation instruction list allows
+            // no recipient ATA creation.
+            if (ataOwner !== subscriber) {
+                throw new Error('ATA creation owner does not match the activation subscriber');
             }
             const [expectedAta] = await findAssociatedTokenPda({
                 mint: address(challenge.methodDetails.mint),
@@ -783,6 +1095,7 @@ async function validateActivationInstructions(
             ) {
                 throw new Error('ATA creation does not match the activation subscriber and mint');
             }
+            sawAtaCreation = true;
             continue;
         }
 
@@ -790,12 +1103,65 @@ async function validateActivationInstructions(
             throw new Error(`Unsupported program ${program ?? '<invalid>'} in activation transaction`);
         }
         if (ix.data.length === 0) throw new Error('Empty subscriptions-program instruction');
+        const account = (position: number): string | undefined => {
+            const accountIndex = ix.accountIndices[position];
+            return accountIndex === undefined ? undefined : message.staticAccounts[accountIndex];
+        };
         if (ix.data[0] === SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR) {
             if (sawInitializeAuthority)
                 throw new Error('Multiple initialize_subscription_authority instructions found');
+            // Accounts: owner, subscriptionAuthority, tokenMint, userAta,
+            // systemProgram, tokenProgram[, payer].
+            const payerOk =
+                ix.accountIndices.length === 6 || (ix.accountIndices.length === 7 && account(6) === txFeePayer);
+            const subscriberAta = subscriber
+                ? (
+                      await findAssociatedTokenPda({
+                          mint: address(challenge.methodDetails.mint),
+                          owner: address(subscriber),
+                          tokenProgram: address(challenge.methodDetails.tokenProgram),
+                      })
+                  )[0]
+                : undefined;
+            if (
+                !subscriber ||
+                !payerOk ||
+                account(0) !== subscriber ||
+                account(1) !== (await expectedAuthority(subscriber)) ||
+                account(2) !== challenge.methodDetails.mint ||
+                account(3) !== subscriberAta ||
+                account(4) !== SYSTEM_PROGRAM ||
+                account(5) !== challenge.methodDetails.tokenProgram
+            ) {
+                throw new Error(
+                    "initialize_subscription_authority is not allowed for any authority other than the subscriber's (subscriber, mint) authority",
+                );
+            }
             sawInitializeAuthority = true;
         } else if (ix.data[0] === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
             if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
+            // Accounts: subscriber, merchant, planPda, subscriptionPda,
+            // subscriptionAuthorityPda, systemProgram, eventAuthority,
+            // selfProgram[, payer]. The optional payer is the fee payer.
+            const payerOk =
+                ix.accountIndices.length === 8 || (ix.accountIndices.length === 9 && account(8) === txFeePayer);
+            if (
+                !subscriber ||
+                !payerOk ||
+                account(0) !== subscriber ||
+                account(2) !== challenge.methodDetails.planAddress ||
+                account(3) !==
+                    (await deriveSubscriptionPda({
+                        planPda: address(challenge.methodDetails.planAddress),
+                        programId: address(programId),
+                        subscriber: address(subscriber),
+                    })) ||
+                account(4) !== (await expectedAuthority(subscriber)) ||
+                account(5) !== SYSTEM_PROGRAM ||
+                account(7) !== programId
+            ) {
+                throw new Error('subscribe accounts do not match the challenged activation');
+            }
             sawSubscribe = true;
             subscribeIndex = index;
         } else if (ix.data[0] === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
@@ -852,6 +1218,9 @@ async function validateActivationInstructions(
 }
 
 // ── On-chain SubscriptionDelegation decoding ──
+
+/** `SubscriptionAuthority` account size: discriminator, version, bump, user, mint, payer, init_id. */
+const SUBSCRIPTION_AUTHORITY_SIZE = 106;
 //
 // Keep account layout handling in the official Codama-generated SDK. This
 // avoids duplicating offsets here when the subscription program evolves.
@@ -896,6 +1265,14 @@ async function fetchSubscriptionAuthorityInitId(
     }
     const [b64] = account.value.data;
     const data = new Uint8Array(getBase64Codec().encode(b64));
+    if (data.length !== SUBSCRIPTION_AUTHORITY_SIZE) {
+        throw new Error(
+            `Unexpected SubscriptionAuthority account length: ${data.length} bytes (expected ${SUBSCRIPTION_AUTHORITY_SIZE})`,
+        );
+    }
+    if (data[0] !== 0) {
+        throw new Error(`Invalid SubscriptionAuthority account discriminator: ${data[0]}`);
+    }
     return getSubscriptionAuthorityDecoder().decode(data).initId;
 }
 
@@ -904,6 +1281,10 @@ function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation 
         throw new Error(
             `Unexpected SubscriptionDelegation account length: ${data.length} bytes (expected ${SUBSCRIPTION_SIZE})`,
         );
+    }
+    // header.discriminator = 4 (SubscriptionDelegation), header.version = 1.
+    if (data[0] !== 4 || data[1] !== 1) {
+        throw new Error(`Invalid SubscriptionDelegation discriminator/version: ${data[0]}/${data[1]}`);
     }
     const decoded = getSubscriptionDelegationDecoder().decode(data);
 
@@ -993,28 +1374,6 @@ function base64UrlEncodeNoPadding(bytes: Uint8Array): string {
 
 // ── RPC helpers ──
 
-type RawTransaction = {
-    meta: { err: unknown } | null;
-    transaction: [string, 'base64'];
-    version?: unknown;
-};
-
-async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<RawTransaction | null> {
-    const response = await fetch(rpcUrl, {
-        body: JSON.stringify({
-            id: 1,
-            jsonrpc: '2.0',
-            method: 'getTransaction',
-            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 1 }],
-        }),
-        headers: { 'Content-Type': 'application/json' },
-        method: 'POST',
-    });
-    const data = (await response.json()) as { error?: { message: string }; result?: RawTransaction | null };
-    if (data.error) throw new Error(`RPC error: ${data.error.message}`);
-    return data.result ?? null;
-}
-
 async function simulateTransaction(rpcUrl: string, base64Tx: string): Promise<void> {
     const response = await fetch(rpcUrl, {
         body: JSON.stringify({
@@ -1046,7 +1405,9 @@ async function broadcastTransaction(rpcUrl: string, base64Tx: string): Promise<s
             id: 1,
             jsonrpc: '2.0',
             method: 'sendTransaction',
-            params: [base64Tx, { encoding: 'base64', skipPreflight: false }],
+            // Preflight at the commitment the simulation above used: the node default
+            // (`finalized`) rejects a fresh `confirmed` blockhash as not found.
+            params: [base64Tx, { encoding: 'base64', preflightCommitment: 'confirmed', skipPreflight: false }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
@@ -1089,6 +1450,9 @@ type CredentialPayload = {
     challenge: {
         expires?: string;
         id?: string;
+        intent?: string;
+        method?: string;
+        realm?: string;
         request: ChallengeRequest;
     };
     payload: {
@@ -1098,6 +1462,8 @@ type CredentialPayload = {
         transaction?: string;
         type?: string;
     };
+    /** Optional payer identifier (e.g. `did:pkh:solana:...`); verified when present. */
+    source?: string;
 };
 
 type SubscriptionBinding = {
@@ -1163,10 +1529,26 @@ export declare namespace subscription {
         planId: string;
         /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
         puller: string;
+        /**
+         * 402 realm the challenges were issued under; `verify` refuses any
+         * other realm. Falls back to the environment variables `Mppx.create`
+         * reads (`MPP_REALM`, then platform hostnames). Required whenever
+         * `secretKey` is passed.
+         */
+        realm?: string;
         /** Base58 of the primary recipient wallet. MUST match what plan.destinations resolves to. */
         recipient: string;
         /** Custom RPC URL. Defaults to the public RPC for the selected network. */
         rpcUrl?: string;
+        /**
+         * HMAC secret the challenges were issued under (the `secretKey` given
+         * to `Mppx.create`). Falls back to `MPP_SECRET_KEY`. `verify` itself
+         * refuses a credential whose echoed challenge id is not the HMAC this
+         * server computes, and fails closed when neither this nor the
+         * environment provides a secret, so a host that calls `verify` outside
+         * `Mppx.create` cannot skip tier-1 binding.
+         */
+        secretKey?: string;
         /** Optional fee-payer signer. When set, the server co-signs activation as fee payer. */
         signer?: TransactionPartialSigner;
         /** Advisory distribution splits. The on-chain split is governed by plan.destinations. */

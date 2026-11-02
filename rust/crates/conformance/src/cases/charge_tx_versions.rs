@@ -407,7 +407,7 @@ crate::registry! {
         spl(json!([])),
         reject(RejectCode::UnsupportedVersion, "an empty advertisement offers no version"),
     )
-    .authored(Some("the kit treats an empty transactionVersions like an absent one (core::tx::accepted_versions) and builds version 0"))
+    .authored(None)
     .build();
     charge_build_duplicate_advertisement => build(
         "charge-build-duplicate-advertisement",
@@ -520,7 +520,7 @@ crate::registry! {
         Some(Mutation::ToFormat { format: MessageFormat::Legacy }),
         reject(RejectCode::UnsupportedVersion, "legacy messages are not supported"),
     )
-    .authored(Some("the kit polices a legacy message as version 0 (core::tx::TxVersion::of) and accepts it wherever version 0 is accepted"))
+    .authored(None)
     .build();
     charge_verify_legacy_default_reject => verify(
         "charge-verify-legacy-default-reject",
@@ -533,7 +533,7 @@ crate::registry! {
         Some(Mutation::ToFormat { format: MessageFormat::Legacy }),
         reject(RejectCode::UnsupportedVersion, "legacy messages are not supported"),
     )
-    .authored(Some("the kit polices a legacy message as version 0 (core::tx::TxVersion::of) and accepts it wherever version 0 is accepted"))
+    .authored(None)
     .build();
     charge_verify_default_v0_accept => verify(
         "charge-verify-default-v0-accept",

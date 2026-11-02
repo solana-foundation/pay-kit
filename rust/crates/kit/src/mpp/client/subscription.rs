@@ -5,6 +5,15 @@
 //!   `[compute_budget_*, create_ata_idempotent, subscribe,
 //!     transfer_subscription, memo(externalId)?]`
 //!
+//! The builder works from the spec's request fields and the on-chain `Plan`
+//! only. The challenge is parsed into [`SubscriptionTerms`], the Plan at
+//! `methodDetails.planAddress` is read and checked against those terms
+//! ([`VerifiedPlan::fetch`]), and the activation is built from the
+//! [`VerifiedPlan`]: there is no way to sign an activation whose plan was
+//! not read and matched (draft-solana-subscription-00 §Amount and Period
+//! Verification: "Clients MUST NOT sign an activation transaction whose
+//! on-chain Plan does not match the challenge.").
+//!
 //! A missing `SubscriptionAuthority` is initialized in its own transaction
 //! first; servers reject it inside the activation transaction.
 //!
@@ -22,12 +31,13 @@ use solana_rpc_client::rpc_client::RpcClient;
 
 use crate::mpp::error::Error;
 use crate::mpp::program::subscriptions::{
-    default_program_id, find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
+    default_program_id, find_plan_pda, find_subscription_authority_pda, find_subscription_pda,
+    plan_id_seed,
 };
 use crate::mpp::protocol::core::{PaymentChallenge, PaymentCredential};
 use crate::mpp::protocol::intents::{
-    ActivatePayload, SubscriptionAccessPayload, SubscriptionAuthentication,
-    SubscriptionAuthenticationType, SubscriptionRequest,
+    ActivatePayload, ActivationFeePayer, SubscriptionAccessPayload, SubscriptionAuthentication,
+    SubscriptionAuthenticationType, SubscriptionRequest, SubscriptionTerms,
 };
 use crate::mpp::protocol::solana::CredentialPayload;
 
@@ -37,6 +47,10 @@ use crate::mpp::protocol::solana::CredentialPayload;
 const SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN: usize = 1 + 32 + 32 + 32 + 1 + 8;
 /// Offset of `init_id` (i64, LE) inside a serialised `SubscriptionAuthority`.
 const SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET: usize = 1 + 32 + 32 + 32 + 1;
+/// `Plan` account discriminator.
+const PLAN_DISCRIMINATOR: u8 = 1;
+/// `PlanStatus::Active`.
+const PLAN_STATUS_ACTIVE: u8 = 1;
 
 pub use crate::mpp::protocol::intents::SubscriptionMethodDetails;
 
@@ -47,9 +61,6 @@ pub struct BuildSubscriptionActivationOptions {
     /// the challenge accepts. The Ledger Solana app signs version 0 but not
     /// yet version 1. `None` takes the highest version the challenge accepts.
     pub max_tx_version: Option<crate::core::tx::TxVersion>,
-    /// Optional memo with the merchant's external reference, embedded as a
-    /// trailing memo instruction.
-    pub external_id: Option<String>,
     /// Compute unit limit. Defaults to 400,000 (activation includes up to
     /// three subscriptions-program instructions plus token transfers).
     pub compute_unit_limit: Option<u32>,
@@ -59,27 +70,173 @@ pub struct BuildSubscriptionActivationOptions {
     /// skips the on-chain SA lookup and the init-tx broadcast — useful for
     /// tests, and for callers that have already resolved the SA state.
     pub subscription_authority_init_id: Option<i64>,
-    /// Subscriptions program deployment the caller trusts. `None` trusts only
-    /// the canonical
-    /// [`SUBSCRIPTIONS_PROGRAM_ID`](crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID); a challenge naming any
-    /// other program is rejected before anything is signed.
-    pub trusted_subscription_program: Option<Pubkey>,
 }
 
-/// Resolve the challenge's `subscriptionProgram`, refusing any program the
-/// caller has not chosen to trust: the program receives the subscriber's
-/// signature and token account.
-fn trusted_subscription_program(
-    method_details: &SubscriptionMethodDetails,
+/// The on-chain `Plan` a challenge names, read and checked against the
+/// challenge's [`SubscriptionTerms`]. Only [`VerifiedPlan::fetch`] and
+/// [`VerifiedPlan::verify`] produce one, and the activation builder takes
+/// nothing else, so an activation is never built from an unchecked plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPlan {
+    terms: SubscriptionTerms,
+    owner: Pubkey,
+    plan_id: u64,
+    bump: u8,
+    created_at: i64,
+}
+
+impl VerifiedPlan {
+    /// Read the Plan at `terms.plan_address()` and verify it.
+    ///
+    /// `trusted_program` is the subscriptions deployment the caller trusts;
+    /// `None` trusts only the canonical
+    /// [`SUBSCRIPTIONS_PROGRAM_ID`](crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID).
+    /// A challenge naming any other program is refused before the RPC is
+    /// asked for anything.
+    pub fn fetch(
+        rpc: &RpcClient,
+        terms: SubscriptionTerms,
+        trusted_program: Option<Pubkey>,
+    ) -> Result<Self, Error> {
+        check_trusted_program(&terms, trusted_program)?;
+        let account = rpc.get_account(&terms.plan_address()).map_err(|e| {
+            Error::Other(format!(
+                "Plan account not found at methodDetails.planAddress {}: {e}",
+                terms.plan_address()
+            ))
+        })?;
+        Self::verify(terms, trusted_program, &account.owner, &account.data)
+    }
+
+    /// Verify a Plan account (its program owner and data) against `terms`
+    /// (draft-solana-subscription-00 §Method Details and §Amount and Period
+    /// Verification): owned by the pinned subscriptions program, active, at
+    /// the PDA its owner and id derive, with the challenge's mint, amount and
+    /// period, the puller as owner or listed puller, and exactly one non-zero
+    /// destination equal to `recipient`.
+    pub fn verify(
+        terms: SubscriptionTerms,
+        trusted_program: Option<Pubkey>,
+        owner_program: &Pubkey,
+        data: &[u8],
+    ) -> Result<Self, Error> {
+        use crate::generated::subscriptions::accounts::Plan;
+
+        let program_id = check_trusted_program(&terms, trusted_program)?;
+        let mismatch = |what: &str| {
+            Error::Other(format!(
+                "The on-chain Plan does not match the challenge: {what}"
+            ))
+        };
+        if *owner_program != program_id {
+            return Err(mismatch(
+                "plan is not owned by methodDetails.subscriptionProgram",
+            ));
+        }
+        let plan = Plan::from_bytes(data)
+            .map_err(|e| Error::Other(format!("Invalid Plan account: {e}")))?;
+        if plan.discriminator != PLAN_DISCRIMINATOR {
+            return Err(mismatch("account is not a Plan"));
+        }
+        if plan.status != PLAN_STATUS_ACTIVE {
+            return Err(mismatch("plan is not active"));
+        }
+        let owner = to_pubkey(&plan.owner);
+        let (address, bump) = find_plan_pda(&owner, &plan_id_seed(plan.data.plan_id), &program_id);
+        if address != terms.plan_address() || bump != plan.bump {
+            return Err(mismatch("planAddress is not the plan's PDA"));
+        }
+        if to_pubkey(&plan.data.mint) != terms.mint() {
+            return Err(mismatch("plan.mint differs from methodDetails.mint"));
+        }
+        if plan.data.terms.amount != terms.amount().get() {
+            return Err(mismatch("plan amount differs from amount"));
+        }
+        if plan.data.terms.period_hours != terms.period().hours() {
+            return Err(mismatch("plan period differs from the billing period"));
+        }
+        let puller = terms.puller();
+        if puller != owner && !non_zero(&plan.data.pullers).any(|p| p == puller) {
+            return Err(mismatch(
+                "methodDetails.puller is neither plan.owner nor in plan.pullers",
+            ));
+        }
+        let destinations: Vec<Pubkey> = non_zero(&plan.data.destinations).collect();
+        if destinations != [terms.recipient()] {
+            return Err(mismatch(
+                "plan.destinations must be exactly one address equal to recipient",
+            ));
+        }
+        Ok(Self {
+            terms,
+            owner,
+            plan_id: plan.data.plan_id,
+            bump: plan.bump,
+            created_at: plan.data.terms.created_at,
+        })
+    }
+
+    /// The challenge terms the plan was checked against.
+    pub fn terms(&self) -> &SubscriptionTerms {
+        &self.terms
+    }
+
+    /// `plan.owner`: the merchant who published the plan.
+    pub fn owner(&self) -> Pubkey {
+        self.owner
+    }
+
+    /// Kit tests only: a plan as if read and verified, for fixtures whose
+    /// plan address is not a real PDA.
+    #[cfg(test)]
+    pub(crate) fn assume_verified(
+        terms: SubscriptionTerms,
+        owner: Pubkey,
+        plan_id: u64,
+        bump: u8,
+        created_at: i64,
+    ) -> Self {
+        Self {
+            terms,
+            owner,
+            plan_id,
+            bump,
+            created_at,
+        }
+    }
+}
+
+/// Kit tests only: the plan of `request`'s challenge, assumed verified, with
+/// `owner` as the merchant (plan id 1, bump 255, created at 1_700_000_000).
+#[cfg(test)]
+pub(crate) fn assume_plan(request: &SubscriptionRequest, owner: Pubkey) -> VerifiedPlan {
+    VerifiedPlan::assume_verified(
+        request.terms().expect("valid request"),
+        owner,
+        1,
+        255,
+        1_700_000_000,
+    )
+}
+
+fn to_pubkey(address: &solana_address::Address) -> Pubkey {
+    Pubkey::new_from_array(address.to_bytes())
+}
+
+fn non_zero(list: &[solana_address::Address]) -> impl Iterator<Item = Pubkey> + '_ {
+    list.iter()
+        .filter(|address| address.to_bytes() != [0u8; 32])
+        .map(to_pubkey)
+}
+
+/// Refuse a challenge whose `subscriptionProgram` the caller has not chosen
+/// to trust: the program receives the subscriber's signature and token
+/// account.
+fn check_trusted_program(
+    terms: &SubscriptionTerms,
     trusted: Option<Pubkey>,
 ) -> Result<Pubkey, Error> {
-    let program_id = parse_pubkey(
-        method_details
-            .subscription_program
-            .as_deref()
-            .ok_or_else(|| Error::Other("methodDetails.subscriptionProgram is required".into()))?,
-        "subscriptionProgram",
-    )?;
+    let program_id = terms.subscription_program();
     let trusted = trusted.unwrap_or_else(default_program_id);
     if program_id != trusted {
         return Err(Error::Other(format!(
@@ -136,50 +293,44 @@ pub fn build_subscription_access_credential(
     )
 }
 
-/// Build the activation transaction and bind a reusable proof to its delegation.
+/// Build the activation transaction for `challenge` and bind a reusable
+/// proof to its delegation.
+///
+/// Parses the request ([`SubscriptionRequest::terms`]), reads and verifies
+/// the on-chain Plan through `rpc` ([`VerifiedPlan::fetch`], trusting only
+/// the canonical subscriptions program), then builds and signs.
 pub async fn build_subscription_activation_credential(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     challenge: &PaymentChallenge,
 ) -> Result<SubscriptionActivation, Error> {
     let request: SubscriptionRequest = challenge.request.decode()?;
-    let method_details = request.validated_method_details()?;
-    let program_id = trusted_subscription_program(&method_details, None)?;
-    let plan_id = parse_pubkey(&method_details.plan_address, "planAddress")?;
-    let subscription_delegation = find_subscription_pda(&plan_id, &signer.pubkey(), &program_id)
-        .0
-        .to_string();
+    let plan = VerifiedPlan::fetch(rpc, request.terms()?, None)?;
+    let terms = plan.terms();
+    let subscription_delegation = find_subscription_pda(
+        &terms.plan_address(),
+        &signer.pubkey(),
+        &terms.subscription_program(),
+    )
+    .0
+    .to_string();
+    let transaction = build_subscription_activation_transaction(signer, rpc, &plan).await?;
     let authentication =
         sign_subscription_authentication(signer, &challenge.id, &subscription_delegation).await?;
-    let transaction = build_subscription_activation_transaction_with_options(
-        signer,
-        rpc,
-        &method_details,
-        BuildSubscriptionActivationOptions {
-            external_id: request.external_id,
-            ..Default::default()
-        },
-    )
-    .await?;
-    let payload = match transaction {
-        CredentialPayload::Transaction { transaction } => ActivatePayload {
-            payload_type: "transaction".into(),
-            transaction: Some(transaction),
-            signature: None,
-            authentication: Some(authentication.clone()),
-        },
-        _ => {
-            return Err(Error::Other(
-                "Subscription activation builder returned an unexpected payload".into(),
-            ))
-        }
+    let CredentialPayload::Transaction { transaction } = transaction else {
+        return Err(Error::Other(
+            "Subscription activation builder returned an unexpected payload".into(),
+        ));
+    };
+    let payload = ActivatePayload {
+        payload_type: "transaction".into(),
+        transaction: Some(transaction),
+        signature: None,
+        authentication: authentication.clone(),
     };
     let credential = PaymentCredential::with_source(
         challenge.to_echo(),
-        PaymentCredential::solana_did(
-            method_details.network.as_deref().unwrap_or("mainnet"),
-            &signer.pubkey().to_string(),
-        ),
+        PaymentCredential::solana_did(terms.network(), &signer.pubkey().to_string()),
         payload,
     );
     Ok(SubscriptionActivation {
@@ -189,21 +340,21 @@ pub async fn build_subscription_activation_credential(
     })
 }
 
-/// Build the subscription activation transaction.
+/// Build the subscription activation transaction for a verified plan.
 ///
 /// The returned payload is a `CredentialPayload::Transaction` carrying the
-/// base64-encoded serialized transaction. When `method_details.fee_payer`
-/// is `true`, the transaction is partially signed; the server completes
-/// the fee-payer signature before broadcasting.
+/// base64-encoded serialized transaction. When the challenge sets
+/// `feePayer: true`, the transaction is partially signed; the server
+/// completes the fee-payer signature before broadcasting.
 pub async fn build_subscription_activation_transaction(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
-    method_details: &SubscriptionMethodDetails,
+    plan: &VerifiedPlan,
 ) -> Result<CredentialPayload, Error> {
     build_subscription_activation_transaction_with_options(
         signer,
         rpc,
-        method_details,
+        plan,
         BuildSubscriptionActivationOptions::default(),
     )
     .await
@@ -213,26 +364,21 @@ pub async fn build_subscription_activation_transaction(
 pub async fn build_subscription_activation_transaction_with_options(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
-    method_details: &SubscriptionMethodDetails,
+    plan: &VerifiedPlan,
     options: BuildSubscriptionActivationOptions,
 ) -> Result<CredentialPayload, Error> {
-    let program_id =
-        trusted_subscription_program(method_details, options.trusted_subscription_program)?;
-
+    let terms = plan.terms();
+    let program_id = terms.subscription_program();
     let subscriber = signer.pubkey();
-    let mint = parse_pubkey(&method_details.mint, "mint")?;
-    let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
-    let plan_pda = parse_pubkey(&method_details.plan_address, "planAddress")?;
-    let puller = parse_pubkey(&method_details.puller, "puller")?;
-    // Plan owner — defaults to the puller when the operator publishes
-    // its own plan and is its own puller (the common pay-server case).
-    let merchant = match method_details.merchant.as_deref() {
-        Some(m) => parse_pubkey(m, "merchant")?,
-        None => puller,
-    };
-    let recipient = match method_details.recipient.as_deref() {
-        Some(r) => parse_pubkey(r, "recipient")?,
-        None => puller,
+    let mint = terms.mint();
+    let token_program = terms.token_program().program_id();
+    let plan_pda = terms.plan_address();
+    let puller = terms.puller();
+    let recipient = terms.recipient();
+    let amount = terms.amount().get();
+    let sponsor = match terms.fee_payer() {
+        ActivationFeePayer::Server(key) => Some(key),
+        ActivationFeePayer::Subscriber => None,
     };
 
     let (subscription_authority, _) =
@@ -244,11 +390,8 @@ pub async fn build_subscription_activation_transaction_with_options(
     // ATA derivation: SPL Token associated-token program seeds are
     // `[owner, token_program, mint]`. Both SPL Token and Token-2022 share
     // the same associated-token-program ID.
-    let associated_token_program = parse_pubkey(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-        "associated_token_program",
-    )?;
-
+    let associated_token_program =
+        Pubkey::from_str_const(crate::mpp::program::subscriptions::ASSOCIATED_TOKEN_PROGRAM_ID);
     let (subscriber_ata, _) = Pubkey::find_program_address(
         &[subscriber.as_ref(), token_program.as_ref(), mint.as_ref()],
         &associated_token_program,
@@ -257,38 +400,6 @@ pub async fn build_subscription_activation_transaction_with_options(
         &[recipient.as_ref(), token_program.as_ref(), mint.as_ref()],
         &associated_token_program,
     );
-
-    // Required `SubscribeData` fields the on-chain program reads to
-    // validate the subscriber consented to the live Plan terms. Without
-    // these the program rejects with `InvalidInstructionData`.
-    let plan_id_numeric = method_details.plan_id_numeric.ok_or_else(|| {
-        Error::Other(
-            "methodDetails.planIdNumeric is required to build SubscribeData. \
-             Re-run `pay server plans publish` so the YAML carries the numeric id."
-                .into(),
-        )
-    })?;
-    let plan_bump = method_details.plan_bump.ok_or_else(|| {
-        Error::Other("methodDetails.planBump is required to build SubscribeData".into())
-    })?;
-    let expected_period_hours = method_details.expected_period_hours.ok_or_else(|| {
-        Error::Other("methodDetails.expectedPeriodHours is required to build SubscribeData".into())
-    })?;
-    let expected_created_at = method_details.expected_created_at.ok_or_else(|| {
-        Error::Other(
-            "methodDetails.expectedCreatedAt is required to build SubscribeData. \
-             The Plan's on-chain created_at must be threaded into the challenge."
-                .into(),
-        )
-    })?;
-    let amount: u64 = method_details
-        .amount
-        .as_deref()
-        .ok_or_else(|| {
-            Error::Other("methodDetails.amount is required to build SubscribeData".into())
-        })?
-        .parse()
-        .map_err(|e| Error::Other(format!("Invalid methodDetails.amount: {e}")))?;
 
     let mut instructions: Vec<Instruction> = Vec::new();
 
@@ -300,28 +411,28 @@ pub async fn build_subscription_activation_transaction_with_options(
     );
 
     // ATA bootstrap. The on-chain `init_subscription_authority` (and
-    // every subsequent transfer) requires the subscriber's USDC ATA to
-    // exist and be owned by the token program. Brand-new wallets don't
-    // have an ATA yet — the account exists in name only (system-owned,
-    // zero bytes), which trips `InvalidTokenProgram` on the server.
-    // `CreateIdempotent` is a no-op when the ATA is already in place,
-    // so we always prepend it. Rent is paid by the fee_payer when
-    // sponsorship is on, otherwise by the subscriber.
-    let ata_funder = match (
-        method_details.fee_payer,
-        method_details.fee_payer_key.as_deref(),
-    ) {
-        (true, Some(k)) => parse_pubkey(k, "feePayerKey")?,
-        _ => subscriber,
-    };
+    // every subsequent transfer) requires the subscriber's ATA to exist
+    // and be owned by the token program. `CreateIdempotent` is a no-op
+    // when the ATA is already in place, so we always prepend it. Rent is
+    // paid by the fee payer when sponsorship is on, otherwise by the
+    // subscriber.
     instructions.push(build_create_idempotent_ata_ix(
-        ata_funder,
+        sponsor.unwrap_or(subscriber),
         subscriber_ata,
         subscriber,
         mint,
         token_program,
         associated_token_program,
     ));
+
+    // `methodDetails.recentBlockhash` when the server pre-fetched one,
+    // otherwise the RPC's latest.
+    let blockhash = match terms.recent_blockhash() {
+        Some(hash) => hash,
+        None => rpc
+            .get_latest_blockhash()
+            .map_err(|e| Error::Other(format!("Failed to fetch a recent blockhash: {e}")))?,
+    };
 
     // The on-chain `Subscribe` instruction binds the subscriber's signature
     // to a specific `SubscriptionAuthority::init_id`, set from `Clock::slot`
@@ -330,17 +441,6 @@ pub async fn build_subscription_activation_transaction_with_options(
     // we must read its `init_id`) before signing the activation tx. When
     // missing, broadcast a one-off init tx as the subscriber, paid by the
     // subscriber (~0.002 SOL rent + ~5k lamports fee).
-    let blockhash_str = method_details.recent_blockhash.as_deref().ok_or_else(|| {
-        Error::Other(
-            "Challenge is missing methodDetails.recentBlockhash — the server failed \
-             to pre-fetch one. Check the server's operator.rpc_url config."
-                .into(),
-        )
-    })?;
-    let blockhash: solana_hash::Hash = blockhash_str
-        .parse()
-        .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?;
-
     let expected_subscription_authority_init_id = match options.subscription_authority_init_id {
         Some(id) => id,
         None => {
@@ -359,40 +459,28 @@ pub async fn build_subscription_activation_transaction_with_options(
         }
     };
 
-    // Optional rent payer for the subscribe ix: fee_payer when
-    // configured, otherwise the subscriber pays its own rent (no extra
-    // account meta).
-    let subscribe_payer = if method_details.fee_payer {
-        match method_details.fee_payer_key.as_deref() {
-            Some(k) => Some(parse_pubkey(k, "feePayerKey")?),
-            None => {
-                return Err(Error::Other(
-                    "feePayer=true requires feePayerKey in methodDetails".into(),
-                ));
-            }
-        }
-    } else {
-        None
-    };
-
     instructions.push(crate::mpp::program::subscriptions::build_subscribe_ix(
         program_id,
         crate::mpp::program::subscriptions::SubscribeAccounts {
             subscriber,
-            merchant,
+            merchant: plan.owner,
             plan_pda,
             subscription_pda,
             subscription_authority_pda: subscription_authority,
             event_authority,
-            payer: subscribe_payer,
+            // Rent payer for the delegation: the sponsor when configured,
+            // otherwise the subscriber (no extra account meta).
+            payer: sponsor,
         },
+        // The terms the program checks against the live plan; every one
+        // was read from the plan and matched to the challenge.
         &crate::mpp::program::subscriptions::SubscribeData {
-            plan_id: plan_id_numeric,
-            plan_bump,
+            plan_id: plan.plan_id,
+            plan_bump: plan.bump,
             expected_mint: mint,
             expected_amount: amount,
-            expected_period_hours,
-            expected_created_at,
+            expected_period_hours: terms.period().hours(),
+            expected_created_at: plan.created_at,
             expected_subscription_authority_init_id,
         },
     ));
@@ -419,40 +507,21 @@ pub async fn build_subscription_activation_transaction_with_options(
         ),
     );
 
-    if let Some(external_id) = options.external_id.as_deref() {
+    if let Some(external_id) = terms.external_id() {
         instructions.push(build_memo_instruction(external_id));
     }
 
-    // Fee payer + blockhash.
-    let fee_payer_pubkey = if method_details.fee_payer {
-        method_details
-            .fee_payer_key
-            .as_deref()
-            .map(|k| parse_pubkey(k, "feePayerKey"))
-            .transpose()?
-            .unwrap_or(subscriber)
-    } else {
-        subscriber
-    };
-
-    // Blockhash was already parsed above for the SA-init pre-step; reuse it
-    // for the activation tx. Both transactions share the same recentBlockhash
-    // so they land in the same ~150-slot window.
-    let version = crate::core::tx::negotiate(
-        method_details.transaction_versions.as_deref(),
-        options.max_tx_version,
-    )?;
+    let version = crate::core::tx::negotiate(terms.transaction_versions(), options.max_tx_version)?;
     let mut tx = crate::core::tx::build_unsigned(
         version,
-        &fee_payer_pubkey,
+        &sponsor.unwrap_or(subscriber),
         &instructions,
         blockhash,
         Some(&budget),
     )?;
 
     // Sign as subscriber; the server adds the puller and fee-payer
-    // signatures (puller is the server, so the server holds the puller key
-    // too). The subscriber is the only client-side signer; when fee
+    // signatures. The subscriber is the only client-side signer; when fee
     // sponsorship is in play, the tx is broadcast partially signed.
     crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
@@ -486,6 +555,11 @@ async fn ensure_subscription_authority_init_id(
     blockhash: &solana_hash::Hash,
 ) -> Result<i64, Error> {
     if let Ok(account) = rpc.get_account(&subscription_authority) {
+        if account.owner != program_id {
+            return Err(Error::Other(format!(
+                "SubscriptionAuthority {subscription_authority} is not owned by the subscriptions program"
+            )));
+        }
         return parse_subscription_authority_init_id(&account.data);
     }
 
@@ -597,39 +671,154 @@ fn build_memo_instruction(memo: &str) -> Instruction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID;
+    use crate::generated::subscriptions::accounts::Plan;
+    use crate::generated::subscriptions::types::{PlanData, PlanTerms};
+    use crate::mpp::program::subscriptions::{
+        SubscribeData, INSTRUCTION_SUBSCRIBE, SUBSCRIPTIONS_PROGRAM_ID,
+    };
+    use crate::mpp::protocol::solana::programs::TOKEN_PROGRAM;
     use async_trait::async_trait;
     use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
+    use solana_rpc_client::mock_sender::MocksMap;
+    use solana_rpc_client_api::request::RpcRequest;
     use solana_signature::Signature;
 
-    #[test]
-    fn method_details_parse_required_fields() {
-        let value = serde_json::json!({
-            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
-            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
-            "feePayer": true,
-            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h"
-        });
-        let md = SubscriptionMethodDetails::from_json(&value).unwrap();
-        assert!(md.fee_payer);
-        assert_eq!(
-            md.plan_address,
-            "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT"
-        );
-        assert_eq!(
-            md.fee_payer_key.as_deref(),
-            Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h")
-        );
+    const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const RECIPIENT: &str = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
+    const PLAN_ID: u64 = 7;
+    const CREATED_AT: i64 = 1_700_000_000;
+
+    fn merchant() -> Pubkey {
+        Pubkey::new_from_array([21; 32])
     }
 
-    #[test]
-    fn method_details_rejects_missing_required_field() {
-        let value = serde_json::json!({
-            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        });
-        assert!(SubscriptionMethodDetails::from_json(&value).is_err());
+    fn program() -> Pubkey {
+        Pubkey::from_str_const(SUBSCRIPTIONS_PROGRAM_ID)
+    }
+
+    fn plan_pda() -> (Pubkey, u8) {
+        find_plan_pda(&merchant(), &plan_id_seed(PLAN_ID), &program())
+    }
+
+    /// A request carrying exactly the spec's fields: no kit extensions.
+    fn spec_request() -> serde_json::Value {
+        serde_json::json!({
+            "amount": "10000000",
+            "currency": MINT,
+            "periodUnit": "day",
+            "periodCount": "30",
+            "recipient": RECIPIENT,
+            "methodDetails": {
+                "subscriptionProgram": SUBSCRIPTIONS_PROGRAM_ID,
+                "planAddress": plan_pda().0.to_string(),
+                "mint": MINT,
+                "tokenProgram": TOKEN_PROGRAM,
+                "decimals": 6,
+                "puller": merchant().to_string(),
+                "network": "devnet",
+                "recentBlockhash": "11111111111111111111111111111111",
+            },
+        })
+    }
+
+    fn terms_of(request: &serde_json::Value) -> SubscriptionTerms {
+        serde_json::from_value::<SubscriptionRequest>(request.clone())
+            .unwrap()
+            .terms()
+            .unwrap()
+    }
+
+    fn address(key: &Pubkey) -> solana_address::Address {
+        solana_address::Address::from(key.to_bytes())
+    }
+
+    fn padded(list: &[Pubkey]) -> [solana_address::Address; 4] {
+        let mut out = [solana_address::Address::from([0u8; 32]); 4];
+        for (slot, key) in out.iter_mut().zip(list) {
+            *slot = address(key);
+        }
+        out
+    }
+
+    struct PlanFixture {
+        mint: Pubkey,
+        amount: u64,
+        period_hours: u64,
+        destinations: Vec<Pubkey>,
+        pullers: Vec<Pubkey>,
+        status: u8,
+    }
+
+    impl Default for PlanFixture {
+        fn default() -> Self {
+            Self {
+                mint: Pubkey::from_str_const(MINT),
+                amount: 10_000_000,
+                period_hours: 720,
+                destinations: vec![Pubkey::from_str_const(RECIPIENT)],
+                pullers: vec![],
+                status: PLAN_STATUS_ACTIVE,
+            }
+        }
+    }
+
+    impl PlanFixture {
+        fn bytes(&self) -> Vec<u8> {
+            borsh::to_vec(&Plan {
+                discriminator: PLAN_DISCRIMINATOR,
+                owner: address(&merchant()),
+                bump: plan_pda().1,
+                status: self.status,
+                data: PlanData {
+                    plan_id: PLAN_ID,
+                    mint: address(&self.mint),
+                    terms: PlanTerms {
+                        amount: self.amount,
+                        period_hours: self.period_hours,
+                        created_at: CREATED_AT,
+                    },
+                    end_ts: 0,
+                    destinations: padded(&self.destinations),
+                    pullers: padded(&self.pullers),
+                    metadata_uri: [0u8; 128],
+                },
+            })
+            .unwrap()
+        }
+
+        fn verify(&self, request: &serde_json::Value) -> Result<VerifiedPlan, Error> {
+            VerifiedPlan::verify(terms_of(request), None, &program(), &self.bytes())
+        }
+    }
+
+    fn account_response(owner: &Pubkey, data: &[u8]) -> serde_json::Value {
+        use base64::Engine;
+        serde_json::json!({
+            "context": {"slot": 1},
+            "value": {
+                "data": [base64::engine::general_purpose::STANDARD.encode(data), "base64"],
+                "executable": false,
+                "lamports": 1_000_000,
+                "owner": owner.to_string(),
+                "rentEpoch": 0,
+                "space": data.len(),
+            }
+        })
+    }
+
+    /// An RPC whose successive `getAccountInfo` answers are `accounts`.
+    fn rpc_serving(accounts: &[serde_json::Value]) -> RpcClient {
+        let mut mocks = MocksMap::default();
+        for account in accounts {
+            mocks.insert(RpcRequest::GetAccountInfo, account.clone());
+        }
+        RpcClient::new_mock_with_mocks_map("succeeds".to_string(), mocks)
+    }
+
+    fn authority_bytes(init_id: i64) -> Vec<u8> {
+        let mut data = vec![0u8; SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN];
+        data[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..].copy_from_slice(&init_id.to_le_bytes());
+        data
     }
 
     fn make_signer() -> Box<dyn TransactionSigner> {
@@ -680,250 +869,396 @@ mod tests {
         }
     }
 
-    fn make_method_details(
-        fee_payer: bool,
-        fee_payer_key: Option<&str>,
-    ) -> SubscriptionMethodDetails {
-        SubscriptionMethodDetails {
-            plan_address: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
-            mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
-            token_program: crate::mpp::protocol::solana::programs::TOKEN_PROGRAM.into(),
-            decimals: Some(6),
-            puller: "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into(),
-            merchant: Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()),
-            recipient: Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()),
-            amount: Some("10000000".into()),
-            subscription_program: Some(SUBSCRIPTIONS_PROGRAM_ID.into()),
-            network: Some("mainnet".into()),
-            fee_payer,
-            fee_payer_key: fee_payer_key.map(str::to_string),
-            recent_blockhash: Some("11111111111111111111111111111111".into()),
-            plan_id_numeric: Some(1),
-            plan_bump: Some(255),
-            expected_period_hours: Some(720),
-            expected_created_at: Some(1_700_000_000),
-            transaction_versions: None,
-        }
-    }
-
-    /// Build helper for tests: pins `subscription_authority_init_id` to 0
-    /// so the activation builder skips the on-chain SA lookup (the RPC mock
-    /// would otherwise try to broadcast an init tx and panic on the second
-    /// `getAccountInfo` returning AccountNotFound).
-    fn pinned_options(
-        extras: BuildSubscriptionActivationOptions,
-    ) -> BuildSubscriptionActivationOptions {
+    fn pinned() -> BuildSubscriptionActivationOptions {
         BuildSubscriptionActivationOptions {
-            subscription_authority_init_id: Some(0),
-            ..extras
+            subscription_authority_init_id: Some(77),
+            ..Default::default()
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn builds_activation_tx_with_pinned_init_id() {
-        let signer = make_signer();
+    async fn build(
+        signer: &dyn TransactionSigner,
+        plan: &VerifiedPlan,
+    ) -> solana_transaction::versioned::VersionedTransaction {
         let rpc = RpcClient::new_mock("succeeds".to_string());
-        let md = make_method_details(false, None);
-        let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+        let CredentialPayload::Transaction { transaction } =
+            build_subscription_activation_transaction_with_options(signer, &rpc, plan, pinned())
+                .await
+                .expect("activation tx")
+        else {
+            panic!("expected Transaction payload")
+        };
+        crate::core::tx::decode(&transaction).unwrap()
+    }
+
+    fn challenge_for(request: &serde_json::Value) -> PaymentChallenge {
+        PaymentChallenge::new(
+            "challenge-id",
+            "realm",
+            "solana",
+            "subscription",
+            crate::mpp::protocol::core::Base64UrlJson::from_value(request).unwrap(),
         )
-        .await
-        .expect("activation tx");
-        match payload {
-            CredentialPayload::Transaction { transaction } => {
-                assert!(!transaction.is_empty());
+    }
+
+    // ── the plan is the source of the subscribe terms ──────────────────────
+
+    // A spec-shaped challenge (no kit methodDetails extensions) builds: the
+    // subscribe data and the merchant account come from the on-chain plan.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spec_shaped_challenge_builds_from_the_plan() {
+        let signer = make_signer();
+        let plan = PlanFixture::default().verify(&spec_request()).unwrap();
+        let tx = build(signer.as_ref(), &plan).await;
+        let keys = tx.message.static_account_keys();
+        let subscribe = tx
+            .message
+            .instructions()
+            .iter()
+            .find(|ix| ix.data.first() == Some(&INSTRUCTION_SUBSCRIBE))
+            .expect("subscribe");
+        assert_eq!(
+            subscribe.data,
+            SubscribeData {
+                plan_id: PLAN_ID,
+                plan_bump: plan_pda().1,
+                expected_mint: Pubkey::from_str_const(MINT),
+                expected_amount: 10_000_000,
+                expected_period_hours: 720,
+                expected_created_at: CREATED_AT,
+                expected_subscription_authority_init_id: 77,
             }
-            _ => panic!("expected Transaction payload"),
-        }
+            .to_bytes()
+        );
+        assert_eq!(keys[subscribe.accounts[1] as usize], merchant());
+    }
+
+    // The credential path reads the plan and the authority through the RPC.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_credential_reads_the_plan_through_the_rpc() {
+        let signer = make_signer();
+        let rpc = rpc_serving(&[
+            account_response(&program(), &PlanFixture::default().bytes()),
+            account_response(&program(), &authority_bytes(77)),
+        ]);
+        let activation = build_subscription_activation_credential(
+            signer.as_ref(),
+            &rpc,
+            &challenge_for(&spec_request()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            activation.credential.source.as_deref(),
+            Some(PaymentCredential::solana_did("devnet", &signer.pubkey().to_string()).as_str())
+        );
+        assert_eq!(
+            activation.credential.payload["authentication"]["payer"],
+            signer.pubkey().to_string()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn builds_activation_tx_with_options_and_external_id_memo() {
+    async fn activation_credential_refuses_a_missing_plan() {
         let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let md = make_method_details(false, None);
-        let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
+        let missing = serde_json::json!({"context": {"slot": 1}, "value": null});
+        let rpc = rpc_serving(&[missing]);
+        let err = build_subscription_activation_credential(
+            signer.as_ref(),
             &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions {
-                external_id: Some("order-42".into()),
-                compute_unit_limit: Some(123_456),
-                compute_unit_price: Some(1_000),
-                ..Default::default()
-            }),
+            &challenge_for(&spec_request()),
         )
         .await
-        .expect("activation tx");
-        match payload {
-            CredentialPayload::Transaction { transaction } => {
-                let raw = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &transaction,
+        .unwrap_err();
+        assert!(err.to_string().contains("Plan account not found"), "{err}");
+    }
+
+    // draft-solana-subscription-00 §Amount and Period Verification, item 6.
+    #[test]
+    fn plan_that_does_not_match_the_challenge_is_refused() {
+        let request = spec_request();
+        let stranger = Pubkey::new_from_array([23; 32]);
+        let attacker = Pubkey::new_from_array([24; 32]);
+        let recipient = Pubkey::from_str_const(RECIPIENT);
+        let cases = [
+            (
+                "amount",
+                PlanFixture {
+                    amount: 5_000_000,
+                    ..Default::default()
+                },
+            ),
+            (
+                "period",
+                PlanFixture {
+                    period_hours: 168,
+                    ..Default::default()
+                },
+            ),
+            (
+                "mint",
+                PlanFixture {
+                    mint: Pubkey::new_unique(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "no destination",
+                PlanFixture {
+                    destinations: vec![],
+                    ..Default::default()
+                },
+            ),
+            (
+                "two destinations",
+                PlanFixture {
+                    destinations: vec![recipient, attacker],
+                    ..Default::default()
+                },
+            ),
+            (
+                "other destination",
+                PlanFixture {
+                    destinations: vec![attacker],
+                    ..Default::default()
+                },
+            ),
+            (
+                "sunset",
+                PlanFixture {
+                    status: 0,
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (what, plan) in cases {
+            assert!(plan.verify(&request).is_err(), "{what}");
+        }
+        // Positive control.
+        PlanFixture::default().verify(&request).unwrap();
+
+        // A puller that is neither the owner nor listed.
+        let mut unauthorized = request.clone();
+        unauthorized["methodDetails"]["puller"] = stranger.to_string().into();
+        let err = PlanFixture::default().verify(&unauthorized).unwrap_err();
+        assert!(err.to_string().contains("puller"), "{err}");
+        // Listed in plan.pullers: authorized.
+        PlanFixture {
+            pullers: vec![stranger],
+            ..Default::default()
+        }
+        .verify(&unauthorized)
+        .unwrap();
+    }
+
+    #[test]
+    fn plan_owned_by_another_program_or_at_another_address_is_refused() {
+        let request = spec_request();
+        let bytes = PlanFixture::default().bytes();
+        assert!(
+            VerifiedPlan::verify(terms_of(&request), None, &Pubkey::new_unique(), &bytes).is_err()
+        );
+        let mut elsewhere = request.clone();
+        elsewhere["methodDetails"]["planAddress"] = Pubkey::new_unique().to_string().into();
+        assert!(VerifiedPlan::verify(terms_of(&elsewhere), None, &program(), &bytes).is_err());
+    }
+
+    // Kit-only methodDetails extensions never override the plan.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kit_extensions_are_ignored() {
+        let signer = make_signer();
+        let mut request = spec_request();
+        let md = request["methodDetails"].as_object_mut().unwrap();
+        md.insert("planIdNumeric".into(), 99.into());
+        md.insert("expectedCreatedAt".into(), 1.into());
+        md.insert("merchant".into(), Pubkey::new_unique().to_string().into());
+        let with = build(
+            signer.as_ref(),
+            &PlanFixture::default().verify(&request).unwrap(),
+        )
+        .await;
+        let without = build(
+            signer.as_ref(),
+            &PlanFixture::default().verify(&spec_request()).unwrap(),
+        )
+        .await;
+        assert_eq!(with.message, without.message);
+    }
+
+    // ── request format reaches the builder only through SubscriptionTerms ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_requests_are_refused_before_any_rpc() {
+        let signer = make_signer();
+        let rpc = rpc_serving(&[]);
+        for (pointer, value) in [
+            ("/amount", serde_json::json!("010000000")),
+            ("/amount", serde_json::json!("0")),
+            ("/periodCount", serde_json::json!("030")),
+            (
+                "/methodDetails/tokenProgram",
+                serde_json::json!("11111111111111111111111111111111"),
+            ),
+        ] {
+            let mut request = spec_request();
+            *request.pointer_mut(pointer).unwrap() = value.clone();
+            assert!(
+                build_subscription_activation_credential(
+                    signer.as_ref(),
+                    &rpc,
+                    &challenge_for(&request)
                 )
-                .expect("base64 decode");
-                let tx = crate::core::tx::decode_bytes(&raw).expect("tx");
-                // [compute_price, compute_limit, ata_create_idempotent,
-                //  subscribe, transfer, memo] = 6. Init runs as a separate
-                // pre-broadcast tx, not bundled into the activation.
-                assert_eq!(tx.message.instructions().len(), 6);
-                // Last instruction must be the memo.
-                let last = &tx.message.instructions()[5];
-                let memo_program_id =
-                    Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
-                let last_program = tx.message.static_account_keys()[last.program_id_index as usize];
-                assert_eq!(last_program, memo_program_id);
-                assert_eq!(last.data, b"order-42");
-            }
-            _ => panic!("expected Transaction payload"),
+                .await
+                .is_err(),
+                "{pointer} = {value}"
+            );
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn fee_payer_true_without_fee_payer_key_errors() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let md = make_method_details(true, None);
-        let err = build_subscription_activation_transaction_with_options(
-            &*signer,
+        let mut no_decimals = spec_request();
+        no_decimals["methodDetails"]
+            .as_object_mut()
+            .unwrap()
+            .remove("decimals");
+        assert!(build_subscription_activation_credential(
+            signer.as_ref(),
             &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            &challenge_for(&no_decimals)
         )
         .await
-        .expect_err("missing feePayerKey");
-        assert!(format!("{err}").contains("feePayerKey"));
+        .is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn fee_payer_true_with_fee_payer_key_sets_fee_payer_account() {
+    async fn activation_credential_rejects_currency_differing_from_mint() {
+        let signer = make_signer();
+        let mut request = spec_request();
+        // Displayed as USDT while the transaction would authorize USDC.
+        request["currency"] = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into();
+        let err = build_subscription_activation_credential(
+            signer.as_ref(),
+            &rpc_serving(&[]),
+            &challenge_for(&request),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("currency"), "{err}");
+    }
+
+    // ── program pin ────────────────────────────────────────────────────────
+
+    #[test]
+    fn untrusted_subscription_program_is_rejected_before_reading_the_plan() {
+        let mut request = spec_request();
+        request["methodDetails"]["subscriptionProgram"] = Pubkey::new_unique().to_string().into();
+        // An RPC with nothing to serve: the pin refuses first.
+        let err = VerifiedPlan::fetch(&rpc_serving(&[]), terms_of(&request), None).unwrap_err();
+        assert!(
+            err.to_string().contains("Untrusted subscription program"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn caller_trusted_subscription_program_does_not_trust_the_canonical_one() {
+        let custom = Pubkey::new_unique();
+        let err = VerifiedPlan::verify(
+            terms_of(&spec_request()),
+            Some(custom),
+            &program(),
+            &PlanFixture::default().bytes(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Untrusted subscription program"),
+            "{err}"
+        );
+    }
+
+    // ── transaction shape ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn external_id_is_carried_as_a_trailing_memo() {
+        let signer = make_signer();
+        let mut request = spec_request();
+        request["externalId"] = "order-42".into();
+        let tx = build(
+            signer.as_ref(),
+            &PlanFixture::default().verify(&request).unwrap(),
+        )
+        .await;
+        // [compute_price, compute_limit, ata_create_idempotent, subscribe,
+        //  transfer, memo] = 6. Init runs as a separate pre-broadcast tx.
+        assert_eq!(tx.message.instructions().len(), 6);
+        let last = tx.message.instructions().last().unwrap();
+        let memo_program_id =
+            Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
+        assert_eq!(
+            tx.message.static_account_keys()[last.program_id_index as usize],
+            memo_program_id
+        );
+        assert_eq!(last.data, b"order-42");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_activation_names_the_fee_payer_key() {
         let signer = TransactionOnlySigner(Pubkey::new_unique());
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
-        let md = make_method_details(true, Some(fee_payer_key));
-        let payload = build_subscription_activation_transaction_with_options(
-            &signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect("activation tx");
-        match payload {
-            CredentialPayload::Transaction { transaction } => {
-                let raw = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &transaction,
-                )
-                .expect("base64 decode");
-                let tx = crate::core::tx::decode_bytes(&raw).expect("tx");
-                // In a sponsored transaction the fee payer is account_keys[0].
-                let expected_fee_payer = Pubkey::from_str(fee_payer_key).unwrap();
-                assert_eq!(tx.message.static_account_keys()[0], expected_fee_payer);
-
-                let subscriber_index = tx
-                    .message
-                    .static_account_keys()
-                    .iter()
-                    .position(|key| key == &signer.pubkey())
-                    .expect("subscriber signer account");
-                assert_ne!(subscriber_index, 0);
-                assert_eq!(tx.signatures[0], Signature::default());
-                assert_eq!(tx.signatures[subscriber_index], Signature::from([7u8; 64]));
-            }
-            _ => panic!("expected Transaction payload"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn invalid_pubkey_in_method_details_surfaces_typed_error() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let mut md = make_method_details(false, None);
-        md.mint = "not-a-pubkey".into();
-        let err = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect_err("invalid mint");
-        assert!(format!("{err}").contains("mint"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn explicit_program_id_override_is_honored() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let mut md = make_method_details(false, None);
-        md.subscription_program = Some(SUBSCRIPTIONS_PROGRAM_ID.into());
-        let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect("activation tx");
-        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn invalid_recent_blockhash_in_method_details_errors() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let mut md = make_method_details(false, None);
-        md.recent_blockhash = Some("not-a-valid-blockhash".into());
-        let err = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect_err("bad blockhash");
-        assert!(format!("{err}").contains("blockhash") || format!("{err}").contains("Invalid"));
+        let fee_payer = Pubkey::new_unique();
+        let mut request = spec_request();
+        request["methodDetails"]["feePayer"] = true.into();
+        request["methodDetails"]["feePayerKey"] = fee_payer.to_string().into();
+        let tx = build(&signer, &PlanFixture::default().verify(&request).unwrap()).await;
+        // In a sponsored transaction the fee payer is account_keys[0].
+        assert_eq!(tx.message.static_account_keys()[0], fee_payer);
+        let subscriber_index = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| key == &signer.pubkey())
+            .expect("subscriber signer account");
+        assert_ne!(subscriber_index, 0);
+        assert_eq!(tx.signatures[0], Signature::default());
+        assert_eq!(tx.signatures[subscriber_index], Signature::from([7u8; 64]));
     }
 
     #[test]
-    fn method_details_requires_subscription_program() {
-        let value = serde_json::json!({
-            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
-            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
-        });
-        let md = SubscriptionMethodDetails::from_json(&value).unwrap();
-        assert!(md.subscription_program.is_none());
-        assert!(md.validate().is_err());
-        assert!(!md.fee_payer);
-        assert!(md.fee_payer_key.is_none());
-        assert!(md.recent_blockhash.is_none());
+    fn subscription_authority_owned_by_another_program_is_refused() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let signer = make_signer();
+        let rpc = rpc_serving(&[account_response(
+            &Pubkey::new_unique(),
+            &authority_bytes(77),
+        )]);
+        let err = rt
+            .block_on(build_subscription_activation_transaction(
+                signer.as_ref(),
+                &rpc,
+                &PlanFixture::default().verify(&spec_request()).unwrap(),
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("SubscriptionAuthority"), "{err}");
     }
 
     #[test]
-    fn method_details_parses_recent_blockhash_and_subscription_program() {
+    fn method_details_parse_required_fields() {
         let value = serde_json::json!({
             "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
-            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "mint": MINT,
+            "tokenProgram": TOKEN_PROGRAM,
             "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
-            "subscriptionProgram": SUBSCRIPTIONS_PROGRAM_ID,
-            "recentBlockhash": "11111111111111111111111111111111",
+            "feePayer": true,
+            "feePayerKey": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h"
         });
         let md = SubscriptionMethodDetails::from_json(&value).unwrap();
+        assert!(md.fee_payer);
         assert_eq!(
-            md.subscription_program.as_deref(),
-            Some(SUBSCRIPTIONS_PROGRAM_ID)
+            md.fee_payer_key.as_deref(),
+            Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h")
         );
-        assert_eq!(
-            md.recent_blockhash.as_deref(),
-            Some("11111111111111111111111111111111")
-        );
+    }
+
+    #[test]
+    fn method_details_rejects_missing_required_field() {
+        let value = serde_json::json!({ "mint": MINT });
+        assert!(SubscriptionMethodDetails::from_json(&value).is_err());
     }
 
     #[test]
@@ -932,148 +1267,5 @@ mod tests {
         assert_eq!(ix.data, b"hello");
         let memo = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
         assert_eq!(ix.program_id, memo);
-    }
-
-    #[test]
-    fn compute_unit_price_and_limit_have_correct_discriminators() {
-        let price_ix = crate::core::tx::unit_price_instruction(1_000);
-        assert_eq!(price_ix.data[0], 3);
-        assert_eq!(price_ix.data.len(), 9);
-        let limit_ix = crate::core::tx::unit_limit_instruction(200_000);
-        assert_eq!(limit_ix.data[0], 2);
-        assert_eq!(limit_ix.data.len(), 5);
-    }
-
-    fn challenge_for(request: &SubscriptionRequest) -> PaymentChallenge {
-        PaymentChallenge::new(
-            "challenge-id",
-            "realm",
-            "solana",
-            "subscription",
-            crate::mpp::protocol::core::Base64UrlJson::from_typed(request).unwrap(),
-        )
-    }
-
-    fn request_for(md: &SubscriptionMethodDetails) -> SubscriptionRequest {
-        SubscriptionRequest {
-            amount: md.amount.clone().unwrap(),
-            currency: md.mint.clone(),
-            period_unit: crate::mpp::protocol::intents::SubscriptionPeriodUnit::Day,
-            period_count: "30".into(),
-            recipient: md.recipient.clone().unwrap(),
-            method_details: Some(serde_json::to_value(md).unwrap()),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn activation_credential_rejects_currency_differing_from_signed_mint() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let md = make_method_details(false, None);
-        let mut request = request_for(&md);
-        // Displayed as USDT while the transaction would authorize USDC.
-        request.currency = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into();
-
-        let err = build_subscription_activation_credential(
-            signer.as_ref(),
-            &rpc,
-            &challenge_for(&request),
-        )
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("currency"), "{err}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn activation_credential_rejects_amount_differing_from_signed_amount() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let md = make_method_details(false, None);
-        let mut request = request_for(&md);
-        request.amount = "1".into();
-
-        assert!(build_subscription_activation_credential(
-            signer.as_ref(),
-            &rpc,
-            &challenge_for(&request)
-        )
-        .await
-        .is_err());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn untrusted_subscription_program_is_rejected_before_signing() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let mut md = make_method_details(false, None);
-        md.subscription_program = Some(Pubkey::new_unique().to_string());
-
-        let err = build_subscription_activation_transaction_with_options(
-            signer.as_ref(),
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("Untrusted subscription program"),
-            "{err}"
-        );
-
-        let request = request_for(&md);
-        let err = build_subscription_activation_credential(
-            signer.as_ref(),
-            &rpc,
-            &challenge_for(&request),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("Untrusted subscription program"),
-            "{err}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn caller_trusted_subscription_program_is_used() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let custom = Pubkey::new_unique();
-        let mut md = make_method_details(false, None);
-        md.subscription_program = Some(custom.to_string());
-
-        let CredentialPayload::Transaction { transaction } =
-            build_subscription_activation_transaction_with_options(
-                signer.as_ref(),
-                &rpc,
-                &md,
-                pinned_options(BuildSubscriptionActivationOptions {
-                    trusted_subscription_program: Some(custom),
-                    ..Default::default()
-                }),
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("expected transaction payload")
-        };
-        let tx = crate::core::tx::decode(&transaction).unwrap();
-        assert!(tx.message.static_account_keys().contains(&custom));
-
-        // Trusting a custom deployment does not also trust the canonical one.
-        md.subscription_program = Some(SUBSCRIPTIONS_PROGRAM_ID.into());
-        assert!(build_subscription_activation_transaction_with_options(
-            signer.as_ref(),
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions {
-                trusted_subscription_program: Some(custom),
-                ..Default::default()
-            }),
-        )
-        .await
-        .is_err());
     }
 }

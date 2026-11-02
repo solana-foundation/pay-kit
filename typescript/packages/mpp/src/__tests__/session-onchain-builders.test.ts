@@ -29,12 +29,19 @@ import {
     getUtf8Encoder,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { stubClusterRpc } from './cluster-rpc-stub.js';
 
 import { buildOpenPaymentChannelTransaction, derivePaymentChannelOpen } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
 import { ASSOCIATED_TOKEN_PROGRAM, PYUSD, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC } from '../constants.js';
 import { getOpenInstructionDataDecoder } from '../generated/payment-channels/instructions/open.js';
+import {
+    MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
+    normalizeCompiledMessage,
+    type TransactionVersion,
+} from '../utils/transaction-versions.js';
 import {
     buildDistributeInstruction,
     buildEd25519VerifyInstruction,
@@ -49,6 +56,15 @@ import {
     treasuryOwnerForNetwork,
 } from '../server/session/on-chain.js';
 import type { SignedVoucher } from '../shared/session-types.js';
+
+// The open builder checks the challenged blockhash against the client's
+// cluster RPC before signing; answer it locally.
+beforeEach(() => {
+    stubClusterRpc();
+});
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // Deterministic fixture
@@ -509,6 +525,7 @@ function openChallengeRequest(overrides: Record<string, unknown> = {}): SessionR
         currency: 'USDC',
         methodDetails: {
             channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            decimals: 6,
             // Gasless flow: the operator co-signs as fee payer and rentPayer.
             feePayer: true,
             feePayerKey: OPERATOR,
@@ -722,4 +739,85 @@ describe('client open instruction builder', () => {
         });
         expect(message.staticAccounts).toContain(payerTokenAccount);
     });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// client open transaction version (mpp-specs-txv1 Transaction Versions)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('client open transaction version negotiation', () => {
+    async function buildAdvertising(
+        transactionVersions: readonly TransactionVersion[] | undefined,
+        maxTransactionVersion?: TransactionVersion,
+    ) {
+        const [payer] = await loadFixedSigners();
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: AUTHORIZED,
+            deposit: 1_000_000n,
+            maxTransactionVersion,
+            request: openChallengeRequest(transactionVersions ? { transactionVersions } : {}),
+            salt: 42n,
+            signer: payer,
+        });
+        const decoded = getTransactionDecoder().decode(getBase64Codec().encode(open.transaction));
+        return {
+            message: normalizeCompiledMessage(getCompiledTransactionMessageDecoder().decode(decoded.messageBytes)),
+            signatures: decoded.signatures,
+        };
+    }
+
+    test.each([[[0, 1]], [[1]], [[1, 1]]] as TransactionVersion[][][])(
+        'builds a version-1 open with the budget in the header for %j',
+        async versions => {
+            const { message, signatures } = await buildAdvertising(versions);
+            expect(message.version).toBe(1);
+            expect(message.config).toEqual({
+                computeUnitLimit: 200_000,
+                loadedAccountsDataSizeLimit: MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
+                priorityFeeLamports: 0n,
+            });
+            // The open alone: no ComputeBudget instruction.
+            expect(message.instructions).toHaveLength(1);
+            // Sponsored: the operator slot stays empty for the server.
+            expect(message.staticAccounts[0]).toBe(OPERATOR);
+            const [payer] = await loadFixedSigners();
+            expect(signatures[address(OPERATOR)]).toBeNull();
+            expect(signatures[payer.address]).not.toBeNull();
+        },
+    );
+
+    test.each([
+        [undefined, undefined],
+        [[0], undefined],
+        [[0, 1], 0],
+    ] as [TransactionVersion[] | undefined, TransactionVersion | undefined][])(
+        'builds version 0 for %j with signer cap %j',
+        async (versions, max) => {
+            const { message } = await buildAdvertising(versions, max);
+            expect(message.version).toBe(0);
+            expect(message.instructions).toHaveLength(1);
+        },
+    );
+
+    test.each([
+        [[1], 0, /signs up to version 0/],
+        [[], undefined, /advertises no transaction version/],
+    ] as [TransactionVersion[], TransactionVersion | undefined, RegExp][])(
+        'refuses %j (signer cap %j) before signing',
+        async (versions, max, message) => {
+            const [payer] = await loadFixedSigners();
+            const signTransactions = vi.fn(payer.signTransactions);
+            await expect(
+                buildOpenPaymentChannelTransaction({
+                    authorizedSigner: AUTHORIZED,
+                    deposit: 1_000_000n,
+                    maxTransactionVersion: max,
+                    request: openChallengeRequest({ transactionVersions: versions }),
+                    salt: 42n,
+                    signer: { ...payer, signTransactions },
+                }),
+            ).rejects.toThrow(message);
+            expect(signTransactions).not.toHaveBeenCalled();
+        },
+    );
 });

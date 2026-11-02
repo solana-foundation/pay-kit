@@ -15,8 +15,8 @@ use serde_json::{json, Value};
 use solana_pay_kit::core::store::MemoryChannelStore;
 use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
 use solana_pay_kit::mpp::client::session::{
-    create_payment_channel_session_opener, PaymentChannelOpenOptions,
-    PaymentChannelSessionOpenOptions,
+    create_payment_channel_session_opener, OpenBlockhash, PaymentChannelOpenOptions,
+    PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
 };
 use solana_pay_kit::mpp::protocol::intents::session::{OpenPayload, SessionAction};
 use solana_pay_kit::mpp::server::session::{SessionConfig, SessionServer, VoucherSigner};
@@ -104,11 +104,25 @@ async fn build_open(server_value: &Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     let session = MemorySigner::from_bytes(&keys::keypair_bytes(SESSION_SIGNER_SEED))
         .map_err(|e| e.to_string())?;
+    // The kit server's challenge carries the pinned blockhash.
+    let blockhash = OpenBlockhash::from_client_cluster(
+        BLOCKHASH.parse().map_err(|e| format!("blockhash: {e:?}"))?,
+    );
     let opened = create_payment_channel_session_opener(
         &request,
         &payer,
         Box::new(session),
-        None,
+        blockhash,
+        // The harness client deposits what the server suggests.
+        &SessionOpenAuthorization::client_signed(
+            request
+                .suggested_deposit
+                .as_deref()
+                .or(request.minimum_deposit.as_deref())
+                .ok_or("challenge without a deposit")?
+                .parse()
+                .map_err(|e| format!("suggestedDeposit: {e}"))?,
+        ),
         PaymentChannelSessionOpenOptions {
             open: PaymentChannelOpenOptions {
                 salt: Some(SALT),

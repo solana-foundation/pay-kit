@@ -203,6 +203,9 @@ ids = [
 reason = "unsupported-mode: swift is a client-only SDK and does not implement x402 verify-transaction"
 ids = [
   "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-loaded-data-limit-4mib-accept",
+  "vector/x402-verify-v1-loaded-data-limit-small-accept",
+  "vector/x402-verify-v1-heap-size-reject",
   "vector/x402-verify-v1-not-accepted-reject",
   "vector/x402-verify-v1-explicit-v0-sponsor-reject",
   "vector/x402-verify-v0-with-v1-sponsor-accept",
@@ -261,10 +264,60 @@ ids = [
   "vector/x402-build-no-intersection-reject",
   "vector/x402-build-empty-advertisement-reject",
   "vector/x402-build-legacy-only-reject",
+  "vector/x402-build-unknown-entry-reject",
+  "vector/x402-build-string-entry-reject",
 ]
 reason = "the x402 exact client and sponsor have no transaction-version support (scheme_exact_svm.md §1.5, x402-foundation/x402 PR 3473/3474): the Swift SDK models legacy and version 0 only (swift/Sources/SolanaPayKit/PayCore/Transaction.swift TransactionVersion) and reads no transactionVersions"
 tracking = "FINDINGS.md#txv1-swift"
 
 [[unsupported]]
-reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionOpenVerify)"
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionOpenVerify, input.sessionServerVerify)"
 pattern = "vector/session-open-*"
+
+# draft-solana-session-00 server, client build and strict wire vectors
+# (rust/crates/conformance/src/cases/session_server.rs).
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionServerVerify)"
+pattern = "vector/session-voucher-verify-*"
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionServerVerify)"
+pattern = "vector/session-topup-*"
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionServerVerify)"
+pattern = "vector/session-close-*"
+
+[[unsupported]]
+reason = "swift is a client-only SDK and does not implement verify-transaction (input.sessionServerVerify)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
+reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
+pattern = "vector/session-build-*"
+
+[[unsupported]]
+reason = "swift session wire types (SessionTypes.swift) model the superseded draft; the SDK has no parser for the final session wire contract"
+ids = [
+  "vector/session-wire-action-open-bump-reject",
+  "vector/session-wire-action-open-initial-voucher-reject",
+  "vector/session-wire-action-open-numeric-open-slot-reject",
+  "vector/session-wire-action-open-numeric-salt-reject",
+  "vector/session-wire-action-open-missing-transaction-reject",
+  "vector/session-wire-action-voucher-missing-channel-id-reject",
+  "vector/session-wire-action-voucher-signature-type-reject",
+  "vector/session-wire-action-voucher-numeric-cumulative-reject",
+  "vector/session-wire-action-voucher-missing-signature-type-reject",
+  "vector/session-wire-action-topup-frozen",
+  "vector/session-wire-action-topup-missing-amount-reject",
+  "vector/session-wire-action-use-frozen",
+  "vector/session-wire-action-use-proof-type-reject",
+  "vector/session-wire-action-close-operator-frozen",
+  "vector/session-wire-request-operator-sponsored-frozen",
+  "vector/session-wire-request-missing-network-reject",
+  "vector/session-wire-request-numeric-recent-slot-reject",
+  "vector/session-wire-request-voucher-signer-unknown-reject",
+  "vector/session-wire-request-missing-channel-program-reject",
+  "vector/session-wire-authentication-message-frozen",
+]

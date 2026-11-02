@@ -107,7 +107,10 @@ cargo run -q -p paykit-conformance --bin pkc -- help
 ```
 
 `pkc` judges every result itself (outcome, `rejectCode`, exact bytes, x402
-envelope shape, transaction shape) and, for every accepted build, decodes the
+envelope shape, transaction shape; a vector whose spec leaves the verdict to
+the implementation lists the other conformant verdicts in
+`expect.alsoConformant`, see [RULINGS.md](expectations/RULINGS.md#harness-consequences))
+and, for every accepted build, decodes the
 built transaction, runs the Rust kit's verifier on it against the vector's
 request and compares its instruction multiset (program, set of accounts, data;
 signatures excluded, ordering free) with the kit's own build of the same case.
@@ -140,8 +143,9 @@ stderr only.
 - `input` is the v1 vector without its `expect` block and traceability
   metadata; `result` is exactly the v1 `RunnerResult` (`src/conformance/schema.ts`),
   validated strictly (`additionalProperties: false`). An accepted build also
-  carries the built artifact: `transaction` (charge, base64 wire transaction)
-  or `x402PaymentHeader` (x402, base64 header).
+  carries the built artifact: `transaction` (charge, base64 wire transaction),
+  `x402PaymentHeader` (x402, base64 header) or `sessionCredential` (session,
+  the `open` action as JSON text).
 - `ok: false` is for testee-level errors only; an SDK reject is `ok: true` with
   `outcome: "reject"`. `outcome: "unsupported-mode"` (or a reject whose `error`
   starts with it) declares the SDK cannot express the case.
@@ -256,12 +260,12 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | --- | ---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
-| vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 79 · 38k | 60 · 29u · 28k | 112 · 5k | 29 · 72u · 16k | 74 · 2u · 41k |
-| vector session | 31 | 8 · 23u | 3 · 28u | — | — | 17 · 8u · 6k | — | 30 · 1k | 3 · 28u | 17 · 8u · 6k |
-| vector subscription | 123 | — | — | — | — | — | — | 103 · 20k | — | 70 · 15u · 38k |
-| vector x402-batch-settlement | 165 | — | — | — | — | — | — | 126 · 4u · 35k | — | 66 · 27u · 72k |
-| vector x402-exact | 73 | 47 · 26k | — | 32 · 19u · 22k | 32 · 21u · 20k | 44 · 2u · 27k | 29 · 19u · 25k | 70 · 3k | 14 · 52u · 7k | 35 · 29u · 9k |
-| vector x402-upto | 124 | — | — | — | — | — | — | 105 · 19k | — | 104 · 2u · 18k |
+| vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 117 | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 117 |
+| vector session | 200 | 8 · 192u | 3 · 197u | — | — | 200 | — | 200 | 3 · 197u | 200 |
+| vector subscription | 123 | — | — | — | — | 123 | — | 123 | — | 123 |
+| vector x402-batch-settlement | 175 | — | — | — | — | 175 | — | 175 | — | 175 |
+| vector x402-exact | 78 | 49 · 29k | — | 34 · 21u · 23k | 34 · 23u · 21k | 78 | 30 · 21u · 27k | 78 | 14 · 55u · 9k | 78 |
+| vector x402-upto | 128 | — | — | — | — | 128 | — | 128 | — | 128 |
 
 Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
 <!-- coverage:end -->
@@ -279,21 +283,21 @@ when the table is stale.
 
 | client \ server | go | lua | php | python | ruby | rust | typescript |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| go | **11**/14 | **11**/14 | **11**/14 | **11**/14 | **11**/14 | 14/14 | **11**/14 |
-| python | **11**/14 | **11**/14 | **11**/14 | **11**/14 | **11**/14 | 14/14 | **11**/14 |
-| rust | **8**/14 | **8**/14 | **8**/14 | 14/14 | **8**/14 | 14/14 | **8**/14 |
-| swift | **11**/14 | **11**/14 | **11**/14 | **11**/14 | **11**/14 | 14/14 | **11**/14 |
-| typescript | **10**/13 | **10**/13 | **10**/13 | **10**/13 | **10**/13 | 13/13 | **10**/13 |
+| go | **11**/14 | **3**/14 | **11**/14 | 14/14 | **11**/14 | 14/14 | 14/14 |
+| python | **8**/14 | **0**/14 | **8**/14 | 14/14 | **8**/14 | 14/14 | 14/14 |
+| rust | **8**/14 | **0**/14 | **8**/14 | 14/14 | **8**/14 | 14/14 | 14/14 |
+| swift | **11**/14 | **3**/14 | **11**/14 | 14/14 | **11**/14 | 14/14 | 14/14 |
+| typescript | **8**/14 | **0**/14 | **8**/14 | 14/14 | **8**/14 | 14/14 | 14/14 |
 
 **x402-exact**: builds by the client SDK (rows) verified by the server SDK (columns), agreeing with the Rust judge / total.
 
 | client \ server | go | lua | php | python | ruby | rust | typescript |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| go | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
-| python | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
-| rust | **13**/15 | **13**/15 | **13**/15 | **13**/15 | **13**/15 | **13**/15 | 10/10 · 5u |
-| swift | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | **13**/15 | 10/10 · 5u |
-| typescript | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | **8**/10 | 8/8 · 2u |
+| go | 15/15 | **0**/15 | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 |
+| python | **13**/15 | **0**/15 | **13**/15 | 15/15 | **13**/15 | 15/15 | 15/15 |
+| rust | **13**/15 | **0**/15 | **13**/15 | 15/15 | **13**/15 | 15/15 | 15/15 |
+| swift | 15/15 | **0**/15 | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 |
+| typescript | **13**/15 | **0**/15 | **13**/15 | 15/15 | **13**/15 | 15/15 | 15/15 |
 
 A server agrees with a build when it accepts what the Rust judge accepted (verifier plus instruction multiset against the kit's own build) and refuses what it refused; `u` counts builds the server reports it cannot express. Disagreements are listed in `harness/results/cross.json`.
 <!-- cross:end -->
@@ -313,7 +317,7 @@ files (`pkc report`; `pkc report --check` fails when stale). The counts
 come from the same extraction as `pkc req-lint`.
 
 <!-- traceability:begin (generated by `pkc report`; do not edit) -->
-1732 normative sentences in the pinned specs: 313 mapped to a requirement, 1399 unmapped.
+1896 normative sentences in the pinned specs: 416 mapped to a requirement, 1460 unmapped.
 
 | Spec file | Normative | Mapped | Ignored | Unmapped |
 | --- | ---: | ---: | ---: | ---: |
@@ -321,30 +325,30 @@ come from the same extraction as `pkc req-lint`.
 | `mpp-specs/draft-payment-intent-charge-00.md` | 19 | 0 | 0 | 19 |
 | `mpp-specs/draft-payment-intent-subscription-00.md` | 44 | 2 | 0 | 42 |
 | `mpp-specs/draft-solana-charge-00.md` | 145 | 47 | 0 | 98 |
-| `mpp-specs/draft-solana-session-00.md` | 219 | 6 | 0 | 213 |
-| `x402/x402-specification-v2.md` | 10 | 0 | 0 | 10 |
-| `x402/scheme_exact.md` | 42 | 4 | 20 | 18 |
-| `x402/scheme_exact_svm.md` | 35 | 17 | 0 | 18 |
+| `mpp-specs/draft-solana-session-00.md` | 219 | 98 | 0 | 121 |
+| `x402/x402-specification-v2.md` | 11 | 0 | 0 | 11 |
+| `x402/scheme_exact.md` | 53 | 4 | 20 | 29 |
+| `x402/scheme_exact_svm.md` | 91 | 17 | 0 | 74 |
 | `x402/payment_identifier.md` | 0 | 0 | 0 | 0 |
 | `x402/scheme_upto.md` | 13 | 2 | 0 | 11 |
-| `x402/scheme_upto_svm.md` | 87 | 42 | 0 | 45 |
+| `x402/scheme_upto_svm.md` | 105 | 42 | 0 | 63 |
 | `x402/scheme_batch_settlement.md` | 2 | 0 | 0 | 2 |
-| `x402/scheme_batch_settlement_svm.md` | 200 | 78 | 0 | 122 |
+| `x402/scheme_batch_settlement_svm.md` | 223 | 82 | 0 | 141 |
 | `mpp-specs-solana/draft-solana-subscription-00.md` | 93 | 40 | 0 | 53 |
 | `mpp-specs-txv1/draft-solana-charge-00.md` | 156 | 18 | 0 | 138 |
 | `mpp-specs-txv1/draft-solana-session-00.md` | 229 | 12 | 0 | 217 |
-| `x402-txv1/scheme_exact_svm.md` | 48 | 18 | 0 | 30 |
-| `x402-txv1/scheme_upto_svm.md` | 101 | 12 | 0 | 89 |
-| `x402-txv1/scheme_batch_settlement_svm.md` | 215 | 13 | 0 | 202 |
+| `x402-txv1/scheme_exact_svm.md` | 91 | 21 | 0 | 70 |
+| `x402-txv1/scheme_upto_svm.md` | 105 | 14 | 0 | 91 |
+| `x402-txv1/scheme_batch_settlement_svm.md` | 223 | 15 | 0 | 208 |
 
 **Requirements × SDK**: cases per requirement, and per SDK the cases it must pass, then `u` unsupported and `k` known failing; `—` means the SDK claims none of them. `*` marks `required = true` (req-lint fails if its last case goes).
 
 | Requirement | Spec § | Cases | go | kotlin | lua | php | python | ruby | rust | swift | typescript |
 | --- | --- | ---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `MPP-5a84bf0d0b`* | draft-httpauth-payment-01.md § Challenge Binding | 13 | — | — | — | — | — | — | 13 | — | 2 · 11k |
+| `MPP-5a84bf0d0b`* | draft-httpauth-payment-01.md § Challenge Binding | 13 | — | — | — | — | 13 | — | 13 | — | 13 |
 | `MPP-8a3cdc949b`* | draft-httpauth-payment-01.md § Challenge Binding | 5 | 5 | — | 5 | 5 | 5 | 5 | 5 | 5 | 5 |
-| `MPP-3688fa68c7`* | draft-payment-intent-subscription-00.md § Required Fields | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-c1bffbb1a3`* | draft-payment-intent-subscription-00.md § Shared Fields | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
+| `MPP-3688fa68c7`* | draft-payment-intent-subscription-00.md § Required Fields | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-c1bffbb1a3`* | draft-payment-intent-subscription-00.md § Shared Fields | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
 | `MPP-de0815e07c`* | draft-solana-charge-00.md § Client Requirements | 5 | 5 | — | 3 · 2u | 3 · 2u | 5 | 3 · 2u | 5 | 2 · 3u | 5 |
 | `MPP-51806e831a`* | draft-solana-charge-00.md § Encoding Conventions | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | `MPP-71198689c1`* | draft-solana-charge-00.md § Encoding Conventions | 5 | 5 | — | 5 | 5 | 5 | 5 | 5 | 5 | 5 |
@@ -352,24 +356,24 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-837333ec9f`* | draft-solana-charge-00.md § Fee Payer Configuration | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 2 |
 | `MPP-b4a76cab12`* | draft-solana-charge-00.md § Fee Payer Configuration | 1 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 1 | 1 |
 | `MPP-1180595e82`* | draft-solana-charge-00.md § Method Details | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
-| `MPP-4b02ff0c39`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 1 · 1k |
+| `MPP-4b02ff0c39`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 2 |
 | `MPP-5348f3f797`* | draft-solana-charge-00.md § Method Details | 1 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 1 | 1 |
-| `MPP-58f2b1922a`* | draft-solana-charge-00.md § Method Details | 1 | 0 · 1k | — | 0 · 1u | 0 · 1u | 0 · 1k | 0 · 1u | 0 · 1k | 1 | 1 |
+| `MPP-58f2b1922a`* | draft-solana-charge-00.md § Method Details | 1 | 0 · 1k | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 1 | 1 |
 | `MPP-6ce505e77b`* | draft-solana-charge-00.md § Method Details | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
 | `MPP-6d81f2478f`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-73af393543`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 1 · 1u | 1 · 1u | 2 | 1 · 1u | 2 | 1 · 1u | 2 |
 | `MPP-7743ae4e51`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 2 |
 | `MPP-95730a55e2`* | draft-solana-charge-00.md § Method Details | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-b134044e08`* | draft-solana-charge-00.md § Method Details | 1 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 1 | 1 |
-| `MPP-b769615b39`* | draft-solana-charge-00.md § Method Details | 2 | 0 · 2k | — | 1 · 1u | 1 · 1u | 1 · 1k | 1 · 1u | 2 | 1 · 1u | 2 |
+| `MPP-b769615b39`* | draft-solana-charge-00.md § Method Details | 2 | 0 · 2k | — | 1 · 1u | 1 · 1u | 2 | 1 · 1u | 2 | 1 · 1u | 2 |
 | `MPP-c189ef935e`* | draft-solana-charge-00.md § Method Details | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 2 |
-| `MPP-ec29292f9d`* | draft-solana-charge-00.md § Method Details | 1 | 0 · 1k | — | 0 · 1u | 0 · 1u | 0 · 1k | 0 · 1u | 1 | 0 · 1k | 0 · 1k |
-| `MPP-fde6ebf8c7`* | draft-solana-charge-00.md § Method Details | 1 | 0 · 1k | — | 0 · 1u | 0 · 1u | 0 · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 0 · 1k |
+| `MPP-ec29292f9d`* | draft-solana-charge-00.md § Method Details | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1u | 0 · 1u | 2 | 0 · 1u | 2 | 0 · 1u · 1k | 2 |
+| `MPP-fde6ebf8c7`* | draft-solana-charge-00.md § Method Details | 1 | 0 · 1k | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 0 · 1k | 1 |
 | `MPP-e02293d02d`* | draft-solana-charge-00.md § Native SOL | 1 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 1 | 1 | 1 |
 | `MPP-1659a03107`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-4a77950278`* | draft-solana-charge-00.md § Native SOL Verification | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-6e9ac6c31d`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `MPP-c1ed754e32`* | draft-solana-charge-00.md § Pull Mode Verification | 2 | 2 | — | 2 | 2 | 1 · 1k | 2 | 2 | 0 · 2u | 2 |
+| `MPP-c1ed754e32`* | draft-solana-charge-00.md § Pull Mode Verification | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-4f9c5997c8`* | draft-solana-charge-00.md § SPL Token Verification | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-96ba338b1e`* | draft-solana-charge-00.md § SPL Token Verification | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
 | `MPP-d90a2b66e5`* | draft-solana-charge-00.md § SPL Token Verification | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
@@ -378,246 +382,345 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-64da85f4f3`* | draft-solana-charge-00.md § SPL Tokens | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-2d30d806c0`* | draft-solana-charge-00.md § Server Requirements | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
 | `MPP-3d2ad6ef40`* | draft-solana-charge-00.md § Shared Fields | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `MPP-a6f3950ec9`* | draft-solana-charge-00.md § Shared Fields | 2 | 2 | — | 0 · 2u | 0 · 2u | 1 · 1k | 0 · 2u | 2 | 2 | 1 · 1k |
+| `MPP-a6f3950ec9`* | draft-solana-charge-00.md § Shared Fields | 2 | 2 | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 2 | 2 |
 | `MPP-0399450c79`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-197d674f50`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-304370cfc4`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-438c3bfb12`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-681f5e090f`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 1 · 1k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-74cf327879`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `MPP-ab401714b4`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 0 · 1k |
+| `MPP-ab401714b4`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-b333c50e7e`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-baa94f08cb`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 0 · 2k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-d63913e921`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 1 · 1k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-048617f9d7`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 5 | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
 | `MPP-1a2e7c737e`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 4 · 1k | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
-| `MPP-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 7 | 7 | — | 7 | 7 | 6 · 1k | 7 | 7 | 0 · 7u | 7 |
-| `MPP-dc4603ccd4`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
-| `MPP-ebee0156c7`* | draft-solana-session-00.md § Action: "voucher" | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
-| `MPP-69c0a4f95f`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
+| `MPP-146a845b55`* | draft-solana-session-00.md § Action: "close" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-2d69701867`* | draft-solana-session-00.md § Action: "close" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-8c63a2fb5d`* | draft-solana-session-00.md § Action: "close" | 9 | 0 · 9u | 0 · 9u | — | — | 9 | — | 9 | 0 · 9u | 9 |
+| `MPP-a1180cd750`* | draft-solana-session-00.md § Action: "close" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-bcea8a5303`* | draft-solana-session-00.md § Action: "close" | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
+| `MPP-c74d298862`* | draft-solana-session-00.md § Action: "close" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-04f98ac67d`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-299460514f`* | draft-solana-session-00.md § Action: "open" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-2f056735f6`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-36fd6945f0`* | draft-solana-session-00.md § Action: "open" | 9 | 0 · 9u | 0 · 9u | — | — | 9 | — | 9 | 0 · 9u | 9 |
+| `MPP-3da59f1464`* | draft-solana-session-00.md § Action: "open" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-427162b59f`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-4797b22e1a`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-48a0bd6cec`* | draft-solana-session-00.md § Action: "open" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-53a60f6563`* | draft-solana-session-00.md § Action: "open" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-7126d3b0b5`* | draft-solana-session-00.md § Action: "open" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-73f0b859d9`* | draft-solana-session-00.md § Action: "open" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-89f2059960`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-a5edb594a1`* | draft-solana-session-00.md § Action: "open" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-a9cb73c5b3`* | draft-solana-session-00.md § Action: "open" | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
+| `MPP-a9eb047d07`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-aa166e34b4`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-c108029161`* | draft-solana-session-00.md § Action: "open" | 11 | 0 · 11u | 0 · 11u | — | — | 11 | — | 11 | 0 · 11u | 11 |
+| `MPP-dc4603ccd4`* | draft-solana-session-00.md § Action: "open" | 8 | 0 · 8u | 0 · 8u | — | — | 8 | — | 8 | 0 · 8u | 8 |
+| `MPP-ec0236515c`* | draft-solana-session-00.md § Action: "open" | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
+| `MPP-ff870e0a38`* | draft-solana-session-00.md § Action: "open" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-3e70e39f13`* | draft-solana-session-00.md § Action: "topUp" | 7 | 0 · 7u | 0 · 7u | — | — | 7 | — | 7 | 0 · 7u | 7 |
+| `MPP-4d3fa28dc4`* | draft-solana-session-00.md § Action: "topUp" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-dfaa074bfa`* | draft-solana-session-00.md § Action: "topUp" | 9 | 0 · 9u | 0 · 9u | — | — | 9 | — | 9 | 0 · 9u | 9 |
+| `MPP-06150f0fd1`* | draft-solana-session-00.md § Action: "use" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-2d5c87a7f3`* | draft-solana-session-00.md § Action: "use" | 6 | 0 · 6u | 0 · 6u | — | — | 6 | — | 6 | 0 · 6u | 6 |
+| `MPP-3a413603bc`* | draft-solana-session-00.md § Action: "use" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-0fee0ce818`* | draft-solana-session-00.md § Action: "voucher" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-389a42bd5e`* | draft-solana-session-00.md § Action: "voucher" | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-ebee0156c7`* | draft-solana-session-00.md § Action: "voucher" | 5 | 0 · 5u | 0 · 5u | — | — | 5 | — | 5 | 0 · 5u | 5 |
+| `MPP-4658b373e8`* | draft-solana-session-00.md § Authorized Signer | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-ebbc4c1186`* | draft-solana-session-00.md § Authorized Signer | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-abf416b62c`* | draft-solana-session-00.md § Channel Program Trust | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-89a6d0c5d7`* | draft-solana-session-00.md § Channel State | 5 | 0 · 5u | 0 · 5u | — | — | 5 | — | 5 | 0 · 5u | 5 |
+| `MPP-994af38957`* | draft-solana-session-00.md § Channel State | 9 | 0 · 9u | 0 · 9u | — | — | 9 | — | 9 | 0 · 9u | 9 |
+| `MPP-670a939f90`* | draft-solana-session-00.md § Concurrency and Idempotency | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-ae84beeba3`* | draft-solana-session-00.md § Concurrency and Idempotency | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-b18b8c42af`* | draft-solana-session-00.md § Concurrency and Idempotency | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
+| `MPP-11052eb7e8`* | draft-solana-session-00.md § Debit Processing | 6 | 0 · 6u | 0 · 6u | — | — | 6 | — | 6 | 0 · 6u | 6 |
+| `MPP-36089e48c3`* | draft-solana-session-00.md § Debit Processing | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-ea7a6777e6`* | draft-solana-session-00.md § Error Responses | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-382e76fa94`* | draft-solana-session-00.md § Grace Period Security | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-a3aff47c7c`* | draft-solana-session-00.md § Grace Period Security | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-05f0c337af`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-374b81ceaa`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-391cb5b326`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-43d1f3332b`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-5eae297bd5`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-69c0a4f95f`* | draft-solana-session-00.md § Method Details | 6 | 0 · 6u | 0 · 6u | — | — | 6 | — | 6 | 0 · 6u | 6 |
+| `MPP-a3d2da92ea`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-bb80675c8e`* | draft-solana-session-00.md § Method Details | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-d235eadc2e`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-d5da84fe70`* | draft-solana-session-00.md § Method Details | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-ecdf5de619`* | draft-solana-session-00.md § Method Details | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-bf87a688ef`* | draft-solana-session-00.md § Mint Allow-List | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-060fb1362b`* | draft-solana-session-00.md § Open | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-b5cf9fcdaa`* | draft-solana-session-00.md § Open | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-d0a49deec1`* | draft-solana-session-00.md § Open | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-eebad15185`* | draft-solana-session-00.md § Open | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-a4620e1d52`* | draft-solana-session-00.md § Open Transaction Binding | 7 | 0 · 7u | 0 · 7u | — | — | 7 | — | 7 | 0 · 7u | 7 |
+| `MPP-664cb0aec6`* | draft-solana-session-00.md § Reincarnation Replay | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-1c0ce290f2`* | draft-solana-session-00.md § Server-Initiated Idle Close | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-c20fb92f4d`* | draft-solana-session-00.md § Server-Initiated Idle Close | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-e436a4d7d5`* | draft-solana-session-00.md § Server-Initiated Idle Close | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-421303e0b1`* | draft-solana-session-00.md § Session Bearer Proof | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-85917fe086`* | draft-solana-session-00.md § Session Bearer Proof | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-9edde7b556`* | draft-solana-session-00.md § Session Bearer Proof | 4 | 0 · 2u | 0 · 2u | — | — | 4 | — | 4 | 0 · 2u | 4 |
+| `MPP-b23323ead0`* | draft-solana-session-00.md § Session Bearer Proof | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-d7767fee2b`* | draft-solana-session-00.md § Session Bearer Proof | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-f8ce7faac8`* | draft-solana-session-00.md § Session Bearer Proof | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-e1aa4afd02`* | draft-solana-session-00.md § Session Bearer Proofs | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-3719d666e8`* | draft-solana-session-00.md § Shared Fields | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-d142f89f1c`* | draft-solana-session-00.md § Shared Fields | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-54d28c98f1`* | draft-solana-session-00.md § Signed Voucher | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-56d8994e89`* | draft-solana-session-00.md § Signed Voucher | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-cb6b8e2000`* | draft-solana-session-00.md § TopUp | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-895f62e266`* | draft-solana-session-00.md § Voucher Data | 4 | 0 · 4u | 0 · 4u | — | — | 4 | — | 4 | 0 · 4u | 4 |
+| `MPP-d26228ea73`* | draft-solana-session-00.md § Voucher Data | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-7ba6f01984`* | draft-solana-session-00.md § Voucher Signing | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-13061769bf`* | draft-solana-session-00.md § Voucher Verification | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
 | `MPP-4acddd43ce`* | draft-solana-session-00.md § Voucher Verification | 3 | 3 | 3 | — | — | 3 | — | 3 | 3 | 3 |
-| `MPP-ec9e85084d`* | draft-solana-session-00.md § Voucher Verification | 5 | 5 | 0 · 5u | — | — | 5 | — | 5 | 0 · 5u | 5 |
-| `MPP-b87a0cd7d3`* | draft-solana-subscription-00.md § Account Ownership and Program-ID Validation | 2 | — | — | — | — | — | — | 2 | — | 0 · 2u |
-| `MPP-9255227955`* | draft-solana-subscription-00.md § Activation | 4 | — | — | — | — | — | — | 4 | — | 3 · 1k |
-| `MPP-e0965cb0fe`* | draft-solana-subscription-00.md § Activation | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-4a9406cfcb`* | draft-solana-subscription-00.md § Amount and Period Verification | 4 | — | — | — | — | — | — | 0 · 4k | — | 3 · 1k |
-| `MPP-62866c1462`* | draft-solana-subscription-00.md § Amount and Period Verification | 4 | — | — | — | — | — | — | 0 · 4k | — | 4 |
-| `MPP-449b853cb2`* | draft-solana-subscription-00.md § Authorization Scope Verification | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-89be025a89`* | draft-solana-subscription-00.md § Authorization Scope Verification | 13 | — | — | — | — | — | — | 13 | — | 11 · 2k |
-| `MPP-1ec64dcbc6`* | draft-solana-subscription-00.md § Bearer Proof Theft | 3 | — | — | — | — | — | — | 3 | — | 0 · 3u |
-| `MPP-9dab72f223`* | draft-solana-subscription-00.md § Cancellation | 1 | — | — | — | — | — | — | 1 | — | 0 · 1u |
-| `MPP-5d14dd20cb`* | draft-solana-subscription-00.md § Currency Formats | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `MPP-12c23b8418`* | draft-solana-subscription-00.md § Definition | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `MPP-83bfc235ab`* | draft-solana-subscription-00.md § Destination Scoping | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-1d44630921`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `MPP-327d9b66ba`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | — | — | 1 · 1k | — | 0 · 2k |
-| `MPP-463ea35304`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-4a98642d3c`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | — | — | 0 · 1k | — | 1 |
-| `MPP-60413f3bf6`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | — | — | 0 · 1k | — | 1 |
-| `MPP-634239a4f5`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | — | — | 1 · 1k | — | 0 · 2k |
-| `MPP-7ebd75eefc`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-f90bd07116`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-fc9334823a`* | draft-solana-subscription-00.md § Method Details | 3 | — | — | — | — | — | — | 0 · 3k | — | 0 · 3k |
-| `MPP-58828c88cd`* | draft-solana-subscription-00.md § Optional Fields | 10 | — | — | — | — | — | — | 10 | — | 9 · 1k |
-| `MPP-6739698bb1`* | draft-solana-subscription-00.md § Optional Fields | 2 | — | — | — | — | — | — | 0 · 2k | — | 0 · 2k |
-| `MPP-95dab3a64d`* | draft-solana-subscription-00.md § Optional Fields | 3 | — | — | — | — | — | — | 0 · 3k | — | 0 · 3k |
-| `MPP-aadffadc90`* | draft-solana-subscription-00.md § Optional Fields | 8 | — | — | — | — | — | — | 5 · 3k | — | 2 · 6k |
-| `MPP-d063521350`* | draft-solana-subscription-00.md § Optional Fields | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-45b8ba4317`* | draft-solana-subscription-00.md § Payload | 3 | — | — | — | — | — | — | 3 | — | 2 · 1k |
-| `MPP-52f835b76c`* | draft-solana-subscription-00.md § Payload | 3 | — | — | — | — | — | — | 2 · 1k | — | 3 |
-| `MPP-98987d4454`* | draft-solana-subscription-00.md § Payload | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `MPP-42cf63c8b8`* | draft-solana-subscription-00.md § Request Schema | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-cdbcb3a843`* | draft-solana-subscription-00.md § Required Fields | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `MPP-0a7c7d7791`* | draft-solana-subscription-00.md § Server Accounting and Idempotency | 14 | — | — | — | — | — | — | 14 | — | 2 · 12u |
-| `MPP-2bbba2b551`* | draft-solana-subscription-00.md § Shared Fields | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-0e0da9c6a6`* | draft-solana-subscription-00.md § Source Verification | 2 | — | — | — | — | — | — | 0 · 2k | — | 0 · 2k |
-| `MPP-afd07e174b`* | draft-solana-subscription-00.md § Source Verification | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-11cddfe4f2`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 8 | — | — | — | — | — | — | 7 · 1k | — | 1 · 2u · 5k |
-| `MPP-8a193ab322`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 4 | — | — | — | — | — | — | 4 | — | 3 · 1k |
-| `MPP-9edde7b556`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `MPP-dcaa3d63c8`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 6 | — | — | — | — | — | — | 6 | — | 6 |
-| `MPP-ef1bb057fc`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 10 | — | — | — | — | — | — | 10 | — | 10 |
-| `MPPTX-507629a4fa`* | draft-solana-charge-00.md § Fee Payer Configuration | 3 | 0 · 3k | — | 0 · 2u · 1k | 0 · 2u · 1k | 0 · 3k | 1 · 2u | 3 | 0 · 1u · 2k | 0 · 3k |
-| `MPPTX-102b6dc2a5`* | draft-solana-charge-00.md § Method Details | 19 | 2 · 7u · 10k | 0 · 7u | 2 · 10k | 2 · 10k | 2 · 2u · 15k | 2 · 10k | 19 | 0 · 14u · 5k | 2 · 2u · 15k |
-| `MPPTX-6e9ac6c31d`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 0 · 1k |
-| `MPPTX-96ba338b1e`* | draft-solana-charge-00.md § SPL Token Verification | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 3 | 0 · 3k | 3 | 0 · 3u | 0 · 3k |
-| `MPPTX-1a2e7c737e`* | draft-solana-charge-00.md § Transaction Payload Security | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 1 · 1k | 0 · 2k | 2 | 0 · 2u | 0 · 2k |
-| `MPPTX-c483036092`* | draft-solana-charge-00.md § Transaction Payload Security | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 1 · 1k | 0 · 2k | 2 | 0 · 2u | 0 · 2k |
-| `MPPTX-4f1a73dd49`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 0 · 3k | 0 · 3k | 3 | 0 · 3u | 0 · 3k |
-| `MPPTX-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 4 | 0 · 4k | — | 0 · 1u · 3k | 0 · 1u · 3k | 1 · 3k | 0 · 1u · 3k | 4 | 0 · 3u · 1k | 0 · 4k |
-| `MPPTX-f8468a31de`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 0 · 2k | 0 · 2k | 2 | 0 · 2u | 0 · 2k |
-| `MPPTX-27a6fd4f3f`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 1u · 5k | 0 · 1u | 0 · 5k | 1 · 4k | 0 · 1u · 5k | 0 · 5k | 5 · 1k | 0 · 6u | 1 · 1u · 4k |
-| `MPPTX-2855caa59a`* | draft-solana-charge-00.md § Transaction Versions | 1 | 0 · 1k | — | 0 · 1k | 1 | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 1 |
-| `MPPTX-3f51d8e008`* | draft-solana-charge-00.md § Transaction Versions | 3 | 0 · 3k | — | 0 · 1u · 2k | 0 · 1u · 2k | 0 · 3k | 0 · 1u · 2k | 3 | 0 · 2u · 1k | 0 · 3k |
-| `MPPTX-46848f6fce`* | draft-solana-charge-00.md § Transaction Versions | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 0 · 1u · 1k | 0 · 1k | 2 | 0 · 2u | 0 · 1u · 1k |
-| `MPPTX-5b29a4494f`* | draft-solana-charge-00.md § Transaction Versions | 5 | 0 · 2u · 3k | 0 · 2u | 0 · 3k | 0 · 3k | 0 · 1u · 4k | 0 · 3k | 2 · 3k | 0 · 4u · 1k | 0 · 1u · 4k |
-| `MPPTX-8a036b6610`* | draft-solana-charge-00.md § Transaction Versions | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 0 · 1u · 1k | 0 · 1k | 2 | 0 · 2u | 0 · 1u · 1k |
-| `MPPTX-8a988b0f7a`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 1u · 5k | 0 · 1u | 0 · 5k | 0 · 5k | 0 · 1u · 5k | 0 · 5k | 6 | 0 · 6u | 0 · 1u · 5k |
-| `MPPTX-d180d03a99`* | draft-solana-charge-00.md § Transaction Versions | 11 | 3 · 8k | — | 0 · 11u | 0 · 11u | 3 · 8k | 0 · 11u | 10 · 1k | 3 · 8k | 2 · 2u · 7k |
-| `MPPTX-d53a9f42dd`* | draft-solana-charge-00.md § Transaction Versions | 3 | 0 · 1u · 2k | 0 · 1u | 0 · 2k | 0 · 2k | 0 · 1u · 2k | 2 | 3 | 0 · 3u | 0 · 1u · 2k |
-| `MPPTX-5410e1de47`* | draft-solana-session-00.md § Action: "open" | 7 | 0 · 7u | 0 · 7u | — | — | 0 · 5u · 2k | — | 6 · 1k | 0 · 7u | 0 · 5u · 2k |
-| `MPPTX-4563533e08`* | draft-solana-session-00.md § Action: "topUp" | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1k | — | 1 | 0 · 1u | 0 · 1k |
-| `X402-063b58b983`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 5 | — | — | — | — | — | — | 0 · 1u · 4k | — | 0 · 1u · 4k |
-| `X402-556df29ac2`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 2 | — | — | — | — | — | — | 0 · 1u · 1k | — | 0 · 1u · 1k |
-| `X402-c0dd3bd5b3`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 1 | — | — | — | — | — | — | 0 · 1u | — | 1 |
-| `X402-1230bb35a3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-180abaa115`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-7556a4ec7c`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 5 | — | — | — | — | — | — | 4 · 1k | — | 4 · 1u |
-| `X402-bde1322bb3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | — | — | 1 · 1k | — | 1 · 1k |
-| `X402-df15443ca9`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-f265c321e3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 4 | — | — | — | — | — | — | 3 · 1k | — | 2 · 2k |
-| `X402-22712c36e1`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-23747f44c3`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-2f8ea170e2`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-87c5fe8803`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 5 | — | — | — | — | — | — | 2 · 3k | — | 0 · 5k |
-| `X402-a2dd2eb911`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-ae5ee4f564`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-d171becfd9`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
-| `X402-d71a021041`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 2 | — | 1 · 1u |
-| `X402-f0a4201d93`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | — | — | 1 · 1k | — | 1 · 1k |
-| `X402-fb76d46cb8`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 7 | — | — | — | — | — | — | 7 | — | 7 |
-| `X402-24cd5fed02`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-492eabbfab`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-62a1b36ba4`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-cee6662254`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-e98b9b9bec`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 2 | — | — | — | — | — | — | 1 · 1k | — | 1 · 1u |
-| `X402-fa34804f1b`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 5 | — | — | — | — | — | — | 1 · 4k | — | 1 · 1u · 3k |
-| `X402-5ebca343d1`* | scheme_batch_settlement_svm.md § 4.4 SettlementResponse (in PAYMENT-RESPONSE) | 1 | — | — | — | — | — | — | 1 | — | 0 · 1u |
-| `X402-c3d9b43d25`* | scheme_batch_settlement_svm.md § 4.5 Facilitator Interface | 2 | — | — | — | — | — | — | 1 · 1k | — | 1 · 1u |
-| `X402-d29d49ebde`* | scheme_batch_settlement_svm.md § 4.5 Facilitator Interface | 5 | — | — | — | — | — | — | 2 · 3k | — | 1 · 1u · 3k |
-| `X402-171a57666e`* | scheme_batch_settlement_svm.md § 4.6 Corrective PaymentRequired | 7 | — | — | — | — | — | — | 7 | — | 0 · 7u |
-| `X402-638126c26b`* | scheme_batch_settlement_svm.md § 4.6 Corrective PaymentRequired | 12 | — | — | — | — | — | — | 12 | — | 0 · 12u |
-| `X402-84916fe051`* | scheme_batch_settlement_svm.md § 8. Security Properties | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-f882f2074a`* | scheme_batch_settlement_svm.md § 8. Security Properties | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-176a26e5b6`* | scheme_batch_settlement_svm.md § Canonical open | 2 | — | — | — | — | — | — | 2 | — | 0 · 2k |
-| `X402-5276aee847`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 3 | — | — | — | — | — | — | 0 · 3k | — | 0 · 3k |
-| `X402-a6092f0a02`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 4 | — | — | — | — | — | — | 0 · 4k | — | 0 · 4k |
-| `X402-c88cc9c766`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 2 | — | — | — | — | — | — | 0 · 2k | — | 0 · 2k |
-| `X402-d450762477`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-06bb8f3a9e`* | scheme_batch_settlement_svm.md § Canonical top_up | 3 | — | — | — | — | — | — | 3 | — | 1 · 1u · 1k |
-| `X402-4cedb5114b`* | scheme_batch_settlement_svm.md § Canonical top_up | 2 | — | — | — | — | — | — | 0 · 2k | — | 1 · 1k |
-| `X402-9ca40ae469`* | scheme_batch_settlement_svm.md § Canonical top_up | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-be2f5b7ea4`* | scheme_batch_settlement_svm.md § Canonical top_up | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-04b1c68ba2`* | scheme_batch_settlement_svm.md § GET /supported | 2 | — | — | — | — | — | — | 2 | — | 1 · 1u |
-| `X402-129e295f0c`* | scheme_batch_settlement_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 2 | — | 0 · 1u · 1k |
-| `X402-13c8fefbbf`* | scheme_batch_settlement_svm.md § Message and signer rules | 3 | — | — | — | — | — | — | 3 | — | 2 · 1k |
-| `X402-55d34e173c`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-6ac6583e77`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-f729304bf1`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-3679bfc55e`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-45c411d301`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-7f4ee54a73`* | scheme_batch_settlement_svm.md § POST /settle | 5 | — | — | — | — | — | — | 3 · 2k | — | 5 |
-| `X402-a8645e7833`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-d167f9a958`* | scheme_batch_settlement_svm.md § POST /settle | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
-| `X402-dcd8fcf77b`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-f5205e3932`* | scheme_batch_settlement_svm.md § POST /settle | 3 | — | — | — | — | — | — | 0 · 3u | — | 3 |
-| `X402-2ae0fdc5c6`* | scheme_batch_settlement_svm.md § POST /verify | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-3485cafa46`* | scheme_batch_settlement_svm.md § POST /verify | 8 | — | — | — | — | — | — | 8 | — | 8 |
-| `X402-fbdea947ae`* | scheme_batch_settlement_svm.md § POST /verify | 3 | — | — | — | — | — | — | 0 · 3k | — | 0 · 3k |
-| `X402-4ea8d1b0d9`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-d16b3abbab`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-f0d0755fc9`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 2 | — | — | — | — | — | — | 2 | — | 0 · 2k |
-| `X402-2073737c58`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | — | — | 2 | — | 1 · 1u |
-| `X402-46d0a12f84`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | — | — | 1 · 1k | — | 2 |
-| `X402-5b328b9a73`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-91ecad3faa`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-a6efa8062a`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 22 | — | — | — | — | — | — | 21 · 1k | — | 12 · 6u · 4k |
-| `X402-15a1a9834e`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
-| `X402-3ed2ac9962`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 0 · 1k |
-| `X402-536163eb05`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 0 · 2k | — | 0 · 2k |
-| `X402-897add7b39`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-a93234f1d7`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 2 · 1k | — | 1 · 2k |
-| `X402-ae18578132`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
-| `X402-ebd20058fd`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
+| `MPP-8ebbf6e151`* | draft-solana-session-00.md § Voucher Verification | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-ec9e85084d`* | draft-solana-session-00.md § Voucher Verification | 16 | 5 · 11u | 0 · 16u | — | — | 16 | — | 16 | 0 · 16u | 16 |
+| `MPP-ff8313704f`* | draft-solana-session-00.md § Voucher Verification | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-1289809c4e`* | draft-solana-session-00.md § open | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-16faa7304f`* | draft-solana-session-00.md § open | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-25dd4709fe`* | draft-solana-session-00.md § open | 3 | 0 · 3u | 0 · 3u | — | — | 3 | — | 3 | 0 · 3u | 3 |
+| `MPP-48e464d2fb`* | draft-solana-session-00.md § open | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-733a58af31`* | draft-solana-session-00.md § open | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-e4dc36f3bd`* | draft-solana-session-00.md § open | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-632d3435dd`* | draft-solana-session-00.md § topUp | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |
+| `MPP-8ea927661c`* | draft-solana-session-00.md § topUp | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `MPP-b87a0cd7d3`* | draft-solana-subscription-00.md § Account Ownership and Program-ID Validation | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-9255227955`* | draft-solana-subscription-00.md § Activation | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `MPP-e0965cb0fe`* | draft-solana-subscription-00.md § Activation | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-4a9406cfcb`* | draft-solana-subscription-00.md § Amount and Period Verification | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `MPP-62866c1462`* | draft-solana-subscription-00.md § Amount and Period Verification | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `MPP-449b853cb2`* | draft-solana-subscription-00.md § Authorization Scope Verification | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-89be025a89`* | draft-solana-subscription-00.md § Authorization Scope Verification | 13 | — | — | — | — | 13 | — | 13 | — | 13 |
+| `MPP-1ec64dcbc6`* | draft-solana-subscription-00.md § Bearer Proof Theft | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-9dab72f223`* | draft-solana-subscription-00.md § Cancellation | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-5d14dd20cb`* | draft-solana-subscription-00.md § Currency Formats | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-12c23b8418`* | draft-solana-subscription-00.md § Definition | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-83bfc235ab`* | draft-solana-subscription-00.md § Destination Scoping | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-1d44630921`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-327d9b66ba`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-463ea35304`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-4a98642d3c`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-60413f3bf6`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-634239a4f5`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-7ebd75eefc`* | draft-solana-subscription-00.md § Method Details | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-f90bd07116`* | draft-solana-subscription-00.md § Method Details | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-fc9334823a`* | draft-solana-subscription-00.md § Method Details | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-58828c88cd`* | draft-solana-subscription-00.md § Optional Fields | 10 | — | — | — | — | 10 | — | 10 | — | 10 |
+| `MPP-6739698bb1`* | draft-solana-subscription-00.md § Optional Fields | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-95dab3a64d`* | draft-solana-subscription-00.md § Optional Fields | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-aadffadc90`* | draft-solana-subscription-00.md § Optional Fields | 8 | — | — | — | — | 8 | — | 8 | — | 8 |
+| `MPP-d063521350`* | draft-solana-subscription-00.md § Optional Fields | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-45b8ba4317`* | draft-solana-subscription-00.md § Payload | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-52f835b76c`* | draft-solana-subscription-00.md § Payload | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-98987d4454`* | draft-solana-subscription-00.md § Payload | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `MPP-42cf63c8b8`* | draft-solana-subscription-00.md § Request Schema | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-cdbcb3a843`* | draft-solana-subscription-00.md § Required Fields | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `MPP-0a7c7d7791`* | draft-solana-subscription-00.md § Server Accounting and Idempotency | 14 | — | — | — | — | 14 | — | 14 | — | 14 |
+| `MPP-2bbba2b551`* | draft-solana-subscription-00.md § Shared Fields | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-0e0da9c6a6`* | draft-solana-subscription-00.md § Source Verification | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-afd07e174b`* | draft-solana-subscription-00.md § Source Verification | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `MPP-11cddfe4f2`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 8 | — | — | — | — | 8 | — | 8 | — | 8 |
+| `MPP-8a193ab322`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `MPP-9edde7b556`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 4 | 0 · 2u | 0 · 2u | — | — | 4 | — | 4 | 0 · 2u | 4 |
+| `MPP-dcaa3d63c8`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 6 | — | — | — | — | 6 | — | 6 | — | 6 |
+| `MPP-ef1bb057fc`* | draft-solana-subscription-00.md § Subscription Bearer Proof | 10 | — | — | — | — | 10 | — | 10 | — | 10 |
+| `MPPTX-507629a4fa`* | draft-solana-charge-00.md § Fee Payer Configuration | 3 | 0 · 3k | — | 0 · 2u · 1k | 0 · 2u · 1k | 3 | 1 · 2u | 3 | 0 · 1u · 2k | 3 |
+| `MPPTX-102b6dc2a5`* | draft-solana-charge-00.md § Method Details | 19 | 2 · 7u · 10k | 0 · 7u | 2 · 10k | 2 · 10k | 19 | 2 · 10k | 19 | 0 · 14u · 5k | 19 |
+| `MPPTX-6e9ac6c31d`* | draft-solana-charge-00.md § Native SOL Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `MPPTX-96ba338b1e`* | draft-solana-charge-00.md § SPL Token Verification | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 3 | 0 · 3k | 3 | 0 · 3u | 3 |
+| `MPPTX-1a2e7c737e`* | draft-solana-charge-00.md § Transaction Payload Security | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 2 | 0 · 2k | 2 | 0 · 2u | 2 |
+| `MPPTX-c483036092`* | draft-solana-charge-00.md § Transaction Payload Security | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 2 | 0 · 2k | 2 | 0 · 2u | 2 |
+| `MPPTX-4f1a73dd49`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 3 | 0 · 3k | 3 | 0 · 3u | 3 |
+| `MPPTX-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 4 | 0 · 4k | — | 0 · 1u · 3k | 0 · 1u · 3k | 4 | 0 · 1u · 3k | 4 | 0 · 3u · 1k | 4 |
+| `MPPTX-f8468a31de`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 2 | 0 · 2k | 2 | 0 · 2u | 2 |
+| `MPPTX-27a6fd4f3f`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 1u · 5k | 0 · 1u | 0 · 5k | 1 · 4k | 6 | 0 · 5k | 6 | 0 · 6u | 6 |
+| `MPPTX-2855caa59a`* | draft-solana-charge-00.md § Transaction Versions | 1 | 0 · 1k | — | 0 · 1k | 1 | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `MPPTX-3f51d8e008`* | draft-solana-charge-00.md § Transaction Versions | 3 | 0 · 3k | — | 0 · 1u · 2k | 0 · 1u · 2k | 3 | 0 · 1u · 2k | 3 | 0 · 2u · 1k | 3 |
+| `MPPTX-46848f6fce`* | draft-solana-charge-00.md § Transaction Versions | 2 | 0 · 1u · 1k | 0 · 1u | 0 · 1k | 0 · 1k | 2 | 0 · 1k | 2 | 0 · 2u | 2 |
+| `MPPTX-5b29a4494f`* | draft-solana-charge-00.md § Transaction Versions | 5 | 0 · 2u · 3k | 0 · 2u | 0 · 3k | 0 · 3k | 5 | 0 · 3k | 5 | 0 · 4u · 1k | 5 |
+| `MPPTX-8a036b6610`* | draft-solana-charge-00.md § Transaction Versions | 5 | 0 · 4u · 1k | 0 · 4u | 0 · 1k | 0 · 1k | 5 | 0 · 1k | 5 | 0 · 5u | 5 |
+| `MPPTX-8a988b0f7a`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 1u · 5k | 0 · 1u | 0 · 5k | 0 · 5k | 6 | 0 · 5k | 6 | 0 · 6u | 6 |
+| `MPPTX-d180d03a99`* | draft-solana-charge-00.md § Transaction Versions | 19 | 3 · 8u · 8k | 0 · 8u | 0 · 11u | 0 · 11u | 19 | 0 · 11u | 19 | 3 · 8u · 8k | 19 |
+| `MPPTX-d53a9f42dd`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 4u · 2k | 0 · 4u | 0 · 2k | 0 · 2k | 6 | 2 | 6 | 0 · 6u | 6 |
+| `MPPTX-5410e1de47`* | draft-solana-session-00.md § Action: "open" | 7 | 0 · 7u | 0 · 7u | — | — | 7 | — | 7 | 0 · 7u | 7 |
+| `MPPTX-4563533e08`* | draft-solana-session-00.md § Action: "topUp" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
+| `X402-063b58b983`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-556df29ac2`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-c0dd3bd5b3`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-1230bb35a3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-180abaa115`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-7556a4ec7c`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-bde1322bb3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-df15443ca9`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-f265c321e3`* | scheme_batch_settlement_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-22712c36e1`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-23747f44c3`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-2f8ea170e2`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-87c5fe8803`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-a2dd2eb911`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-ae5ee4f564`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-d171becfd9`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-d71a021041`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-f0a4201d93`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-fb76d46cb8`* | scheme_batch_settlement_svm.md § 4.2 Shared Wire Objects and Program Mapping | 7 | — | — | — | — | 7 | — | 7 | — | 7 |
+| `X402-24cd5fed02`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-492eabbfab`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-62a1b36ba4`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-cee6662254`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-e98b9b9bec`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-fa34804f1b`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-5ebca343d1`* | scheme_batch_settlement_svm.md § 4.4 SettlementResponse (in PAYMENT-RESPONSE) | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-c3d9b43d25`* | scheme_batch_settlement_svm.md § 4.5 Facilitator Interface | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-d29d49ebde`* | scheme_batch_settlement_svm.md § 4.5 Facilitator Interface | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-171a57666e`* | scheme_batch_settlement_svm.md § 4.6 Corrective PaymentRequired | 7 | — | — | — | — | 7 | — | 7 | — | 7 |
+| `X402-638126c26b`* | scheme_batch_settlement_svm.md § 4.6 Corrective PaymentRequired | 12 | — | — | — | — | 12 | — | 12 | — | 12 |
+| `X402-84916fe051`* | scheme_batch_settlement_svm.md § 8. Security Properties | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-f882f2074a`* | scheme_batch_settlement_svm.md § 8. Security Properties | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-0ff4cabcb4`* | scheme_batch_settlement_svm.md § Canonical open | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-176a26e5b6`* | scheme_batch_settlement_svm.md § Canonical open | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-5276aee847`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-a6092f0a02`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-c88cc9c766`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-d450762477`* | scheme_batch_settlement_svm.md § Canonical refund request_close | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-014270dc81`* | scheme_batch_settlement_svm.md § Canonical top_up | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-06bb8f3a9e`* | scheme_batch_settlement_svm.md § Canonical top_up | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-4cedb5114b`* | scheme_batch_settlement_svm.md § Canonical top_up | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-9ca40ae469`* | scheme_batch_settlement_svm.md § Canonical top_up | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-be2f5b7ea4`* | scheme_batch_settlement_svm.md § Canonical top_up | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-04b1c68ba2`* | scheme_batch_settlement_svm.md § GET /supported | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-8f57677e36`* | scheme_batch_settlement_svm.md § GET /supported | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-129e295f0c`* | scheme_batch_settlement_svm.md § Message and signer rules | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-13c8fefbbf`* | scheme_batch_settlement_svm.md § Message and signer rules | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-55d34e173c`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-6ac6583e77`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-f729304bf1`* | scheme_batch_settlement_svm.md § Message and signer rules | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-3679bfc55e`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-45c411d301`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-76654742e7`* | scheme_batch_settlement_svm.md § POST /settle | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-a8645e7833`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-c2ca42b7a4`* | scheme_batch_settlement_svm.md § POST /settle | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-d167f9a958`* | scheme_batch_settlement_svm.md § POST /settle | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-dcd8fcf77b`* | scheme_batch_settlement_svm.md § POST /settle | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-f5205e3932`* | scheme_batch_settlement_svm.md § POST /settle | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-2ae0fdc5c6`* | scheme_batch_settlement_svm.md § POST /verify | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-3485cafa46`* | scheme_batch_settlement_svm.md § POST /verify | 8 | — | — | — | — | 8 | — | 8 | — | 8 |
+| `X402-fbdea947ae`* | scheme_batch_settlement_svm.md § POST /verify | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-4ea8d1b0d9`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-d16b3abbab`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-f0d0755fc9`* | scheme_batch_settlement_svm.md § Phase 1 - Open or Top Up | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-2073737c58`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-46d0a12f84`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-5b328b9a73`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-91ecad3faa`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-a6efa8062a`* | scheme_batch_settlement_svm.md § Phase 3 - Voucher Acceptance (before serving) | 22 | — | — | — | — | 22 | — | 22 | — | 22 |
+| `X402-15a1a9834e`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-3ed2ac9962`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-536163eb05`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-897add7b39`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-a93234f1d7`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-ae18578132`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-ebd20058fd`* | scheme_batch_settlement_svm.md § Top-level instruction layout | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
 | `X402-8fcdf05fbf`* | scheme_exact.md § Client-submitted (payment proof) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
-| `X402-f870a56d25`* | scheme_exact.md § Client-submitted (payment proof) | 19 | 19 | — | 9 · 10u | 9 · 10u | 19 | 9 · 10u | 19 | 10 · 9u | 12 · 7u |
-| `X402-fc2225a882`* | scheme_exact.md § Critical Validation Requirements | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1k |
+| `X402-f870a56d25`* | scheme_exact.md § Client-submitted (payment proof) | 19 | 19 | — | 9 · 10u | 9 · 10u | 19 | 9 · 10u | 19 | 10 · 9u | 19 |
+| `X402-fc2225a882`* | scheme_exact.md § Critical Validation Requirements | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `X402-f45fed3f51`* | scheme_exact.md § SVM | 3 | 3 | — | 2 · 1u | 2 · 1u | 3 | 2 · 1u | 3 | 1 · 2u | 3 |
 | `X402-2f0d5ef017`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `X402-516a2d7b57`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 2 · 1k |
+| `X402-516a2d7b57`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 3 |
 | `X402-bac6bc288a`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 3 |
-| `X402-ee90546220`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 3 · 1k |
-| `X402-93650bf2e3`* | scheme_exact_svm.md § 2.1 Minimal Safety Baseline (Normative MUSTs) | 3 | 3 | — | 2 · 1k | 2 · 1k | 2 · 1k | 3 | 3 | 0 · 3u | 3 |
-| `X402-0ad718daab`* | scheme_exact_svm.md § 2.1.1 Fee Payer Isolation (MUST) | 1 | 1 | — | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 1 | 0 · 1u | 1 |
-| `X402-6708749c55`* | scheme_exact_svm.md § 2.1.1 Fee Payer Isolation (MUST) | 2 | 2 | — | 1 · 1k | 1 · 1k | 1 · 1k | 2 | 2 | 0 · 2u | 2 |
+| `X402-ee90546220`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
+| `X402-93650bf2e3`* | scheme_exact_svm.md § 2.1 Minimal Safety Baseline (Normative MUSTs) | 3 | 3 | — | 2 · 1k | 2 · 1k | 3 | 3 | 3 | 0 · 3u | 3 |
+| `X402-0ad718daab`* | scheme_exact_svm.md § 2.1.1 Fee Payer Isolation (MUST) | 1 | 1 | — | 0 · 1k | 0 · 1k | 1 | 1 | 1 | 0 · 1u | 1 |
+| `X402-6708749c55`* | scheme_exact_svm.md § 2.1.1 Fee Payer Isolation (MUST) | 2 | 2 | — | 1 · 1k | 1 · 1k | 2 | 2 | 2 | 0 · 2u | 2 |
 | `X402-ed41478ffe`* | scheme_exact_svm.md § 2.1.1 Fee Payer Isolation (MUST) | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `X402-985ecc1ea3`* | scheme_exact_svm.md § 2.1.3 Fee Payer Fund Safety (MUST) | 1 | 1 | — | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 1 | 0 · 1u | 1 |
-| `X402-27bff260c3`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1k |
-| `X402-9b240d95a0`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1k |
-| `X402-6b3e9350c8`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 7 | 5 | — | 0 · 5u | 0 · 5u | 5 | 0 · 5u | 6 · 1k | 5 | 5 · 2u |
+| `X402-985ecc1ea3`* | scheme_exact_svm.md § 2.1.3 Fee Payer Fund Safety (MUST) | 1 | 1 | — | 0 · 1k | 0 · 1k | 1 | 1 | 1 | 0 · 1u | 1 |
+| `X402-27bff260c3`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402-9b240d95a0`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402-05c2aacafc`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
+| `X402-6b3e9350c8`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 7 | 5 | — | 0 · 5u | 0 · 5u | 7 | 0 · 5u | 7 | 5 | 7 |
 | `X402-a1cf65b0f0`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
-| `X402-a8bd75d71b`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 4 | 4 | — | 4 | 4 | 4 | 4 | 4 | 0 · 4u | 4 |
 | `X402-c9a227ad88`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 3 | 3 | — | 3 | 3 | 3 | 3 | 3 | 0 · 3u | 3 |
 | `X402-d844c67736`* | scheme_exact_svm.md § 3.4 Post-Settlement Verification (TOCTOU defense) | 2 | 2 | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
-| `X402-d5f1ded529`* | scheme_exact_svm.md § PaymentRequirements for exact | 4 | 1 | — | 0 · 1u | 0 · 1u | 1 | 0 · 1u | 4 | 1 | 4 |
-| `X402-d851126afb`* | scheme_upto.md § 2. Time-Bound Authorization | 10 | — | — | — | — | — | — | 10 | — | 10 |
-| `X402-4504985ded`* | scheme_upto.md § 3. Recipient Binding | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-6a72109261`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-77ee69c328`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-865b05c15d`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-edc9de017f`* | scheme_upto_svm.md § 3. Payment-channel Method | 3 | — | — | — | — | — | — | 3 | — | 2 · 1u |
-| `X402-2cb22aa0de`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-8969786085`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 6 | — | — | — | — | — | — | 6 | — | 5 · 1u |
-| `X402-d90b7dc5de`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-ffe188aee8`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-1c7e99f632`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-521ba9b673`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 5 | — | — | — | — | — | — | 5 | — | 5 |
-| `X402-99f2a389e8`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `X402-cf373442ff`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `X402-d75fb10a6f`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 17 | — | — | — | — | — | — | 14 · 3k | — | 16 · 1k |
-| `X402-eace5aece9`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 4 | — | — | — | — | — | — | 3 · 1k | — | 3 · 1u |
-| `X402-3b5914a7c5`* | scheme_upto_svm.md § 8. Security Properties | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-076bb2bdc3`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402-14b8b2b598`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | — | — | 1 · 1k | — | 2 |
-| `X402-4c364688fc`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | — | — | 0 · 1k | — | 1 |
-| `X402-aaee5a4f5b`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | — | — | 0 · 2k | — | 2 |
-| `X402-aec23b2308`* | scheme_upto_svm.md § Canonical open instruction | 11 | — | — | — | — | — | — | 11 | — | 10 · 1k |
-| `X402-e4509fb732`* | scheme_upto_svm.md § Canonical open instruction | 14 | — | — | — | — | — | — | 10 · 4k | — | 13 · 1k |
-| `X402-e829ad118e`* | scheme_upto_svm.md § Canonical open instruction | 15 | — | — | — | — | — | — | 13 · 2k | — | 15 |
-| `X402-52c9f1e405`* | scheme_upto_svm.md § Client-supplied openTransaction acceptance policy | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-005b043052`* | scheme_upto_svm.md § Message and signer rules | 4 | — | — | — | — | — | — | 4 | — | 4 |
-| `X402-9af8f33cd6`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 1 · 1k | — | 2 |
-| `X402-9d68660de5`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 2 | — | 1 · 1k |
-| `X402-bcbf7025e5`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 0 · 2k | — | 2 |
-| `X402-c1174b72d8`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-f747c74e76`* | scheme_upto_svm.md § Phase 2 - Authorization | 1 | — | — | — | — | — | — | 0 · 1k | — | 1 |
-| `X402-11bbb0287f`* | scheme_upto_svm.md § Top-level instruction layout | 1 | — | — | — | — | — | — | 1 | — | 1 |
-| `X402-233dcf8a3e`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-443a167ea1`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `X402-683361bbae`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 2 · 1k |
-| `X402-7cd3ca69a6`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402-b2b604a864`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | — | — | 4 | — | 4 |
-| `X402-b4167aad45`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | — | — | 4 | — | 3 · 1k |
-| `X402-c8544c0fdd`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `X402-ce3692afe0`* | scheme_upto_svm.md § Top-level instruction layout | 17 | — | — | — | — | — | — | 16 · 1k | — | 12 · 5k |
-| `X402-d0ce5e5325`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | — | — | 3 | — | 3 |
-| `X402-d46a6b2b3b`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 2 |
-| `X402TX-4750df8921`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | — | — | 0 · 1k | — | 0 · 1k |
-| `X402TX-f39a33ff74`* | scheme_batch_settlement_svm.md § Transaction versions | 4 | 0 · 2k | — | 0 · 2k | 0 · 2u | 0 · 2u | 0 · 2k | 4 | 0 · 2k | 2 · 2u |
-| `X402TX-516a2d7b57`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1u |
-| `X402TX-ee90546220`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 0 · 3k | 0 · 3k | 3 | 0 · 3u | 0 · 3u |
-| `X402TX-24efe57db3`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 4 | 1 · 3k | — | 1 · 3k | 1 · 3k | 1 · 3k | 1 · 3k | 4 | 0 · 4u | 0 · 2u · 2k |
-| `X402TX-2909c4b4ec`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 5 | 0 · 3k | — | 0 · 3u | 0 · 3u | 0 · 3k | 0 · 3u | 3 · 2k | 0 · 3k | 0 · 1u · 4k |
-| `X402TX-61c735c7a9`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 11 | 3 · 4k | — | 0 · 7u | 0 · 7u | 3 · 4k | 0 · 7u | 10 · 1k | 3 · 4k | 4 · 3u · 4k |
-| `X402TX-644919eb3b`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 10 | 3 | — | 3 | 3 | 1 · 2k | 0 · 3k | 8 · 2k | 0 · 3u | 0 · 3u · 7k |
-| `X402TX-77742f428c`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 2 | 0 · 1k | — | 0 · 1u | 0 · 1u | 0 · 1k | 0 · 1u | 1 · 1k | 0 · 1k | 1 · 1k |
-| `X402TX-dc7b0f3305`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 8 | 1 · 2k | — | 1 · 2k | 1 · 2k | 0 · 3k | 0 · 3k | 8 | 0 · 3u | 0 · 3u · 5k |
-| `X402TX-9b240d95a0`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 0 · 1u |
-| `X402TX-936b492daa`* | scheme_exact_svm.md § 2.2.1 Compute Budget Controls (SHOULD) | 3 | 1 | — | 1 | 1 | 1 | 0 · 1k | 3 | 0 · 1u | 0 · 1u · 2k |
-| `X402TX-eb681e1701`* | scheme_exact_svm.md § 2.2.1 Compute Budget Controls (SHOULD) | 6 | 2 · 4k | — | 2 · 4k | 2 · 4k | 0 · 6k | 0 · 6k | 5 · 1k | 0 · 6u | 0 · 6u |
-| `X402TX-2ad7a3f326`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 0 · 2k | 0 · 2k | 2 | 0 · 2u | 0 · 2u |
-| `X402TX-d188782061`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 0 · 3k | 0 · 3k | 3 | 0 · 3u | 0 · 3u |
-| `X402TX-bc031b7add`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1u |
-| `X402TX-dd5384e0fe`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 0 · 1k | 0 · 1k | 1 | 0 · 1u | 0 · 1u |
-| `X402TX-f9c2b66234`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 0 · 2k | 0 · 2k | 2 | 0 · 2u | 0 · 2u |
-| `X402TX-10b3fe2ef3`* | scheme_exact_svm.md § PaymentPayload payload Field | 5 | 2 · 3k | — | 1 · 2u · 2k | 1 · 2u · 2k | 2 · 3k | 1 · 2u · 2k | 5 | 1 · 3u · 1k | 1 · 2u · 2k |
-| `X402TX-d444d01b9e`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | — | — | 3 | — | 0 · 3k |
-| `X402TX-4de59a1f27`* | scheme_upto_svm.md § Message and signer rules | 6 | — | — | — | — | — | — | 5 · 1k | — | 1 · 5k |
-| `X402TX-0f874a9c63`* | scheme_upto_svm.md § Top-level instruction layout | 12 | — | — | — | — | — | — | 10 · 2k | — | 0 · 12k |
-| `X402TX-125d312b26`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | — | — | 2 | — | 0 · 2k |
-| `X402TX-5267172b18`* | scheme_upto_svm.md § Transaction versions | 4 | — | — | — | — | — | — | 2 · 2k | — | 0 · 4k |
+| `X402-d5f1ded529`* | scheme_exact_svm.md § PaymentRequirements for exact | 4 | 1 | — | 0 · 1u | 0 · 1u | 4 | 0 · 1u | 4 | 1 | 4 |
+| `X402-d851126afb`* | scheme_upto.md § 2. Time-Bound Authorization | 10 | — | — | — | — | 10 | — | 10 | — | 10 |
+| `X402-4504985ded`* | scheme_upto.md § 3. Recipient Binding | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-6a72109261`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-77ee69c328`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-865b05c15d`* | scheme_upto_svm.md § 2. Mapping the five core requirements to SVM | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-edc9de017f`* | scheme_upto_svm.md § 3. Payment-channel Method | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-2cb22aa0de`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-8969786085`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 6 | — | — | — | — | 6 | — | 6 | — | 6 |
+| `X402-d90b7dc5de`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-ffe188aee8`* | scheme_upto_svm.md § 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-1c7e99f632`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-521ba9b673`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-99f2a389e8`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-cf373442ff`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-d75fb10a6f`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 17 | — | — | — | — | 17 | — | 17 | — | 17 |
+| `X402-eace5aece9`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-3b5914a7c5`* | scheme_upto_svm.md § 8. Security Properties | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-076bb2bdc3`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-14b8b2b598`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-4c364688fc`* | scheme_upto_svm.md § Canonical open instruction | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-aaee5a4f5b`* | scheme_upto_svm.md § Canonical open instruction | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-aec23b2308`* | scheme_upto_svm.md § Canonical open instruction | 11 | — | — | — | — | 11 | — | 11 | — | 11 |
+| `X402-e4509fb732`* | scheme_upto_svm.md § Canonical open instruction | 14 | — | — | — | — | 14 | — | 14 | — | 14 |
+| `X402-e829ad118e`* | scheme_upto_svm.md § Canonical open instruction | 15 | — | — | — | — | 15 | — | 15 | — | 15 |
+| `X402-52c9f1e405`* | scheme_upto_svm.md § Client-supplied openTransaction acceptance policy | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-005b043052`* | scheme_upto_svm.md § Message and signer rules | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-4de59a1f27`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-9af8f33cd6`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-9d68660de5`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-bcbf7025e5`* | scheme_upto_svm.md § Message and signer rules | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-f747c74e76`* | scheme_upto_svm.md § Phase 2 - Authorization | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-11bbb0287f`* | scheme_upto_svm.md § Top-level instruction layout | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402-233dcf8a3e`* | scheme_upto_svm.md § Top-level instruction layout | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
+| `X402-443a167ea1`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-683361bbae`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-7cd3ca69a6`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402-b2b604a864`* | scheme_upto_svm.md § Top-level instruction layout | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
+| `X402-b4167aad45`* | scheme_upto_svm.md § Top-level instruction layout | 6 | — | — | — | — | 6 | — | 6 | — | 6 |
+| `X402-c8544c0fdd`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-ce3692afe0`* | scheme_upto_svm.md § Top-level instruction layout | 17 | — | — | — | — | 17 | — | 17 | — | 17 |
+| `X402-d0ce5e5325`* | scheme_upto_svm.md § Top-level instruction layout | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402-d46a6b2b3b`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402TX-4750df8921`* | scheme_batch_settlement_svm.md § 4.3 Client PaymentPayload Variants | 1 | — | — | — | — | 1 | — | 1 | — | 1 |
+| `X402TX-f39a33ff74`* | scheme_batch_settlement_svm.md § Transaction versions | 4 | 0 · 2k | — | 0 · 2k | 0 · 2u | 4 | 0 · 2k | 4 | 0 · 2k | 4 |
+| `X402TX-516a2d7b57`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-ee90546220`* | scheme_exact_svm.md § 1.4 Exactly One Matching Transfer (MUST) | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 3 | 0 · 3k | 3 | 0 · 3u | 3 |
+| `X402TX-24efe57db3`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 4 | 1 · 3k | — | 1 · 3k | 1 · 3k | 4 | 1 · 3k | 4 | 0 · 4u | 4 |
+| `X402TX-2909c4b4ec`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 5 | 0 · 3k | — | 0 · 3u | 0 · 3u | 5 | 0 · 3u | 5 | 0 · 3k | 5 |
+| `X402TX-4cd70365fd`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 1 | 1 | — | 1 | 1 | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-61c735c7a9`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 11 | 3 · 4k | — | 0 · 7u | 0 · 7u | 11 | 0 · 7u | 11 | 3 · 4k | 11 |
+| `X402TX-74fb884aa9`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-77742f428c`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 2 | 0 · 1k | — | 0 · 1u | 0 · 1u | 2 | 0 · 1u | 2 | 0 · 1k | 2 |
+| `X402TX-927d17b62e`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 2 | 0 · 2k | — | 0 · 2u | 0 · 2u | 2 | 0 · 2u | 2 | 0 · 2k | 2 |
+| `X402TX-dc7b0f3305`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 8 | 1 · 2k | — | 1 · 2k | 1 · 2k | 8 | 0 · 3k | 8 | 0 · 3u | 8 |
+| `X402TX-f9bcc1a14a`* | scheme_exact_svm.md § 1.5 Transaction Versions (MUST) | 11 | 3 · 1k | — | 3 · 1k | 3 · 1k | 11 | 0 · 4k | 11 | 0 · 4u | 11 |
+| `X402TX-9b240d95a0`* | scheme_exact_svm.md § 2.1.4 Signer Set Integrity (MUST) | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-915632f040`* | scheme_exact_svm.md § 2.2.1 Compute Budget Controls (SHOULD) | 3 | 1 | — | 1 | 1 | 3 | 0 · 1k | 3 | 0 · 1u | 3 |
+| `X402TX-997feeb51d`* | scheme_exact_svm.md § 2.2.1 Compute Budget Controls (SHOULD) | 9 | 3 · 6k | — | 3 · 6k | 3 · 6k | 9 | 0 · 9k | 9 | 0 · 9u | 9 |
+| `X402TX-4c2fd60e66`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 3 | 0 · 3k | — | 0 · 3k | 0 · 3k | 3 | 0 · 3k | 3 | 0 · 3u | 3 |
+| `X402TX-655bb4a79a`* | scheme_exact_svm.md § 3.1 Path 1 — Static Layout Verification (standard wallets) | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 2 | 0 · 2k | 2 | 0 · 2u | 2 |
+| `X402TX-bc031b7add`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-dd5384e0fe`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 1 | 0 · 1k | — | 0 · 1k | 0 · 1k | 1 | 0 · 1k | 1 | 0 · 1u | 1 |
+| `X402TX-f9c2b66234`* | scheme_exact_svm.md § 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 2 | 0 · 2k | — | 0 · 2k | 0 · 2k | 2 | 0 · 2k | 2 | 0 · 2u | 2 |
+| `X402TX-10b3fe2ef3`* | scheme_exact_svm.md § PaymentPayload payload Field | 5 | 2 · 3k | — | 1 · 2u · 2k | 1 · 2u · 2k | 5 | 1 · 2u · 2k | 5 | 1 · 3u · 1k | 5 |
+| `X402TX-d444d01b9e`* | scheme_upto_svm.md § 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 3 | — | — | — | — | 3 | — | 3 | — | 3 |
+| `X402TX-4de59a1f27`* | scheme_upto_svm.md § Message and signer rules | 6 | — | — | — | — | 6 | — | 6 | — | 6 |
+| `X402TX-125d312b26`* | scheme_upto_svm.md § Top-level instruction layout | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
+| `X402TX-703c03cfb5`* | scheme_upto_svm.md § Top-level instruction layout | 14 | — | — | — | — | 14 | — | 14 | — | 14 |
+| `X402TX-5267172b18`* | scheme_upto_svm.md § Transaction versions | 4 | — | — | — | — | 4 | — | 4 | — | 4 |
 
-<details><summary>Unmapped normative sentences by spec file and section (1399)</summary>
+<details><summary>Unmapped normative sentences by spec file and section (1460)</summary>
 
 | Spec file | Section | Normative | Mapped | Unmapped |
 | --- | --- | ---: | ---: | ---: |
@@ -717,74 +820,83 @@ come from the same extraction as `pkc req-lint`.
 | `draft-solana-session-00.md` | Relationship to the Charge Intent | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Intent Identifier | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Channel Program Interface | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Channel State | 8 | 0 | 8 |
-| `draft-solana-session-00.md` | open | 15 | 0 | 15 |
+| `draft-solana-session-00.md` | Channel State | 8 | 2 | 6 |
+| `draft-solana-session-00.md` | open | 15 | 6 | 9 |
 | `draft-solana-session-00.md` | settle | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | topUp | 2 | 0 | 2 |
 | `draft-solana-session-00.md` | settleAndSeal | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | distribute | 6 | 0 | 6 |
 | `draft-solana-session-00.md` | reclaim | 3 | 0 | 3 |
 | `draft-solana-session-00.md` | Channel Closure | 5 | 0 | 5 |
-| `draft-solana-session-00.md` | Shared Fields | 3 | 0 | 3 |
-| `draft-solana-session-00.md` | Method Details | 21 | 2 | 19 |
-| `draft-solana-session-00.md` | Session Bearer Proof | 10 | 0 | 10 |
-| `draft-solana-session-00.md` | Action: "open" | 23 | 1 | 22 |
-| `draft-solana-session-00.md` | Action: "voucher" | 4 | 1 | 3 |
-| `draft-solana-session-00.md` | Action: "use" | 3 | 0 | 3 |
-| `draft-solana-session-00.md` | Action: "topUp" | 3 | 0 | 3 |
-| `draft-solana-session-00.md` | Action: "close" | 6 | 0 | 6 |
-| `draft-solana-session-00.md` | Voucher Data | 3 | 0 | 3 |
-| `draft-solana-session-00.md` | Signed Voucher | 4 | 0 | 4 |
-| `draft-solana-session-00.md` | Voucher Signing | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Voucher Verification | 5 | 2 | 3 |
+| `draft-solana-session-00.md` | Shared Fields | 3 | 2 | 1 |
+| `draft-solana-session-00.md` | Method Details | 21 | 12 | 9 |
+| `draft-solana-session-00.md` | Session Bearer Proof | 10 | 6 | 4 |
+| `draft-solana-session-00.md` | Action: "open" | 23 | 20 | 3 |
+| `draft-solana-session-00.md` | Action: "voucher" | 4 | 3 | 1 |
+| `draft-solana-session-00.md` | Voucher Data | 3 | 2 | 1 |
+| `draft-solana-session-00.md` | Signed Voucher | 4 | 2 | 2 |
 | `draft-solana-session-00.md` | On-Chain Voucher Verification | 5 | 0 | 5 |
 | `draft-solana-session-00.md` | Canonical Preimage | 2 | 0 | 2 |
 | `draft-solana-session-00.md` | Hash Algorithm | 2 | 0 | 2 |
-| `draft-solana-session-00.md` | Authorized Signer | 3 | 0 | 3 |
+| `draft-solana-session-00.md` | Authorized Signer | 3 | 2 | 1 |
 | `draft-solana-session-00.md` | Per-Channel State | 3 | 0 | 3 |
-| `draft-solana-session-00.md` | Mint Allow-List | 2 | 0 | 2 |
-| `draft-solana-session-00.md` | Debit Processing | 3 | 0 | 3 |
+| `draft-solana-session-00.md` | Mint Allow-List | 2 | 1 | 1 |
+| `draft-solana-session-00.md` | Debit Processing | 3 | 2 | 1 |
 | `draft-solana-session-00.md` | Partial Settlement | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Crash Safety | 2 | 0 | 2 |
-| `draft-solana-session-00.md` | Concurrency and Idempotency | 6 | 0 | 6 |
-| `draft-solana-session-00.md` | Open | 5 | 0 | 5 |
+| `draft-solana-session-00.md` | Concurrency and Idempotency | 6 | 3 | 3 |
+| `draft-solana-session-00.md` | Open | 5 | 4 | 1 |
 | `draft-solana-session-00.md` | Resume | 5 | 0 | 5 |
-| `draft-solana-session-00.md` | TopUp | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Close (Cooperative) | 2 | 0 | 2 |
-| `draft-solana-session-00.md` | Server-Initiated Idle Close | 9 | 0 | 9 |
+| `draft-solana-session-00.md` | Server-Initiated Idle Close | 9 | 3 | 6 |
 | `draft-solana-session-00.md` | Forced Close (Client-Initiated) | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Receipt Format | 8 | 0 | 8 |
-| `draft-solana-session-00.md` | Error Responses | 3 | 0 | 3 |
+| `draft-solana-session-00.md` | Error Responses | 3 | 1 | 2 |
 | `draft-solana-session-00.md` | Transport Security | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Session Bearer Proofs | 4 | 0 | 4 |
+| `draft-solana-session-00.md` | Session Bearer Proofs | 4 | 1 | 3 |
 | `draft-solana-session-00.md` | Voucher Replay Protection | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Reincarnation Replay | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Open Transaction Binding | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Grace Period Security | 4 | 0 | 4 |
+| `draft-solana-session-00.md` | Grace Period Security | 4 | 2 | 2 |
 | `draft-solana-session-00.md` | Delegated Signer Risks | 1 | 0 | 1 |
-| `draft-solana-session-00.md` | Channel Program Trust | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | CPI and Program-ID Validation | 4 | 0 | 4 |
 | `draft-solana-session-00.md` | Token-2022 Extension Policy | 4 | 0 | 4 |
 | `draft-solana-session-00.md` | Account Ownership Validation | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Channel Exhaustion | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Clock Skew | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Solana Verification Programs | 1 | 0 | 1 |
-| `x402-specification-v2.md` | X402 Protocol Specification | 10 | 0 | 10 |
+| `x402-specification-v2.md` | 5.1.1 JSON Payload | 1 | 0 | 1 |
+| `x402-specification-v2.md` | 5.3.2 Field Descriptions | 1 | 0 | 1 |
+| `x402-specification-v2.md` | 6.1 Asset Transfer Methods and Payment Flow Models | 5 | 0 | 5 |
+| `x402-specification-v2.md` | 7.1 POST /verify | 1 | 0 | 1 |
+| `x402-specification-v2.md` | 7.2 POST /settle | 1 | 0 | 1 |
+| `x402-specification-v2.md` | 9. Error Handling | 2 | 0 | 2 |
 | `scheme_exact.md` | Asset Transfer Method Families | 1 | 0 | 1 |
 | `scheme_exact.md` | Facilitator-submitted | 5 | 0 | 5 |
 | `scheme_exact.md` | Client-submitted (payment proof) | 12 | 2 | 10 |
-| `scheme_exact.md` | SVM | 3 | 1 | 2 |
+| `scheme_exact.md` | SVM | 5 | 1 | 4 |
+| `scheme_exact.md` | Multi-Payee Splits (Optional Extension) | 9 | 0 | 9 |
 | `scheme_exact_svm.md` | Exact Payment Scheme for Solana Virtual Machine (SVM) (exact) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | PaymentRequirements for exact | 2 | 1 | 1 |
+| `scheme_exact_svm.md` | PaymentRequirements for exact | 3 | 1 | 2 |
+| `scheme_exact_svm.md` | PaymentPayload payload Field | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | 1.1 Required Payment Outcome (MUST) | 2 | 0 | 2 |
 | `scheme_exact_svm.md` | 1.2 Payment Identification (MUST) | 1 | 0 | 1 |
+| `scheme_exact_svm.md` | 1.4 Exactly One Matching Transfer (MUST) | 5 | 4 | 1 |
+| `scheme_exact_svm.md` | 1.5 Transaction Versions (MUST) | 12 | 0 | 12 |
+| `scheme_exact_svm.md` | 2.1.1 Fee Payer Isolation (MUST) | 4 | 3 | 1 |
 | `scheme_exact_svm.md` | 2.1.2 Address Lookup Table Visibility (MUST) | 3 | 0 | 3 |
 | `scheme_exact_svm.md` | 2.1.5 Exact Payment Verification (MUST) | 1 | 0 | 1 |
+| `scheme_exact_svm.md` | 2.2.1 Compute Budget Controls (SHOULD) | 2 | 0 | 2 |
 | `scheme_exact_svm.md` | 2.3 Policy Flexibility (Explicit) | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | 3. Reference Verification Implementation (Two-Path) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 5 | 0 | 5 |
+| `scheme_exact_svm.md` | 3.1 Path 1 — Static Layout Verification (standard wallets) | 7 | 4 | 3 |
+| `scheme_exact_svm.md` | 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 6 | 0 | 6 |
 | `scheme_exact_svm.md` | 3.3 Path Selection (Path 1 → Path 2) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 3.4 Post-Settlement Verification (TOCTOU defense) | 2 | 1 | 1 |
+| `scheme_exact_svm.md` | 3.4 Post-Settlement Verification (TOCTOU defense) | 3 | 1 | 2 |
+| `scheme_exact_svm.md` | 5.1 extra.splits Schema | 7 | 0 | 7 |
+| `scheme_exact_svm.md` | 5.2 Amount Semantics (MUST) | 4 | 0 | 4 |
+| `scheme_exact_svm.md` | 5.3 Payment Outcome with Splits (MUST) | 5 | 0 | 5 |
+| `scheme_exact_svm.md` | 5.4 Recipient ATA Creation (MUST) | 7 | 0 | 7 |
+| `scheme_exact_svm.md` | 5.5 Capability Advertisement and Sponsor Acceptance with Splits (MUST) | 5 | 0 | 5 |
+| `scheme_exact_svm.md` | 5.6 Client-Side Verification (MUST) | 2 | 0 | 2 |
+| `scheme_exact_svm.md` | 5.7 Static Layout with Splits (MUST) | 3 | 0 | 3 |
 | `scheme_upto.md` | Core Properties (MUST) | 1 | 0 | 1 |
 | `scheme_upto.md` | 1. Single-Use Authorization | 2 | 0 | 2 |
 | `scheme_upto.md` | 2. Time-Bound Authorization | 2 | 1 | 1 |
@@ -794,17 +906,19 @@ come from the same extraction as `pkc req-lint`.
 | `scheme_upto_svm.md` | 1. Purpose | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | 3. Payment-channel Method | 2 | 1 | 1 |
 | `scheme_upto_svm.md` | 4. Wire Format | 1 | 0 | 1 |
-| `scheme_upto_svm.md` | 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 7 | 6 | 1 |
+| `scheme_upto_svm.md` | 4.2 UptoPayload (in PAYMENT-SIGNATURE.payload) | 8 | 6 | 2 |
 | `scheme_upto_svm.md` | 4.3 SettlementResponse (in PAYMENT-RESPONSE) | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | Phase 1 - Setup | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | Phase 2 - Authorization | 3 | 1 | 2 |
 | `scheme_upto_svm.md` | Phase 3 - Deposit settle (before resource execution) | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | Client-supplied openTransaction acceptance policy | 2 | 1 | 1 |
+| `scheme_upto_svm.md` | Transaction versions | 12 | 0 | 12 |
 | `scheme_upto_svm.md` | Message and signer rules | 6 | 5 | 1 |
-| `scheme_upto_svm.md` | Top-level instruction layout | 13 | 12 | 1 |
+| `scheme_upto_svm.md` | Top-level instruction layout | 16 | 12 | 4 |
 | `scheme_upto_svm.md` | Canonical open instruction | 9 | 7 | 2 |
 | `scheme_upto_svm.md` | Server-initiated /settle request | 3 | 0 | 3 |
 | `scheme_upto_svm.md` | Facilitator settlement procedure | 6 | 0 | 6 |
+| `scheme_upto_svm.md` | Facilitator-built transactions | 2 | 0 | 2 |
 | `scheme_upto_svm.md` | Duplicate Settlement Mitigation | 5 | 0 | 5 |
 | `scheme_upto_svm.md` | 6. Asynchronous Recovery and Channel Discovery | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | 6.1 Discovery RPC | 4 | 0 | 4 |
@@ -814,25 +928,27 @@ come from the same extraction as `pkc req-lint`.
 | `scheme_batch_settlement.md` | Commitment identifier | 1 | 0 | 1 |
 | `scheme_batch_settlement.md` | Network requirements | 1 | 0 | 1 |
 | `scheme_batch_settlement_svm.md` | 1. Purpose | 1 | 0 | 1 |
+| `scheme_batch_settlement_svm.md` | 2. Mapping the Core Requirements to SVM | 1 | 0 | 1 |
 | `scheme_batch_settlement_svm.md` | 3. Payment-Channel Method | 22 | 4 | 18 |
 | `scheme_batch_settlement_svm.md` | 4. Wire Format | 1 | 0 | 1 |
 | `scheme_batch_settlement_svm.md` | 4.1 PaymentRequirements (in PAYMENT-REQUIRED.accepts[]) | 13 | 6 | 7 |
 | `scheme_batch_settlement_svm.md` | 4.2 Shared Wire Objects and Program Mapping | 22 | 10 | 12 |
-| `scheme_batch_settlement_svm.md` | 4.3 Client PaymentPayload Variants | 10 | 6 | 4 |
+| `scheme_batch_settlement_svm.md` | 4.3 Client PaymentPayload Variants | 12 | 6 | 6 |
 | `scheme_batch_settlement_svm.md` | 4.4 SettlementResponse (in PAYMENT-RESPONSE) | 2 | 1 | 1 |
 | `scheme_batch_settlement_svm.md` | POST /verify | 5 | 3 | 2 |
-| `scheme_batch_settlement_svm.md` | POST /settle | 28 | 7 | 21 |
-| `scheme_batch_settlement_svm.md` | GET /supported | 3 | 1 | 2 |
+| `scheme_batch_settlement_svm.md` | POST /settle | 30 | 8 | 22 |
+| `scheme_batch_settlement_svm.md` | GET /supported | 3 | 2 | 1 |
 | `scheme_batch_settlement_svm.md` | 4.6 Corrective PaymentRequired | 3 | 2 | 1 |
 | `scheme_batch_settlement_svm.md` | Phase 1 - Open or Top Up | 5 | 3 | 2 |
+| `scheme_batch_settlement_svm.md` | Transaction versions | 12 | 0 | 12 |
 | `scheme_batch_settlement_svm.md` | Message and signer rules | 9 | 7 | 2 |
-| `scheme_batch_settlement_svm.md` | Top-level instruction layout | 13 | 10 | 3 |
-| `scheme_batch_settlement_svm.md` | Canonical open | 3 | 1 | 2 |
-| `scheme_batch_settlement_svm.md` | Canonical top_up | 11 | 4 | 7 |
+| `scheme_batch_settlement_svm.md` | Top-level instruction layout | 15 | 10 | 5 |
+| `scheme_batch_settlement_svm.md` | Canonical open | 3 | 2 | 1 |
+| `scheme_batch_settlement_svm.md` | Canonical top_up | 11 | 5 | 6 |
 | `scheme_batch_settlement_svm.md` | Canonical refund request_close | 8 | 4 | 4 |
 | `scheme_batch_settlement_svm.md` | Phase 2 - Steady-State Request | 3 | 0 | 3 |
 | `scheme_batch_settlement_svm.md` | Phase 3 - Voucher Acceptance (before serving) | 14 | 5 | 9 |
-| `scheme_batch_settlement_svm.md` | Phase 4 - Batched Redemption (out of band) | 2 | 0 | 2 |
+| `scheme_batch_settlement_svm.md` | Facilitator-built transactions and batching capacity | 6 | 0 | 6 |
 | `scheme_batch_settlement_svm.md` | Phase 5 - Duplicate and Concurrent Operation Handling | 6 | 0 | 6 |
 | `scheme_batch_settlement_svm.md` | 6. Asynchronous Recovery and Channel Discovery | 1 | 0 | 1 |
 | `scheme_batch_settlement_svm.md` | 6.1 getProgramAccounts Discovery | 5 | 0 | 5 |
@@ -957,23 +1073,30 @@ come from the same extraction as `pkc req-lint`.
 | `draft-solana-session-00.md` | Clock Skew | 1 | 0 | 1 |
 | `draft-solana-session-00.md` | Solana Verification Programs | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | Exact Payment Scheme for Solana Virtual Machine (SVM) (exact) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | PaymentRequirements for exact | 2 | 0 | 2 |
+| `scheme_exact_svm.md` | PaymentRequirements for exact | 3 | 0 | 3 |
 | `scheme_exact_svm.md` | 1.1 Required Payment Outcome (MUST) | 2 | 0 | 2 |
 | `scheme_exact_svm.md` | 1.2 Payment Identification (MUST) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 1.4 Exactly One Matching Transfer (MUST) | 4 | 2 | 2 |
-| `scheme_exact_svm.md` | 1.5 Transaction Versions (MUST) | 8 | 7 | 1 |
+| `scheme_exact_svm.md` | 1.4 Exactly One Matching Transfer (MUST) | 5 | 2 | 3 |
+| `scheme_exact_svm.md` | 1.5 Transaction Versions (MUST) | 12 | 10 | 2 |
 | `scheme_exact_svm.md` | 2.1 Minimal Safety Baseline (Normative MUSTs) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 2.1.1 Fee Payer Isolation (MUST) | 3 | 0 | 3 |
+| `scheme_exact_svm.md` | 2.1.1 Fee Payer Isolation (MUST) | 4 | 0 | 4 |
 | `scheme_exact_svm.md` | 2.1.2 Address Lookup Table Visibility (MUST) | 3 | 0 | 3 |
 | `scheme_exact_svm.md` | 2.1.3 Fee Payer Fund Safety (MUST) | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | 2.1.4 Signer Set Integrity (MUST) | 2 | 1 | 1 |
 | `scheme_exact_svm.md` | 2.1.5 Exact Payment Verification (MUST) | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | 2.3 Policy Flexibility (Explicit) | 1 | 0 | 1 |
 | `scheme_exact_svm.md` | 3. Reference Verification Implementation (Two-Path) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 3.1 Path 1 — Static Layout Verification (standard wallets) | 6 | 2 | 4 |
-| `scheme_exact_svm.md` | 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 5 | 3 | 2 |
+| `scheme_exact_svm.md` | 3.1 Path 1 — Static Layout Verification (standard wallets) | 7 | 2 | 5 |
+| `scheme_exact_svm.md` | 3.2 Path 2 — Simulation-Based Smart Wallet Verification | 6 | 3 | 3 |
 | `scheme_exact_svm.md` | 3.3 Path Selection (Path 1 → Path 2) | 1 | 0 | 1 |
-| `scheme_exact_svm.md` | 3.4 Post-Settlement Verification (TOCTOU defense) | 2 | 0 | 2 |
+| `scheme_exact_svm.md` | 3.4 Post-Settlement Verification (TOCTOU defense) | 3 | 0 | 3 |
+| `scheme_exact_svm.md` | 5.1 extra.splits Schema | 7 | 0 | 7 |
+| `scheme_exact_svm.md` | 5.2 Amount Semantics (MUST) | 4 | 0 | 4 |
+| `scheme_exact_svm.md` | 5.3 Payment Outcome with Splits (MUST) | 5 | 0 | 5 |
+| `scheme_exact_svm.md` | 5.4 Recipient ATA Creation (MUST) | 7 | 0 | 7 |
+| `scheme_exact_svm.md` | 5.5 Capability Advertisement and Sponsor Acceptance with Splits (MUST) | 5 | 0 | 5 |
+| `scheme_exact_svm.md` | 5.6 Client-Side Verification (MUST) | 2 | 0 | 2 |
+| `scheme_exact_svm.md` | 5.7 Static Layout with Splits (MUST) | 3 | 0 | 3 |
 | `scheme_upto_svm.md` | 1. Purpose | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | 2. Mapping the five core requirements to SVM | 3 | 0 | 3 |
 | `scheme_upto_svm.md` | 3. Payment-channel Method | 2 | 0 | 2 |
@@ -985,7 +1108,7 @@ come from the same extraction as `pkc req-lint`.
 | `scheme_upto_svm.md` | Phase 2 - Authorization | 3 | 0 | 3 |
 | `scheme_upto_svm.md` | Phase 3 - Deposit settle (before resource execution) | 1 | 0 | 1 |
 | `scheme_upto_svm.md` | Client-supplied openTransaction acceptance policy | 2 | 0 | 2 |
-| `scheme_upto_svm.md` | Transaction versions | 8 | 7 | 1 |
+| `scheme_upto_svm.md` | Transaction versions | 12 | 9 | 3 |
 | `scheme_upto_svm.md` | Message and signer rules | 6 | 1 | 5 |
 | `scheme_upto_svm.md` | Top-level instruction layout | 16 | 3 | 13 |
 | `scheme_upto_svm.md` | Canonical open instruction | 9 | 0 | 9 |
@@ -1008,11 +1131,11 @@ come from the same extraction as `pkc req-lint`.
 | `scheme_batch_settlement_svm.md` | 4.4 SettlementResponse (in PAYMENT-RESPONSE) | 2 | 0 | 2 |
 | `scheme_batch_settlement_svm.md` | 4.5 Facilitator Interface | 2 | 0 | 2 |
 | `scheme_batch_settlement_svm.md` | POST /verify | 5 | 0 | 5 |
-| `scheme_batch_settlement_svm.md` | POST /settle | 28 | 0 | 28 |
+| `scheme_batch_settlement_svm.md` | POST /settle | 30 | 0 | 30 |
 | `scheme_batch_settlement_svm.md` | GET /supported | 3 | 0 | 3 |
 | `scheme_batch_settlement_svm.md` | 4.6 Corrective PaymentRequired | 3 | 0 | 3 |
 | `scheme_batch_settlement_svm.md` | Phase 1 - Open or Top Up | 5 | 0 | 5 |
-| `scheme_batch_settlement_svm.md` | Transaction versions | 8 | 7 | 1 |
+| `scheme_batch_settlement_svm.md` | Transaction versions | 12 | 9 | 3 |
 | `scheme_batch_settlement_svm.md` | Message and signer rules | 9 | 1 | 8 |
 | `scheme_batch_settlement_svm.md` | Top-level instruction layout | 15 | 3 | 12 |
 | `scheme_batch_settlement_svm.md` | Canonical open | 3 | 0 | 3 |
@@ -1020,7 +1143,7 @@ come from the same extraction as `pkc req-lint`.
 | `scheme_batch_settlement_svm.md` | Canonical refund request_close | 8 | 0 | 8 |
 | `scheme_batch_settlement_svm.md` | Phase 2 - Steady-State Request | 3 | 0 | 3 |
 | `scheme_batch_settlement_svm.md` | Phase 3 - Voucher Acceptance (before serving) | 14 | 0 | 14 |
-| `scheme_batch_settlement_svm.md` | Facilitator-built transactions and batching capacity | 4 | 0 | 4 |
+| `scheme_batch_settlement_svm.md` | Facilitator-built transactions and batching capacity | 6 | 0 | 6 |
 | `scheme_batch_settlement_svm.md` | Phase 5 - Duplicate and Concurrent Operation Handling | 6 | 0 | 6 |
 | `scheme_batch_settlement_svm.md` | 6. Asynchronous Recovery and Channel Discovery | 1 | 0 | 1 |
 | `scheme_batch_settlement_svm.md` | 6.1 getProgramAccounts Discovery | 5 | 0 | 5 |
@@ -1045,47 +1168,55 @@ case is in no scheduled shard.
 <!-- interop:begin (generated by `pkc plan --tier interop --write`; do not edit) -->
 | Intent | Claimed cases | Must pass | Known failing |
 | --- | ---: | ---: | ---: |
-| charge | 174 | 139 | 35 |
-| x402-exact | 75 | 51 | 24 |
-| x402-upto | 12 | 12 | 0 |
+| charge | 174 | 151 | 23 |
+| x402-exact | 78 | 65 | 13 |
+| x402-upto | 15 | 12 | 3 |
+| x402-batch | 1 | 1 | 0 |
 
 **charge**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
 | SDK | as client | as server |
 | --- | :---: | :---: |
-| go | 15 · 4k | 13 · 2k |
-| kotlin | 15 · 4k |  |
+| go | 15 · 3k | 13 · 2k |
+| kotlin | 15 · 3k |  |
 | lua |  | 13 · 5k |
 | php |  | 13 · 4k |
-| python | 15 · 4k | 13 |
+| python | 15 · 3k | 13 |
 | ruby |  | 13 |
-| rust | 17 · 4k | (control) |
-| swift | 15 · 4k |  |
-| typescript | 19 · 4k | 13 |
+| rust | 17 | (control) |
+| swift | 15 · 3k |  |
+| typescript | 19 | 13 |
 
 **x402-exact**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
 | SDK | as client | as server |
 | --- | :---: | :---: |
-| go | 5 · 2k | 6 · 2k |
-| kotlin | 5 · 2k |  |
+| go | 5 · 1k | 6 · 2k |
+| kotlin | 5 · 1k |  |
 | lua |  | 7 · 2k |
 | php |  | 6 · 2k |
-| python | 5 · 2k | 6 · 2k |
+| python | 5 | 6 |
 | ruby |  | 12 · 4k |
-| rust | 7 · 2k | (control) |
-| swift | 5 · 2k |  |
-| typescript | 5 · 1k | 6 · 1k |
+| rust | 8 | (control) |
+| swift | 5 · 1k |  |
+| typescript | 6 | 7 |
 
 **x402-upto**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
 
 | SDK | as client | as server |
 | --- | :---: | :---: |
-| go | 2 | 1 |
+| go | 2 · 2k | 1 · 1k |
 | kotlin | 2 |  |
 | python | 2 | 1 |
-| rust | 2 | (control) |
+| rust | 3 | (control) |
 | swift | 2 |  |
+| typescript |  | 2 |
+
+**x402-batch**: claimed cases per SDK as client (against the Rust server) and as server (against the Rust client); `k` known failing.
+
+| SDK | as client | as server |
+| --- | :---: | :---: |
+| rust | 1 | (control) |
 
 9 SDK shards, each one `Conformance / <sdk>` job in `.github/workflows/conformance.yml` on every pull request. Source: `harness/expectations/<language>.toml` and the scenario registry in `rust/crates/conformance/src/interop/scenarios.rs`.
 <!-- interop:end -->

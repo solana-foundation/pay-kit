@@ -273,14 +273,27 @@ def test_parse_default_network_is_mainnet():
     assert picked["network"] == MAINNET
 
 
-def test_parse_falls_back_to_any_solana_when_no_offer_on_preferred_network():
-    # No currency preference and no offer on the preferred network -> fall back
-    # to the overall cheapest solana offer (mirror rust ``.or_else``).
+def test_parse_refuses_an_offer_off_the_configured_network():
+    # A configured network is a requirement, never a preference: a client set
+    # for mainnet never pays a devnet-only challenge (mirror rust
+    # ``select_requirement``; interop x402-exact-client-wrong-network).
     devnet_offer = _offer(network=DEVNET, amount="1234")
     picked = parse_x402_challenge(
         {"payment-required": _challenge_header(devnet_offer)},
         None,
         ChallengeSelection(network="mainnet"),
+    )
+    assert picked is None
+
+
+def test_parse_falls_back_to_any_solana_when_no_network_is_pinned():
+    # No network pinned and no mainnet offer -> the overall cheapest solana
+    # offer (mirror rust ``.or_else``).
+    devnet_offer = _offer(network=DEVNET, amount="1234")
+    picked = parse_x402_challenge(
+        {"payment-required": _challenge_header(devnet_offer)},
+        None,
+        ChallengeSelection(),
     )
     assert picked is not None
     assert picked["network"] == DEVNET

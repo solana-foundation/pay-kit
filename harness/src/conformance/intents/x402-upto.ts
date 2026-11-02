@@ -17,7 +17,7 @@
 //             encodeVoucherMessageBytes, which pay-kit's upto adapter signs.
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
+import { createKeyPairSignerFromBytes, getBase58Encoder } from "@solana/kit";
 import { caip2, toNetwork } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import { encodeVoucherMessageBytes } from "@solana/mpp/server";
@@ -28,7 +28,11 @@ import type {
   PaymentPayload,
   PaymentRequirements,
 } from "../../../../typescript/packages/pay-kit/node_modules/@x402/core/dist/esm/types/index.mjs";
-import { toFacilitatorSvmSigner } from "../../../../typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/index.mjs";
+import {
+  findPaymentChannelPda,
+  getChannelDistributionHash,
+  toFacilitatorSvmSigner,
+} from "../../../../typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/index.mjs";
 import { UptoSvmScheme as UptoSvmFacilitator } from "../../../../typescript/packages/pay-kit/node_modules/@x402/svm/dist/esm/upto/facilitator/index.mjs";
 import type { ConformanceVector, RejectCode, RunnerResult } from "../schema";
 
@@ -112,6 +116,18 @@ function codeFor(reason: string, message: string): RejectCode | undefined {
   }
   if (/unsupported_transaction_version|transaction version/.test(m))
     return "unsupported-version";
+  // Version-1 header budget (x402-txv1 §1.5) and per-version size limit:
+  // `transaction v1 config rejected (<violation>)` and `above the N-byte
+  // limit for version V`. A ComputeBudget instruction beside the open is an
+  // instruction outside the open (the Rust verifier's category for upto);
+  // an unset or malformed header field and an oversize message are
+  // malformed payloads (RULINGS T4).
+  const v1 = /v1 config rejected \(([a-z_]+)\)/.exec(m)?.[1];
+  if (v1 === "compute_budget_instruction") return "unexpected-instruction";
+  if (v1 === "compute_unit_limit_too_high") return "compute-limit-over-cap";
+  if (v1 === "priority_fee_too_high") return "compute-price-over-cap";
+  if (v1 !== undefined) return "invalid-payload";
+  if (/byte limit for version/.test(m)) return "invalid-payload";
   if (/setcomputeunitprice .* exceeds/.test(m)) return "compute-price-over-cap";
   if (/setcomputeunitlimit .* exceeds/.test(m)) return "compute-limit-over-cap";
   if (
@@ -182,6 +198,7 @@ async function build(vector: ConformanceVector): Promise<RunnerResult> {
     // Permissions are the client's spending policy, not wire behaviour.
     const client = await createPayKitClient({
       accept: ["x402"],
+      maxTransactionVersion: input.x402ClientMaxTransactionVersion as 0 | 1 | undefined,
       permissions: false,
       rpcUrl: rpcUrlOf(vector),
       signer,
@@ -251,6 +268,11 @@ async function verify(vector: ConformanceVector): Promise<RunnerResult> {
               maxChannelLifetimeSecs: input.x402ServerMaxChannelLifetimeSeconds,
             }
           : {}),
+        // The facilitator's own accepted set, as pay-kit's
+        // `x402.transactionVersions` forwards it (adapters/x402-upto.ts).
+        ...(input.x402ServerTransactionVersions !== undefined
+          ? { transactionVersions: input.x402ServerTransactionVersions }
+          : {}),
       },
     ),
   );
@@ -299,7 +321,7 @@ async function verify(vector: ConformanceVector): Promise<RunnerResult> {
   return { id: vector.id, outcome: "accept" };
 }
 
-function canonical(vector: ConformanceVector): RunnerResult {
+async function canonical(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input;
   if (input.x402UptoVoucher) {
     const v = input.x402UptoVoucher;
@@ -326,17 +348,61 @@ function canonical(vector: ConformanceVector): RunnerResult {
       outcome: "accept",
     };
   }
+  if (input.x402UptoDistribution) {
+    // The distribution hash an upto open commits, through the vendored
+    // facilitator's own helper.
+    let bytes: Uint8Array;
+    try {
+      bytes = getChannelDistributionHash(
+        input.x402UptoDistribution.recipients.map((r) => ({ bps: r.bps, recipient: r.recipient })),
+      );
+    } catch (error) {
+      throw new Reject(
+        `invalid payload: ${error instanceof Error ? error.message : String(error)}`,
+        "invalid-payload",
+      );
+    }
+    return exactBytesResult(vector, bytes);
+  }
+  if (input.x402UptoChannelPda) {
+    const c = input.x402UptoChannelPda;
+    let pda: string;
+    try {
+      pda = await findPaymentChannelPda({
+        authorizedSigner: c.authorizedSigner,
+        mint: c.mint,
+        openSlot: BigInt(c.openSlot),
+        payee: c.payee,
+        payer: c.payer,
+        salt: BigInt(c.salt),
+      });
+    } catch (error) {
+      throw new Reject(
+        `invalid payload: ${error instanceof Error ? error.message : String(error)}`,
+        "invalid-payload",
+      );
+    }
+    return exactBytesResult(vector, getBase58Encoder().encode(pda) as Uint8Array);
+  }
   return {
-    error:
-      "unsupported-mode: @solana/pay-kit and the vendored @x402/svm expose no distribution-hash or channel-PDA helper",
+    error: "unsupported-mode: no upto canonical-bytes path for this input",
     id: vector.id,
     outcome: "unsupported-mode",
   };
 }
 
+function exactBytesResult(vector: ConformanceVector, bytes: Uint8Array): RunnerResult {
+  const buffer = Buffer.from(bytes);
+  return {
+    exactBytes: { base64Url: buffer.toString("base64url"), bytes: Array.from(buffer) },
+    id: vector.id,
+    outcome: "accept",
+  };
+}
+
 export async function run(vector: ConformanceVector): Promise<RunnerResult> {
   try {
-    if (vector.mode === "canonical-bytes") return canonical(vector);
+    if (vector.mode === "canonical-bytes") return await canonical(vector);
     if (vector.mode === "build-transaction") return await build(vector);
     return await verify(vector);
   } catch (error) {

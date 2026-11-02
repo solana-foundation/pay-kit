@@ -9,14 +9,17 @@ pub enum Intent {
     Charge,
     X402Exact,
     X402Upto,
+    /// x402 `batch-settlement`: deposit, vouchers, then out-of-band redemption.
+    X402Batch,
     Session,
 }
 
 impl Intent {
-    pub const ALL: [Intent; 4] = [
+    pub const ALL: [Intent; 5] = [
         Intent::Charge,
         Intent::X402Exact,
         Intent::X402Upto,
+        Intent::X402Batch,
         Intent::Session,
     ];
 
@@ -26,6 +29,7 @@ impl Intent {
             Intent::Charge => "charge",
             Intent::X402Exact => "x402-exact",
             Intent::X402Upto => "x402-upto",
+            Intent::X402Batch => "x402-batch",
             Intent::Session => "session",
         }
     }
@@ -33,7 +37,7 @@ impl Intent {
     pub fn protocol(self) -> &'static str {
         match self {
             Intent::Charge | Intent::Session => "mpp",
-            Intent::X402Exact | Intent::X402Upto => "x402",
+            Intent::X402Exact | Intent::X402Upto | Intent::X402Batch => "x402",
         }
     }
 
@@ -42,6 +46,7 @@ impl Intent {
             Intent::Charge => "charge",
             Intent::X402Exact => "exact",
             Intent::X402Upto => "upto",
+            Intent::X402Batch => "batch-settlement",
             Intent::Session => "session",
         }
     }

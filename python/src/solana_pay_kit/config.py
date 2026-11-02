@@ -20,7 +20,7 @@ import logging
 import os
 import warnings
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 
 import pydantic
 import pydantic_settings
@@ -100,6 +100,25 @@ class X402Config(pydantic.BaseModel):
     facilitator_url: str | None = None
     scheme: Literal["exact"] = "exact"
     signer: TransactionSigner | None = None
+    #: Message versions the sponsor accepts and advertises on
+    #: ``extra.transactionVersions`` (scheme_exact_svm.md §1.5). ``None``
+    #: accepts version 0 only and advertises nothing; ``(0, 1)`` also accepts
+    #: version 1 (SIMD-0385). Legacy messages are policed as version 0.
+    transaction_versions: tuple[int, ...] | None = None
+
+    @pydantic.field_validator("transaction_versions", mode="before")
+    @classmethod
+    def _validate_transaction_versions(cls, value: object) -> object:
+        if value is None:
+            return None
+        from solana_pay_kit._paycore.txv1 import parse_transaction_versions
+
+        parsed = parse_transaction_versions(
+            list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
+        )
+        if not parsed:
+            raise ValueError("transaction_versions must name at least one version")
+        return tuple(parsed)
 
     def is_delegated(self) -> bool:
         """``True`` when a non-empty facilitator URL routes verify/settle off-host."""

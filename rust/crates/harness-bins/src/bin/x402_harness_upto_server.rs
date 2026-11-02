@@ -118,11 +118,16 @@ fn read_state(
         resource: resource_path.clone(),
         description: Some("Surfpool-backed usage endpoint".to_string()),
         max_timeout_seconds: 300,
+        max_channel_lifetime: solana_pay_kit::x402::upto::MaxChannelLifetime::ONE_HOUR,
         program_id,
         withdraw_delay: 900,
         fee_payer_signer,
         receiver_authorizer_signer: Some(receiver_authorizer_signer),
-    })?;
+    })?
+    // Accept and advertise version 1, as the reference facilitators do.
+    // Surfpool executes version 1 but does not expose the `enable_tx_v1`
+    // feature account, so `Auto` would read it as inactive.
+    .with_tx_v1(solana_pay_kit::core::tx::TxV1Mode::On);
 
     Ok(UptoHarnessState {
         upto,

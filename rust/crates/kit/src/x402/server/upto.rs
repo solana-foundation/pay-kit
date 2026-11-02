@@ -31,6 +31,10 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 
+use crate::core::payment_channel::payer_refund::{
+    payer_refund, DistributeClearance, ObservedAccount, PayerRefund, RefundDeadline,
+    SealedRefundTerms,
+};
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::tx::{TxV1Mode, TxVersion};
@@ -42,9 +46,13 @@ use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
 };
 use crate::x402::protocol::schemes::upto::{
-    assert_settlement_within_ceiling, verify_upto_payload, UptoExtra, UptoRequiredEnvelope,
-    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, UPTO_SCHEME,
+    assert_settlement_within_ceiling, verify_upto_payload, MaxChannelLifetime, Slot, UptoExtra,
+    UptoRequiredEnvelope, UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope,
+    UPTO_SCHEME,
 };
+
+/// The channel account for `payload.channelId` already exists (Phase 3 step 4).
+pub const ERR_CHANNEL_ALREADY_OPEN: &str = "invalid_upto_svm_channel_already_open";
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
@@ -63,7 +71,8 @@ const MIN_SETTLEMENT_VOUCHER_TTL_SECONDS: u64 = 60;
 pub struct UptoConfig {
     /// Where settled funds go. The channel payee is always the fee payer
     /// (zero-share seat); this only decides which beneficiary the bound 100%
-    /// distribution split pays.
+    /// distribution split pays. That beneficiary's token account for each
+    /// offered currency must already exist: opens are refused until it does.
     pub payout: UptoPayout,
     /// Non-empty universe of currencies this server offers and accepts. `[0]`
     /// is the primary/default currency. The `upto` challenge advertises one
@@ -81,6 +90,10 @@ pub struct UptoConfig {
     pub description: Option<String>,
     /// Completion window in seconds.
     pub max_timeout_seconds: u64,
+    /// The facilitator's `maxChannelLifetimeSecs`: verify refuses a route
+    /// whose `maxTimeoutSeconds`, or a payload whose `expiresAt - now`,
+    /// exceeds it, so a sponsored channel's rent is never locked longer.
+    pub max_channel_lifetime: MaxChannelLifetime,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
     /// Channel forced-close delay, in seconds. Defaults to the payment-channel
@@ -491,7 +504,7 @@ impl X402Upto {
             requirement.extra.recent_blockhash = Some(hint.blockhash.clone());
             requirement.extra.last_valid_block_height =
                 Some(hint.last_valid_block_height.to_string());
-            requirement.extra.recent_slot = Some(hint.slot.to_string());
+            requirement.extra.recent_slot = Some(Slot::new(hint.slot));
             accepts.push(requirement);
         }
 
@@ -574,7 +587,13 @@ impl X402Upto {
 
         let requirements = match_offered_requirement(offered, &envelope.accepted)?.clone();
 
-        verify_upto_payload(payload, &requirements, &self.receiver_authorizer(), now)?;
+        verify_upto_payload(
+            payload,
+            &requirements,
+            &self.receiver_authorizer(),
+            self.config.max_channel_lifetime,
+            now,
+        )?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
         // PaymentRequirements), not at the envelope level.
         let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());
@@ -636,6 +655,10 @@ impl X402Upto {
             )
         })?;
         let tx = decode_transaction(open_tx_b64)?;
+        // Phase 3 step 4: deposit settle opens the channel itself, so an
+        // account already at the PDA (an out-of-band open, a prior deposit,
+        // a replayed authorization) is refused before anything is signed.
+        self.ensure_channel_absent(&channel_id)?;
         // SECURITY: the operator co-signs as fee payer, so it must only ever
         // sign the expected channel-open instruction - never an arbitrary
         // operator-authorized instruction (e.g. a SystemProgram transfer that
@@ -649,12 +672,13 @@ impl X402Upto {
                 token_program: &token_program,
                 channel_id: &channel_id,
                 max_amount: max,
-                payload_nonce: &payload.nonce,
-                payload_open_slot: &payload.open_slot,
+                payload_nonce: payload.nonce.get(),
+                payload_open_slot: payload.open_slot.get(),
                 memo: requirements.extra.memo.as_deref(),
                 recipients: &expected_distribution,
             },
         )?;
+        verify_payer_signature(&tx, &payer)?;
         Ok(PreparedOpen {
             tx,
             expires_at: payload.expires_at,
@@ -715,6 +739,7 @@ impl X402Upto {
             expires_at,
             in_flight,
         } = self.prepare_open(header, &offered, now_unix())?;
+        self.ensure_payouts_ready(&expected_mint, &token_program, &expected_distribution)?;
         self.cosign_fee_payer(&mut tx).await?;
         crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
@@ -895,42 +920,28 @@ impl X402Upto {
     /// data, not as a transaction signature — so the worker can sign the
     /// envelope on the caller's behalf.
     ///
-    /// When the payer has closed its token account since the open, the
-    /// `distribute` that refunds it would fail and take the charge down with
-    /// it, so only `settle_and_seal` is emitted: the charge is locked onchain
-    /// and the permissionless `distribute` pays both sides once the payer
-    /// recreates the account to collect its refund. The account is never
-    /// recreated at the fee payer's expense, which the payer could farm.
+    /// The bundle ends in `distribute`, which pays `payTo`, refunds the
+    /// payer, closes the escrow token account to the fee payer and leaves the
+    /// channel for `reclaim`. When a refund is due and the payer's token
+    /// account can no longer take it (closed or frozen since the open), the
+    /// program would forfeit the refund to the treasury, so the bundle only
+    /// seals and the distribute is deferred to
+    /// [`distribute_sealed`](Self::distribute_sealed), which runs it once the
+    /// account is usable, the payer withdrew, or the grace period after the
+    /// open has passed. The account is never recreated at the fee payer's
+    /// expense, which the payer could farm.
     pub async fn settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
     ) -> Result<Vec<Instruction>, Error> {
-        let (payer_token, _) =
-            pc::find_associated_token_address(&open.payer, &open.mint, &open.token_program);
-        // Only a confirmed absence drops `distribute`; on an RPC error the
-        // atomic transaction itself is the safeguard.
-        let distribute = !matches!(
-            self.rpc
-                .get_account_with_commitment(&payer_token, self.rpc.commitment())
-                .map(|response| response.value),
-            Ok(None)
-        );
-        if !distribute {
-            tracing::warn!(
-                channel = %open.channel_id,
-                "upto payer token account is gone; sealing the charge without distributing"
-            );
-        }
-        self.build_settlement_instructions(open, actual, distribute)
-            .await
+        self.build_settlement_instructions(open, actual).await
     }
 
     async fn build_settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
-        distribute: bool,
     ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
         // The voucher is signed by this server, so its deadline is chosen here
@@ -971,43 +982,319 @@ impl X402Upto {
             )?
         };
 
-        if !distribute {
+        let now = now_unix();
+        let decision = self
+            .sealed_refund(
+                &open.channel_id,
+                SealedRefundTerms {
+                    channel: open.channel_id,
+                    payer: open.payer,
+                    mint: open.mint,
+                    token_program: open.token_program,
+                    deposit: open.deposit,
+                    settled: actual,
+                    payer_withdrawn_at: 0,
+                },
+                // This bundle seals the channel now.
+                now,
+                now,
+            )
+            .await?;
+        let Some(clearance) = decision.clearance() else {
             return Ok(instructions);
-        }
-        let payee = open.payee;
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.fee_payer,
-            &payee,
-            &open.mint,
-            &open.token_program,
-        ));
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.fee_payer,
-            &self.treasury_owner(),
-            &open.mint,
-            &open.token_program,
-        ));
-        for entry in &open.distribution {
-            instructions.push(pc::build_create_associated_token_account_instruction(
-                &self.fee_payer,
-                &entry.recipient,
-                &open.mint,
-                &open.token_program,
-            ));
-        }
-        instructions.push(pc::build_distribute_instruction(
-            &open.channel_id,
+        };
+        instructions.extend(self.distribute_instructions(
+            &clearance,
             &open.payer,
             &open.rent_payer,
-            &payee,
-            &self.treasury_owner(),
             &open.mint,
             &open.distribution,
             &open.token_program,
             &open.program_id,
         ));
-
         Ok(instructions)
+    }
+
+    /// The payout of a sealed channel this server holds the payee seat of:
+    /// its own and the treasury's token accounts, then `distribute`. Built
+    /// only under a [`DistributeClearance`].
+    #[allow(clippy::too_many_arguments)]
+    fn distribute_instructions(
+        &self,
+        clearance: &DistributeClearance,
+        payer: &Pubkey,
+        rent_payer: &Pubkey,
+        mint: &Pubkey,
+        distribution: &[pc::Distribution],
+        token_program: &Pubkey,
+        program_id: &Pubkey,
+    ) -> Vec<Instruction> {
+        let channel = clearance.channel();
+        // Recipient accounts were required to exist before the open
+        // (`ensure_payouts_ready`) and are never created here: the fee payer
+        // would fund an account its owner can close for the rent.
+        vec![
+            pc::build_create_associated_token_account_instruction(
+                &self.fee_payer,
+                &self.fee_payer,
+                mint,
+                token_program,
+            ),
+            pc::build_create_associated_token_account_instruction(
+                &self.fee_payer,
+                &self.treasury_owner(),
+                mint,
+                token_program,
+            ),
+            pc::build_distribute_instruction(
+                channel,
+                payer,
+                rent_payer,
+                &self.fee_payer,
+                &self.treasury_owner(),
+                mint,
+                distribution,
+                token_program,
+                program_id,
+            ),
+        ]
+    }
+
+    /// What the sealed `distribute` of `channel` may do (see
+    /// [`payer_refund`]), reading the payer's refund account when a refund
+    /// is due. The deadline counts `withdraw_delay` from `sealed_at`.
+    async fn sealed_refund(
+        &self,
+        channel: &Pubkey,
+        terms: SealedRefundTerms,
+        sealed_at: i64,
+        now: i64,
+    ) -> Result<PayerRefund, Error> {
+        let deadline = RefundDeadline {
+            sealed_at,
+            grace_period: self.config.withdraw_delay,
+        };
+        if terms.refund_due() == 0 {
+            return Ok(payer_refund(&terms, None, deadline, now));
+        }
+        let address = terms.payer_token_account();
+        let rpc = Arc::clone(&self.rpc);
+        let account = tokio::task::spawn_blocking(move || {
+            rpc.get_account_with_commitment(&address, rpc.commitment())
+        })
+        .await
+        .map_err(|e| Error::Other(format!("payer refund account read task failed: {e}")))?
+        .map_err(|e| Error::Rpc(format!("payer refund account {address}: {e}")))?
+        .value;
+        let observed = account.as_ref().map(|account| ObservedAccount {
+            owner: pc::from_address(&account.owner),
+            data: &account.data,
+        });
+        let decision = payer_refund(&terms, observed, deadline, now);
+        match &decision {
+            PayerRefund::Clear(_) => {}
+            PayerRefund::Deferred {
+                refund,
+                payer_token_account,
+                reason,
+                until,
+            } => tracing::warn!(
+                channel = %channel,
+                %payer_token_account,
+                refund,
+                reason,
+                until,
+                "payer refund account cannot be paid; sealing without distributing until it \
+                 can, or until the deadline (distribute_sealed)"
+            ),
+            PayerRefund::Forfeit {
+                refund,
+                payer_token_account,
+                reason,
+                ..
+            } => tracing::warn!(
+                channel = %channel,
+                %payer_token_account,
+                refund,
+                reason,
+                "payer refund account still unusable past the deadline; distributing, the \
+                 refund goes to the treasury"
+            ),
+        }
+        Ok(decision)
+    }
+
+    /// Distribute the sealed channels this server holds the payee seat of
+    /// whose distribute a settlement deferred (see
+    /// [`settlement_instructions`](Self::settlement_instructions)), and
+    /// return the confirmed signatures.
+    ///
+    /// The chain is the work queue: channels are discovered by
+    /// `rent_payer == payee == fee payer` and accepted only when their PDA
+    /// rederives and their distribution is this server's, so no local state
+    /// is needed and nothing is lost on restart. A channel is distributed as
+    /// soon as the payer's refund account can take its refund (or the payer
+    /// withdrew it), and once `withdraw_delay` has passed since the channel's
+    /// open, anyway: the program then sends the refund to the treasury, and
+    /// a payer can never hold the payout and the fee payer's rent hostage.
+    /// The program records no seal time; an `upto` channel is sealed by the
+    /// settlement of the request that opened it, so the open's block time
+    /// stands in for it.
+    ///
+    /// Run it periodically, like `reclaim` for other channel schemes.
+    pub async fn distribute_sealed(&self) -> Result<Vec<String>, Error> {
+        let program_id = self.program_id()?;
+        let distribution = self.distribution()?;
+        let distribution_hash = pc::distribution_hash(&distribution);
+        let sealed = crate::core::payment_channels::generated::types::ChannelStatus::Sealed as u8;
+        let mut signatures = Vec::new();
+        for (channel_id, channel) in self.sealed_channel_candidates(&program_id).await? {
+            if channel.status != sealed
+                || pc::from_address(&channel.payee) != self.fee_payer
+                || channel.distribution_hash != distribution_hash
+            {
+                continue;
+            }
+            let mint = pc::from_address(&channel.mint);
+            let Some(token_program) = self
+                .config
+                .currencies
+                .iter()
+                .find(|cc| self.mint_for(cc).is_ok_and(|candidate| candidate == mint))
+                .map(|cc| self.token_program_for(cc))
+                .transpose()?
+            else {
+                continue;
+            };
+            let rpc = Arc::clone(&self.rpc);
+            let open_slot = channel.open_slot;
+            let opened_at = match tokio::task::spawn_blocking(move || rpc.get_block_time(open_slot))
+                .await
+                .map_err(|e| Error::Other(format!("block time read task failed: {e}")))?
+            {
+                Ok(time) => time,
+                Err(error) => {
+                    tracing::warn!(channel = %channel_id, %error, "open block time unavailable; skipping");
+                    continue;
+                }
+            };
+            let payer = pc::from_address(&channel.payer);
+            let decision = self
+                .sealed_refund(
+                    &channel_id,
+                    SealedRefundTerms {
+                        channel: channel_id,
+                        payer,
+                        mint,
+                        token_program,
+                        deposit: channel.deposit,
+                        settled: channel.settlement.settled,
+                        payer_withdrawn_at: channel.payer_withdrawn_at,
+                    },
+                    opened_at,
+                    now_unix(),
+                )
+                .await?;
+            let Some(clearance) = decision.clearance() else {
+                continue;
+            };
+            let instructions = self.distribute_instructions(
+                &clearance,
+                &payer,
+                &pc::from_address(&channel.rent_payer),
+                &mint,
+                &distribution,
+                &token_program,
+                &program_id,
+            );
+            let blockhash = self
+                .rpc
+                .get_latest_blockhash()
+                .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
+            let mut tx = crate::core::tx::build_unsigned(
+                self.tx_version(),
+                &self.fee_payer,
+                &instructions,
+                blockhash,
+                None,
+            )?;
+            self.sign_settlement_transaction(&mut tx).await?;
+            match crate::core::rpc::send_and_confirm_with_outcome(
+                &self.rpc,
+                &tx,
+                crate::core::rpc::PriorBroadcast::None,
+            ) {
+                Ok(signature) => signatures.push(signature.to_string()),
+                Err(failure) => {
+                    tracing::warn!(channel = %channel_id, %failure, "deferred distribute failed");
+                }
+            }
+        }
+        Ok(signatures)
+    }
+
+    /// Channels whose rent this server's fee payer put up, PDA-checked.
+    async fn sealed_channel_candidates(
+        &self,
+        program_id: &Pubkey,
+    ) -> Result<Vec<(Pubkey, Channel)>, Error> {
+        use solana_rpc_client_api::config::{
+            RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding,
+        };
+        use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+        use solana_rpc_client_api::request::RpcRequest;
+        use solana_rpc_client_api::response::RpcKeyedAccount;
+
+        let config = RpcProgramAccountsConfig {
+            filters: Some(vec![
+                RpcFilterType::DataSize(pc::CHANNEL_ACCOUNT_SIZE as u64),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    pc::CHANNEL_RENT_PAYER_OFFSET,
+                    self.fee_payer.to_bytes().to_vec(),
+                )),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    pc::CHANNEL_PAYEE_OFFSET,
+                    self.fee_payer.to_bytes().to_vec(),
+                )),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = serde_json::json!([program_id.to_string(), config]);
+        let rpc = Arc::clone(&self.rpc);
+        let keyed: Vec<RpcKeyedAccount> =
+            tokio::task::spawn_blocking(move || rpc.send(RpcRequest::GetProgramAccounts, params))
+                .await
+                .map_err(|e| Error::Other(format!("channel discovery task failed: {e}")))?
+                .map_err(|e| Error::Rpc(format!("getProgramAccounts failed: {e}")))?;
+        let mut found = Vec::new();
+        for entry in keyed {
+            let Ok(address) = Pubkey::from_str(&entry.pubkey) else {
+                continue;
+            };
+            let Some(data) = entry.account.data.decode() else {
+                continue;
+            };
+            let Ok(channel) = Channel::from_bytes(&data) else {
+                continue;
+            };
+            let (derived, _) = pc::find_channel_pda(
+                &pc::from_address(&channel.payer),
+                &pc::from_address(&channel.payee),
+                &pc::from_address(&channel.mint),
+                &pc::from_address(&channel.authorized_signer),
+                channel.salt,
+                channel.open_slot,
+                program_id,
+            );
+            if derived == address {
+                found.push((address, channel));
+            }
+        }
+        Ok(found)
     }
 
     /// Build the `PAYMENT-RESPONSE` receipt for a settled `actual` amount and
@@ -1174,6 +1461,71 @@ impl X402Upto {
         now_unix().saturating_add(i64::try_from(ttl).unwrap_or(i64::MAX))
     }
 
+    /// Refuse a channel PDA that already holds an account. A failed read is
+    /// a refusal too: the check must not fail open.
+    fn ensure_channel_absent(&self, channel_id: &Pubkey) -> Result<(), Error> {
+        let existing = self
+            .rpc
+            .get_account_with_commitment(channel_id, self.rpc.commitment())
+            .map_err(|e| Error::Rpc(format!("channel account read failed: {e}")))?
+            .value;
+        if existing.is_some() {
+            return Err(Error::Other(format!(
+                "{ERR_CHANNEL_ALREADY_OPEN}: channel {} already exists; deposit settle must open it",
+                pc::pubkey_string(channel_id)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Phase 3 step 8, settlement readiness: every distribution recipient's
+    /// token account must already exist and be usable before the deposit is
+    /// escrowed. Settlement never creates them at the fee payer's expense
+    /// (an owner could close and recreate the account to collect that rent),
+    /// and the program forfeits a payout to an unusable account. A failed
+    /// read is a refusal too.
+    fn ensure_payouts_ready(
+        &self,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        distribution: &[pc::Distribution],
+    ) -> Result<(), Error> {
+        // The fee payer's own account is the payee seat settlement creates
+        // itself; only accounts of other owners must already exist.
+        for entry in distribution
+            .iter()
+            .filter(|entry| entry.recipient != self.fee_payer)
+        {
+            let (ata, _) = pc::find_associated_token_address(&entry.recipient, mint, token_program);
+            let account = self
+                .rpc
+                .get_account_with_commitment(&ata, self.rpc.commitment())
+                .map_err(|e| Error::Rpc(format!("payout token account read failed: {e}")))?
+                .value;
+            let problem = match account {
+                None => Some("does not exist".to_string()),
+                Some(account) => {
+                    crate::x402::server::batch_settlement::unusable_settlement_account(
+                        &pc::from_address(&account.owner),
+                        &account.data,
+                        &entry.recipient,
+                        mint,
+                        token_program,
+                    )
+                }
+            };
+            if let Some(problem) = problem {
+                return Err(Error::Other(format!(
+                    "payout token account {} of {} {problem}; it must be an initialized \
+                     token account before payments settle to it",
+                    pc::pubkey_string(&ata),
+                    pc::pubkey_string(&entry.recipient)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
         let data = self
             .rpc
@@ -1209,7 +1561,8 @@ pub mod testkit {
     /// The checks [`X402Upto::verify_open_for_route`] runs before it
     /// broadcasts the open, at an explicit `now` (Unix seconds) and with the
     /// route's maximum already in base units, co-signature included (on a
-    /// local copy). `Ok` means the production path would go on to broadcast.
+    /// local copy). `Ok` means the production path would go on to its
+    /// settlement-readiness reads (`ensure_payouts_ready`) and broadcast.
     pub async fn verify_open_pre_broadcast(
         server: &X402Upto,
         header: &str,
@@ -1243,8 +1596,8 @@ struct ExpectedOpen<'a> {
     token_program: &'a Pubkey,
     channel_id: &'a Pubkey,
     max_amount: u64,
-    payload_nonce: &'a str,
-    payload_open_slot: &'a str,
+    payload_nonce: u64,
+    payload_open_slot: u64,
     memo: Option<&'a str>,
     recipients: &'a [pc::Distribution],
 }
@@ -1421,6 +1774,108 @@ fn find_canonical_open_instruction<'tx>(
     )?)
 }
 
+/// Account positions of the canonical `open` (scheme_upto_svm.md
+/// “Canonical open instruction”).
+const OPEN_ACCOUNT_COUNT: usize = 14;
+
+/// The `open` positions that must be writable: payer, rent_payer, channel,
+/// payer_token_account, channel_token_account.
+const OPEN_WRITABLE_POSITIONS: [usize; 5] = [0, 1, 5, 6, 7];
+
+/// The `open` positions that must sign: payer and rent_payer.
+const OPEN_SIGNER_POSITIONS: [usize; 2] = [0, 1];
+
+/// Message and signer rules plus the open's privilege table: the required
+/// signers are exactly `{ payload.from, extra.feePayer }`, the writable and
+/// signer roles carry their privileges, and no key outside the writable
+/// roles is writable anywhere in the message (an equal-key union with a
+/// writable role, such as `payee == rent_payer`, is that role).
+fn check_open_privileges(
+    tx: &VersionedTransaction,
+    keys: &[Pubkey],
+    ix: &CompiledInstruction,
+    payer: &Pubkey,
+    fee_payer: &Pubkey,
+) -> Result<(), Error> {
+    let header = tx.message.header();
+    let signed = usize::from(header.num_required_signatures);
+    let readonly_signed = usize::from(header.num_readonly_signed_accounts);
+    let readonly_unsigned = usize::from(header.num_readonly_unsigned_accounts);
+    if signed > keys.len() || readonly_signed > signed || readonly_unsigned > keys.len() - signed {
+        return Err(Error::Other(
+            "invalid open transaction header: signer counts exceed the account keys".into(),
+        ));
+    }
+    let is_signer = |i: usize| i < signed;
+    let is_writable = |i: usize| {
+        if i < signed {
+            i < signed - readonly_signed
+        } else {
+            i < keys.len() - readonly_unsigned
+        }
+    };
+
+    for key in &keys[..signed] {
+        if key != payer && key != fee_payer {
+            return Err(Error::Other(format!(
+                "open requires an unexpected signer {}: the required signers must be exactly payload.from and extra.feePayer",
+                pc::pubkey_string(key)
+            )));
+        }
+    }
+
+    let index_at = |pos: usize| ix.accounts[pos] as usize;
+    for pos in OPEN_SIGNER_POSITIONS {
+        if !is_signer(index_at(pos)) {
+            return Err(Error::Other(format!(
+                "open instruction account #{pos} must be a signer"
+            )));
+        }
+    }
+    for pos in OPEN_WRITABLE_POSITIONS {
+        if !is_writable(index_at(pos)) {
+            return Err(Error::Other(format!(
+                "open instruction account #{pos} must be writable"
+            )));
+        }
+    }
+    let writable_roles: Vec<usize> = OPEN_WRITABLE_POSITIONS
+        .iter()
+        .map(|&p| index_at(p))
+        .collect();
+    if let Some(i) = (0..keys.len()).find(|&i| is_writable(i) && !writable_roles.contains(&i)) {
+        return Err(Error::Other(format!(
+            "open instruction leaves {} writable outside the open's writable roles",
+            pc::pubkey_string(&keys[i])
+        )));
+    }
+    Ok(())
+}
+
+/// The `payload.from` signature must be present and valid before the fee
+/// payer co-signs (“Message and signer rules”): otherwise the sponsor signs,
+/// and pays to broadcast, a transaction that cannot land.
+fn verify_payer_signature(tx: &VersionedTransaction, payer: &Pubkey) -> Result<(), Error> {
+    let signed = usize::from(tx.message.header().num_required_signatures);
+    let index = tx.message.static_account_keys()
+        [..signed.min(tx.message.static_account_keys().len())]
+        .iter()
+        .position(|key| key == payer)
+        .ok_or_else(|| {
+            Error::Other("invalid payload: payload.from does not sign the open".into())
+        })?;
+    let valid = tx
+        .signatures
+        .get(index)
+        .is_some_and(|signature| signature.verify(payer.as_ref(), &tx.message.serialize()));
+    if !valid {
+        return Err(Error::Other(
+            "invalid payload: the payload.from signature on the open is missing or invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Assert `tx` carries the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
 // Each account slot is an independent expected key (rentPayer vs
@@ -1440,8 +1895,8 @@ pub(crate) fn validate_open_instruction(
     channel_id: &Pubkey,
     max_amount: Option<u64>,
     expected_grace_period: Option<u32>,
-    payload_nonce: Option<&str>,
-    payload_open_slot: Option<&str>,
+    payload_nonce: Option<u64>,
+    payload_open_slot: Option<u64>,
     recent_slot: Option<u64>,
     expected_memo: Option<&str>,
     expected_recipients: Option<&[pc::Distribution]>,
@@ -1456,11 +1911,15 @@ pub(crate) fn validate_open_instruction(
     // resolves accounts via `static_account_keys()`), size within the version's
     // limit; then the version-1 header config against the ComputeBudget caps.
     crate::core::tx::check_envelope(tx, accepted_versions)?;
-    crate::core::tx::check_v1_budget_caps(
+    // x402-txv1 scheme_upto_svm.md: “loadedAccountsDataSizeLimit MUST be
+    // present”, not pinned to the maximum.
+    crate::core::tx::check_v1_budget_caps_with(
         &tx.message,
         pc::OPEN_MAX_COMPUTE_UNIT_LIMIT,
         pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+        crate::core::tx::LoadedDataLimitRule::Present,
     )?;
+    crate::core::tx::reject_v1_heap_request(&tx.message)?;
 
     let keys = tx.message.static_account_keys();
     let ix = find_canonical_open_instruction(tx, keys, program_id, expected_memo)?;
@@ -1472,6 +1931,14 @@ pub(crate) fn validate_open_instruction(
     // gasless `upto` both are the operator, in gasless `batch` rentPayer is the
     // operator while authorized_signer is the payer, so each slot is checked
     // against its own expected key rather than a single conflated one.
+    // Exactly the 14 canonical positions: a remaining account is one more
+    // key the sponsor's signature would carry into the program.
+    if ix.accounts.len() != OPEN_ACCOUNT_COUNT {
+        return Err(Error::Other(format!(
+            "open instruction has {} accounts; it must have exactly {OPEN_ACCOUNT_COUNT} and no remaining accounts",
+            ix.accounts.len()
+        )));
+    }
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -1514,6 +1981,7 @@ pub(crate) fn validate_open_instruction(
         "event_authority",
     )?;
     expect(13, program_id, "self_program")?;
+    check_open_privileges(tx, keys, ix, payer, rent_payer)?;
 
     // [discriminator u8][OpenArgs], decoded whole: trailing or malformed bytes
     // are refused, and the recipients — not a PDA seed, so free to differ
@@ -1544,16 +2012,16 @@ pub(crate) fn validate_open_instruction(
         }
     }
     if let Some(payload_nonce) = payload_nonce {
-        if payload_nonce != salt.to_string() {
+        if payload_nonce != salt {
             return Err(Error::Other(format!(
-                "open salt {salt} does not match payload nonce {payload_nonce:?}"
+                "open salt {salt} does not match payload nonce {payload_nonce}"
             )));
         }
     }
     if let Some(payload_open_slot) = payload_open_slot {
-        if payload_open_slot != open_slot.to_string() {
+        if payload_open_slot != open_slot {
             return Err(Error::Other(format!(
-                "open slot {open_slot} does not match payload openSlot {payload_open_slot:?}"
+                "open slot {open_slot} does not match payload openSlot {payload_open_slot}"
             )));
         }
     }
@@ -1712,7 +2180,7 @@ mod tests {
         );
         let params = open_params(payer, payee, mint, operator);
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
 
         assert!(validate_open_instruction(
             &tx,
@@ -1734,6 +2202,197 @@ mod tests {
             None,
         )
         .is_ok());
+    }
+
+    /// The validator over `tx` with the `open_params` bindings.
+    fn validate_params_tx(
+        tx: &VersionedTransaction,
+        params: &OpenChannelParams,
+        memo: Option<&str>,
+    ) -> Result<(), Error> {
+        let channel = derive_channel_addresses(params).channel;
+        validate_open_instruction(
+            tx,
+            &[TxVersion::V0],
+            &pc::default_program_id(),
+            &params.rent_payer,
+            &params.authorized_signer,
+            &params.payer,
+            &params.payee,
+            &params.mint,
+            &token_program(),
+            &channel,
+            None,
+            None,
+            None,
+            None,
+            None,
+            memo,
+            None,
+        )
+    }
+
+    fn sponsored_params() -> OpenChannelParams {
+        let operator = Pubkey::new_unique();
+        let mut params = open_params(
+            Pubkey::new_unique(),
+            operator,
+            Pubkey::new_unique(),
+            operator,
+        );
+        params.payee = operator;
+        params
+    }
+
+    #[test]
+    fn the_required_signers_are_exactly_the_payer_and_the_fee_payer() {
+        let params = sponsored_params();
+        let open = build_open_instruction(&params);
+        let tx = unsigned_tx_with_fee_payer(std::slice::from_ref(&open), params.rent_payer);
+        assert!(validate_params_tx(&tx, &params, None).is_ok());
+
+        // A third key required to sign (here on the memo) is refused.
+        let stranger = Pubkey::new_unique();
+        let mut memo = memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60");
+        memo.accounts
+            .push(solana_instruction::AccountMeta::new_readonly(
+                stranger, true,
+            ));
+        let tx = unsigned_tx_with_fee_payer(&[open, memo], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("unexpected signer"), "{err}");
+    }
+
+    #[test]
+    fn the_open_privileges_follow_the_table() {
+        let params = sponsored_params();
+        // The mint made writable.
+        let mut open = build_open_instruction(&params);
+        open.accounts[3].is_writable = true;
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("writable outside"), "{err}");
+
+        // A writable account on a suffix instruction.
+        let open = build_open_instruction(&params);
+        let mut memo = memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60");
+        memo.accounts.push(solana_instruction::AccountMeta::new(
+            Pubkey::new_unique(),
+            false,
+        ));
+        let tx = unsigned_tx_with_fee_payer(&[open, memo], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("writable outside"), "{err}");
+
+        // The channel demoted to read-only.
+        let mut open = build_open_instruction(&params);
+        open.accounts[5].is_writable = false;
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("#5 must be writable"), "{err}");
+    }
+
+    #[test]
+    fn the_open_has_no_remaining_accounts() {
+        let params = sponsored_params();
+        let mut open = build_open_instruction(&params);
+        open.accounts
+            .push(solana_instruction::AccountMeta::new_readonly(
+                Pubkey::new_unique(),
+                false,
+            ));
+        let tx = unsigned_tx_with_fee_payer(&[open], params.rent_payer);
+        let err = validate_params_tx(&tx, &params, None).unwrap_err();
+        assert!(err.to_string().contains("exactly 14"), "{err}");
+    }
+
+    #[test]
+    fn an_unbound_open_admits_several_memos_a_bound_one_exactly_one() {
+        let params = sponsored_params();
+        let open = build_open_instruction(&params);
+        let memos = [
+            memo_ix("5f3c9a1e7b2d4c6e8f0a1b2c3d4e5f60"),
+            memo_ix("wallet-note"),
+        ];
+        let tx = unsigned_tx_with_fee_payer(
+            &[open.clone(), memos[0].clone(), memos[1].clone()],
+            params.rent_payer,
+        );
+        assert!(validate_params_tx(&tx, &params, None).is_ok());
+
+        let declared = X402Upto::route_memo("GET /a");
+        let tx = unsigned_tx_with_fee_payer(
+            &[open, memo_ix(&declared), memo_ix(&declared)],
+            params.rent_payer,
+        );
+        assert!(validate_params_tx(&tx, &params, Some(&declared)).is_err());
+    }
+
+    #[test]
+    fn the_payer_signature_must_be_present_and_valid() {
+        use ed25519_dalek::Signer as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let payer = Pubkey::from(key.verifying_key().to_bytes());
+        let operator = Pubkey::new_unique();
+        let mut params = open_params(payer, operator, Pubkey::new_unique(), operator);
+        params.payee = operator;
+        let mut tx =
+            unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], params.rent_payer);
+        let index = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|k| *k == payer)
+            .unwrap();
+
+        let err = verify_payer_signature(&tx, &payer).unwrap_err();
+        assert!(err.to_string().contains("missing or invalid"), "{err}");
+
+        let signature = key.sign(&tx.message.serialize());
+        tx.signatures[index] = Signature::from(signature.to_bytes());
+        assert!(verify_payer_signature(&tx, &payer).is_ok());
+
+        let mut bytes = signature.to_bytes();
+        bytes[0] ^= 1;
+        tx.signatures[index] = Signature::from(bytes);
+        let err = verify_payer_signature(&tx, &payer).unwrap_err();
+        assert!(err.to_string().contains("missing or invalid"), "{err}");
+    }
+
+    #[test]
+    fn an_existing_channel_account_is_refused_and_a_failed_read_fails_closed() {
+        let engine = |rpc: RpcClient| {
+            let mut engine = multi_currency_engine(&["USDC"]);
+            engine.rpc = Arc::new(rpc);
+            engine
+        };
+        let channel = Pubkey::new_unique();
+        let answering = |value: serde_json::Value| {
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": value }),
+            );
+            RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+        };
+        let account = serde_json::json!({
+            "lamports": 1_000_000,
+            "data": ["", "base64"],
+            "owner": pc::PAYMENT_CHANNELS_PROGRAM_ID,
+            "executable": false,
+            "rentEpoch": 0,
+            "space": 0,
+        });
+        let err = engine(answering(account))
+            .ensure_channel_absent(&channel)
+            .unwrap_err();
+        assert!(err.to_string().contains(ERR_CHANNEL_ALREADY_OPEN), "{err}");
+        assert!(engine(answering(serde_json::Value::Null))
+            .ensure_channel_absent(&channel)
+            .is_ok());
+        assert!(engine(RpcClient::new_mock("fails".to_string()))
+            .ensure_channel_absent(&channel)
+            .is_err());
     }
 
     #[test]
@@ -1762,7 +2421,7 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
 
         // Correct expectations (rentPayer = operator, authorized_signer = payer).
         assert!(validate_open_instruction(
@@ -1826,7 +2485,7 @@ mod tests {
         );
         let params = open_params(payer, payee, mint, operator);
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
         let check = |channel: &Pubkey, max_amount: Option<u64>, recent_slot: Option<u64>| {
             validate_open_instruction(
                 &tx,
@@ -1872,7 +2531,7 @@ mod tests {
         let err = check(&other, Some(1_000_000), Some(314)).unwrap_err();
         assert!(err.to_string().contains("channel"), "{err}");
 
-        let strict = |withdraw_delay: u32, payload_nonce: &str, payload_open_slot: &str| {
+        let strict = |withdraw_delay: u32, payload_nonce: u64, payload_open_slot: u64| {
             validate_open_instruction(
                 &tx,
                 &[TxVersion::V0],
@@ -1893,12 +2552,12 @@ mod tests {
                 None,
             )
         };
-        assert!(strict(900, "7", "314").is_ok());
-        let err = strict(901, "7", "314").unwrap_err();
+        assert!(strict(900, 7, 314).is_ok());
+        let err = strict(901, 7, 314).unwrap_err();
         assert!(err.to_string().contains("withdraw delay"), "{err}");
-        let err = strict(900, "8", "314").unwrap_err();
+        let err = strict(900, 8, 314).unwrap_err();
         assert!(err.to_string().contains("payload nonce"), "{err}");
-        let err = strict(900, "7", "315").unwrap_err();
+        let err = strict(900, 7, 315).unwrap_err();
         assert!(err.to_string().contains("payload openSlot"), "{err}");
     }
 
@@ -2063,7 +2722,7 @@ mod tests {
                 }
             })
             .collect();
-        let tx = unsigned_tx(&wrapped);
+        let tx = unsigned_tx_with_fee_payer(&wrapped, operator);
         validate_open_instruction(
             &tx,
             &[TxVersion::V0],
@@ -2156,15 +2815,56 @@ mod tests {
         ])
         .is_err());
         assert!(validate_layout(&[
+            cu_limit_ix(1),
             cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
             open_placeholder()
         ])
         .is_ok());
         assert!(validate_layout(&[
+            cu_limit_ix(1),
             cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1),
             open_placeholder()
         ])
         .is_err());
+    }
+
+    #[test]
+    fn bounds_the_priority_fee_the_operator_pays() {
+        let over_fee_cap = |result: Result<(), Error>| {
+            result.is_err_and(|e| e.to_string().contains("exceeds the sponsored fee maximum"))
+        };
+        // Both fields at their ceilings: 400,000 x 5 lamports.
+        assert!(over_fee_cap(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+            open_placeholder(),
+        ])));
+        // The same price with no declared limit is charged on the runtime
+        // default for each of the five non-budget instructions.
+        assert!(over_fee_cap(validate_layout(&[
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+            open_placeholder(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            memo_ix("x"),
+        ])));
+        // Exactly the sponsored maximum, declared or implied.
+        let at_cap = crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS * 1_000_000
+            / u64::from(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT);
+        assert!(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            cu_price_ix(at_cap),
+            open_placeholder(),
+        ])
+        .is_ok());
+        // Two non-budget instructions imply the same 400,000 unit limit.
+        assert!(validate_layout(&[cu_price_ix(at_cap), open_placeholder(), memo_ix("x")]).is_ok());
+        assert!(over_fee_cap(validate_layout(&[
+            cu_price_ix(at_cap + 1),
+            open_placeholder(),
+            memo_ix("x"),
+        ])));
     }
 
     #[test]
@@ -2314,6 +3014,7 @@ mod tests {
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
+            max_channel_lifetime: MaxChannelLifetime::ONE_HOUR,
             program_id: None,
             withdraw_delay: 900,
             fee_payer_signer: std::sync::Arc::new(TestSigner(receiver_authorizer)),
@@ -2457,13 +3158,19 @@ mod tests {
     /// up in the settlement voucher: the server signs its own deadline.
     #[tokio::test]
     async fn settlement_voucher_deadline_is_server_derived() {
-        let engine = multi_currency_engine(&["USDC"]);
+        let mut engine = multi_currency_engine(&["USDC"]);
         let mut open = engine.test_open(Pubkey::new_unique(), 1_000);
+        // The payer's refund account is usable, so settlement distributes.
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
         let now = now_unix();
         open.expires_at = now + 1;
 
         let instructions = engine
-            .build_settlement_instructions(&open, 400, true)
+            .build_settlement_instructions(&open, 400)
             .await
             .unwrap();
         let expiry = settled_voucher_expiry(&instructions, &open, 400);
@@ -2474,7 +3181,7 @@ mod tests {
 
         open.expires_at = now - 10;
         let instructions = engine
-            .build_settlement_instructions(&open, 400, true)
+            .build_settlement_instructions(&open, 400)
             .await
             .unwrap();
         assert!(settled_voucher_expiry(&instructions, &open, 400) > now);
@@ -2498,7 +3205,7 @@ mod tests {
         assert_ne!(memo_a, memo_b);
         let validate = |instructions: &[Instruction], expected: Option<&str>| {
             validate_open_instruction(
-                &unsigned_tx(instructions),
+                &unsigned_tx_with_fee_payer(instructions, operator),
                 &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
@@ -2546,36 +3253,279 @@ mod tests {
         assert!(match_offered_requirement(std::slice::from_ref(&a), &accepted_a).is_ok());
     }
 
-    /// A payer that closed its token account after the open cannot make the
-    /// settlement fail as a whole: the charge is sealed without the refund.
+    /// The fee payer funds no account a distribution recipient owns: the
+    /// recipient could close it after each settlement and keep the rent.
     #[tokio::test]
-    async fn settlement_without_a_payer_account_still_seals_the_charge() {
-        let engine = multi_currency_engine(&["USDC"]);
+    async fn settlement_never_creates_a_recipient_account() {
+        let mut engine = multi_currency_engine(&["USDC"]);
+        let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        // The payer's refund account is usable, so settlement distributes.
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
+        let created_for = |ixs: &[Instruction]| -> Vec<Pubkey> {
+            ixs.iter()
+                .filter(|ix| ix.program_id == pc::associated_token_program_id())
+                .map(|ix| ix.accounts[2].pubkey)
+                .collect()
+        };
+        for actual in [0, 400, 1_000] {
+            let ixs = engine
+                .build_settlement_instructions(&open, actual)
+                .await
+                .unwrap();
+            let created = created_for(&ixs);
+            for entry in &open.distribution {
+                assert!(!created.contains(&entry.recipient), "actual {actual}");
+            }
+            // Positive control: the fee payer's own seat and the treasury.
+            assert!(created.contains(&engine.fee_payer));
+            assert!(created.contains(&engine.treasury_owner()));
+        }
+    }
+
+    #[test]
+    fn an_open_is_refused_until_every_payout_account_is_usable() {
+        let engine = |rpc: RpcClient| {
+            let mut engine = multi_currency_engine(&["USDC"]);
+            engine.rpc = Arc::new(rpc);
+            engine
+        };
+        let answering = |value: serde_json::Value| {
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": value }),
+            );
+            RpcClient::new_mock_with_mocks("succeeds".to_string(), mocks)
+        };
+        let probe = multi_currency_engine(&["USDC"]);
+        let usdc = &probe.config.currencies[0];
+        let (mint, token_program) = (
+            probe.mint_for(usdc).unwrap(),
+            probe.token_program_for(usdc).unwrap(),
+        );
+        let distribution = probe.distribution().unwrap();
+        let recipient = distribution[0].recipient;
+        let token_account = |state: u8| {
+            use base64::Engine as _;
+            let mut data = vec![0u8; 165];
+            data[..32].copy_from_slice(mint.as_ref());
+            data[32..64].copy_from_slice(recipient.as_ref());
+            data[108] = state;
+            serde_json::json!({
+                "lamports": 2_039_280,
+                "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+                "owner": pc::pubkey_string(&token_program),
+                "executable": false,
+                "rentEpoch": 0,
+                "space": 165,
+            })
+        };
+        let check =
+            |engine: X402Upto| engine.ensure_payouts_ready(&mint, &token_program, &distribution);
+
+        let err = check(engine(answering(serde_json::Value::Null))).unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+        let err = check(engine(answering(token_account(2)))).unwrap_err();
+        assert!(err.to_string().contains("frozen"), "{err}");
+        assert!(check(engine(RpcClient::new_mock("fails".to_string()))).is_err());
+        // Positive control: an initialized account of the recipient.
+        check(engine(answering(token_account(1)))).expect("usable payout account");
+        // The default payout to the fee payer itself (`ReceiverKeepsAll` with
+        // no separate receiver authorizer) needs no account up front:
+        // settlement creates the fee payer's own seat.
+        let own = engine(answering(serde_json::Value::Null));
+        let to_fee_payer = [pc::Distribution {
+            recipient: own.fee_payer,
+            bps: 10_000,
+        }];
+        own.ensure_payouts_ready(&mint, &token_program, &to_fee_payer)
+            .expect("the fee payer's own payout needs no account yet");
+    }
+
+    /// The engine with its RPC answering `getAccountInfo` (the payer's refund
+    /// account) with `refund_account`, plus `extra` mocks.
+    fn engine_reading(
+        refund_account: serde_json::Value,
+        extra: Vec<(
+            solana_rpc_client_api::request::RpcRequest,
+            serde_json::Value,
+        )>,
+    ) -> X402Upto {
+        let mut engine = multi_currency_engine(&["USDC"]);
+        // A mock answers each request once: queue one answer per read.
+        let mut mocks = solana_rpc_client::mock_sender::MocksMap::default();
+        for _ in 0..8 {
+            mocks.insert(
+                solana_rpc_client_api::request::RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": refund_account }),
+            );
+        }
+        for (request, value) in extra {
+            mocks.insert(request, value);
+        }
+        engine.rpc = Arc::new(RpcClient::new_mock_with_mocks_map(
+            "succeeds".to_string(),
+            mocks,
+        ));
+        engine
+    }
+
+    /// A token account of `owner` for `mint`, as `getAccountInfo` returns it.
+    fn token_account_json(
+        mint: &Pubkey,
+        owner: &Pubkey,
+        token_program: &Pubkey,
+    ) -> serde_json::Value {
+        use base64::Engine as _;
+        let mut data = vec![0u8; 165];
+        data[..32].copy_from_slice(mint.as_ref());
+        data[32..64].copy_from_slice(owner.as_ref());
+        data[108] = 1;
+        serde_json::json!({
+            "lamports": 2_039_280,
+            "data": [base64::engine::general_purpose::STANDARD.encode(&data), "base64"],
+            "owner": pc::pubkey_string(token_program),
+            "executable": false,
+            "rentEpoch": 0,
+            "space": 165,
+        })
+    }
+
+    /// A payer that closed its token account after the open would have its
+    /// refund forfeited to the treasury by `distribute`, so settlement only
+    /// seals and defers the distribute (to `distribute_sealed`). With nothing
+    /// to refund, or a usable account, settlement still distributes.
+    #[tokio::test]
+    async fn settlement_defers_the_distribute_of_an_unpayable_refund() {
+        let engine = engine_reading(serde_json::Value::Null, vec![]);
         let open = engine.test_open(Pubkey::new_unique(), 1_000);
         let program_id = pc::default_program_id();
         let is_distribute = |ix: &Instruction| {
             ix.program_id == program_id && ix.accounts.iter().any(|meta| meta.pubkey == open.payer)
         };
+        let is_create = |ix: &Instruction| ix.program_id == pc::associated_token_program_id();
 
-        let full = engine
-            .build_settlement_instructions(&open, 400, true)
-            .await
-            .unwrap();
-        assert!(full.last().is_some_and(is_distribute));
-
-        let sealed_only = engine
-            .build_settlement_instructions(&open, 400, false)
-            .await
-            .unwrap();
-        assert!(!sealed_only.iter().any(is_distribute));
+        for actual in [0, 400] {
+            let ixs = engine.settlement_instructions(&open, actual).await.unwrap();
+            assert!(!ixs.iter().any(is_distribute), "actual {actual}");
+            assert!(!ixs.iter().any(is_create), "actual {actual}");
+            if actual > 0 {
+                assert!(settled_voucher_expiry(&ixs, &open, actual) > now_unix());
+            }
+        }
+        // Nothing is due back at the full amount: no account is read.
+        let ixs = engine.settlement_instructions(&open, 1_000).await.unwrap();
+        assert!(ixs.last().is_some_and(is_distribute));
+        // Positive control: a usable refund account distributes at once.
+        let mut engine = engine_reading(serde_json::Value::Null, vec![]);
+        let open = engine.test_open(Pubkey::new_unique(), 1_000);
+        engine.rpc = engine_reading(
+            token_account_json(&open.mint, &open.payer, &open.token_program),
+            vec![],
+        )
+        .rpc;
+        let ixs = engine.settlement_instructions(&open, 400).await.unwrap();
+        assert!(ixs.last().is_some_and(|ix| {
+            ix.program_id == program_id && ix.accounts.iter().any(|meta| meta.pubkey == open.payer)
+        }));
         assert!(
-            sealed_only
-                .iter()
-                .all(|ix| ix.program_id != pc::associated_token_program_id()),
-            "no account is created at the fee payer's expense"
+            !ixs.iter()
+                .filter(|ix| is_create(ix))
+                .any(|ix| ix.accounts[2].pubkey == open.payer),
+            "the payer's account is never created at the fee payer's expense"
         );
-        assert!(sealed_only.iter().any(|ix| ix.program_id == program_id));
-        assert!(settled_voucher_expiry(&sealed_only, &open, 400) > now_unix());
+    }
+
+    /// `distribute_sealed` finds this server's sealed channels on chain and
+    /// distributes a deferred one once the grace period after its open has
+    /// passed, even with the payer's account still unusable; inside it,
+    /// nothing is sent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn distribute_sealed_ends_a_deferral_at_the_deadline() {
+        use base64::Engine as _;
+        use solana_rpc_client_api::request::RpcRequest;
+
+        let probe = multi_currency_engine(&["USDC"]);
+        let usdc = &probe.config.currencies[0];
+        let mint = probe.mint_for(usdc).unwrap();
+        let program_id = pc::default_program_id();
+        let sealed_channel = |engine: &X402Upto| {
+            let payer = Pubkey::new_unique();
+            let authorized = Pubkey::new_unique();
+            let channel = Channel {
+                discriminator: 1,
+                version: 1,
+                bump: 1,
+                status: crate::core::payment_channels::generated::types::ChannelStatus::Sealed
+                    as u8,
+                salt: 7,
+                deposit: 1_000,
+                settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                    settled: 400,
+                    payout_watermark: 0,
+                },
+                closure_started_at: 0,
+                payer_withdrawn_at: 0,
+                grace_period: 900,
+                distribution_hash: pc::distribution_hash(&engine.distribution().unwrap()),
+                payer: pc::to_address(&payer),
+                payee: pc::to_address(&engine.fee_payer),
+                authorized_signer: pc::to_address(&authorized),
+                mint: pc::to_address(&mint),
+                rent_payer: pc::to_address(&engine.fee_payer),
+                open_slot: 42,
+            };
+            let (address, _) = pc::find_channel_pda(
+                &payer,
+                &engine.fee_payer,
+                &mint,
+                &authorized,
+                7,
+                42,
+                &program_id,
+            );
+            serde_json::json!([{
+                "pubkey": pc::pubkey_string(&address),
+                "account": {
+                    "lamports": 2_000_000,
+                    "data": [base64::engine::general_purpose::STANDARD
+                        .encode(borsh::to_vec(&channel).unwrap()), "base64"],
+                    "owner": pc::pubkey_string(&program_id),
+                    "executable": false,
+                    "rentEpoch": 0,
+                    "space": pc::CHANNEL_ACCOUNT_SIZE,
+                }
+            }])
+        };
+        let run = |opened_at: i64| {
+            let probe = multi_currency_engine(&["USDC"]);
+            let mut engine = engine_reading(serde_json::Value::Null, vec![]);
+            engine.fee_payer = probe.fee_payer;
+            engine.config = probe.config.clone();
+            let accounts = sealed_channel(&engine);
+            let mut mocks = std::collections::HashMap::new();
+            mocks.insert(
+                RpcRequest::GetAccountInfo,
+                serde_json::json!({ "context": { "slot": 1 }, "value": null }),
+            );
+            mocks.insert(RpcRequest::GetProgramAccounts, accounts);
+            mocks.insert(RpcRequest::GetBlockTime, serde_json::json!(opened_at));
+            engine.rpc = Arc::new(RpcClient::new_mock_with_mocks(
+                "succeeds".to_string(),
+                mocks,
+            ));
+            async move { engine.distribute_sealed().await.unwrap() }
+        };
+        let now = now_unix();
+        assert!(
+            run(now - 899).await.is_empty(),
+            "still inside the grace period"
+        );
+        assert_eq!(run(now - 900).await.len(), 1, "the deadline passed");
     }
 
     /// A payer-chosen split keeps the channel address (recipients are not a
@@ -2614,7 +3564,7 @@ mod tests {
             let mut open = build_open_instruction(params);
             open.data.extend_from_slice(data_suffix);
             validate_open_instruction(
-                &unsigned_tx(&[open]),
+                &unsigned_tx_with_fee_payer(&[open], operator),
                 &[TxVersion::V0],
                 &pc::default_program_id(),
                 &operator,
@@ -2662,6 +3612,7 @@ mod tests {
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
+            max_channel_lifetime: MaxChannelLifetime::ONE_HOUR,
             program_id: None,
             withdraw_delay: 900,
             fee_payer_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
@@ -2707,8 +3658,8 @@ mod tests {
         // Both carry the same fetched blockhash + recentSlot.
         assert_eq!(usdc.extra.recent_blockhash, pyusd.extra.recent_blockhash);
         assert!(usdc.extra.recent_blockhash.is_some());
-        assert_eq!(usdc.extra.recent_slot.as_deref(), Some("314"));
-        assert_eq!(pyusd.extra.recent_slot.as_deref(), Some("314"));
+        assert_eq!(usdc.extra.recent_slot, Some(Slot::new(314)));
+        assert_eq!(pyusd.extra.recent_slot, Some(Slot::new(314)));
     }
 
     /// The matcher selects the offered requirement whose currency the client
@@ -2807,7 +3758,7 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel = derive_channel_addresses(&params).channel;
-        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let tx = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], fee_payer);
 
         let check = |payee: &Pubkey| {
             validate_open_instruction(

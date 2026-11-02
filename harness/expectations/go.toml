@@ -208,7 +208,11 @@ ids = [
   "vector/x402-build-no-intersection-reject",
   "vector/x402-build-empty-advertisement-reject",
   "vector/x402-build-legacy-only-reject",
+  "vector/x402-build-unknown-entry-reject",
+  "vector/x402-build-string-entry-reject",
   "vector/x402-verify-v1-accept",
+  "vector/x402-verify-v1-loaded-data-limit-4mib-accept",
+  "vector/x402-verify-v1-loaded-data-limit-small-accept",
   "vector/x402-verify-v1-not-accepted-reject",
   "vector/x402-verify-v1-explicit-v0-sponsor-reject",
   "vector/x402-verify-v1-over-1232-accept",
@@ -253,10 +257,16 @@ tracking = "FINDINGS.md#txv1-go"
 ids = [
   "cross/charge-build-duplicate-advertisement/rust/go",
   "cross/charge-build-v1-advertised/rust/go",
+  "cross/charge-build-v1-advertised/typescript/go",
+  "cross/charge-build-v1-advertised/python/go",
   "cross/charge-build-v1-large-memos/rust/go",
   "cross/charge-build-v1-only-advertised/rust/go",
   "cross/charge-build-v1-sol/rust/go",
+  "cross/charge-build-v1-sol/typescript/go",
+  "cross/charge-build-v1-sol/python/go",
   "cross/charge-build-v1-sponsored/rust/go",
+  "cross/charge-build-v1-sponsored/typescript/go",
+  "cross/charge-build-v1-sponsored/python/go",
 ]
 reason = "refuses a valid version-1 charge build (the Rust kit's, or another SDK's that the Rust judge accepts): the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-go"
@@ -264,15 +274,78 @@ tracking = "FINDINGS.md#txv1-go"
 [[known_failing]]
 ids = [
   "cross/x402-build-duplicate-advertisement/rust/go",
+  "cross/x402-build-duplicate-advertisement/python/go",
   "cross/x402-build-v1-advertised/rust/go",
+  "cross/x402-build-v1-advertised/python/go",
+  "cross/x402-build-duplicate-advertisement/typescript/go",
+  "cross/x402-build-v1-advertised/typescript/go",
 ]
 reason = "refuses a valid version-1 x402 build: the verifier cannot decode or admit version 1"
 tracking = "FINDINGS.md#txv1-go"
 
 [[unsupported]]
-reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify)"
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to the session server's open checks (input.sessionOpenVerify, input.sessionServerVerify)"
 pattern = "vector/session-open-*"
+
 [[known_failing]]
-id = "vector/x402-exact-verify-priority-fee-over-cap-reject"
-reason = "the x402 exact verifier caps the unit price alone (go/protocols/x402/verify.go:21), so the 200,000 unit limit at 5,000,000 micro-lamports per unit (a 1,000,000 lamport priority fee) is sponsored (RULINGS S6)"
-tracking = "FINDINGS.md#x402-priority-fee-product-uncapped"
+ids = [
+  "interop/x402-upto-basic/go/rust",
+  "interop/x402-upto-zero-actual/go/rust",
+]
+reason = "the Go upto client adapter signs expiresAt = now + 1 h (harness/go-client/main.go:168) against a 300 s maxTimeoutSeconds; the Rust server now refuses it (scheme_upto_svm.md Phase 3 step 7: \"Reject ... when expiresAt is later than now + maxTimeoutSeconds (plus clock skew)\")"
+tracking = "FINDINGS.md#go-upto-client-expires-beyond-timeout"
+
+[[known_failing]]
+ids = [
+  "interop/x402-upto-basic/rust/go",
+]
+reason = "the Go upto server refuses any open with more than one instruction (go/protocols/x402/upto.go:795), so the random-nonce Memo every client MUST now include is rejected"
+tracking = "FINDINGS.md#go-upto-server-memo-suffix-refused"
+
+# draft-solana-session-00 server, client build and strict wire vectors
+# (rust/crates/conformance/src/cases/session_server.rs).
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-voucher-verify-*"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-topup-*"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's voucher, topUp or close processing over stored channel state (input.sessionServerVerify)"
+pattern = "vector/session-close-*"
+
+[[unsupported]]
+reason = "the runner's session verify path drives only the SDK's voucher verifier (input.sessionVoucherVerify); it has no path to a session server's use processing over stored channel state (input.sessionServerVerify), and the Go session server has no use action (it models operator mode as delegated settlement, go/protocols/mpp/server/session.go)"
+pattern = "vector/session-use-*"
+
+[[unsupported]]
+reason = "the runner has no path to the SDK's session client open builder (input.sessionOpenBuild)"
+pattern = "vector/session-build-*"
+
+[[unsupported]]
+reason = "Go session wire types are on the superseded draft, not mpp-specs e702dd8 (go/protocols/mpp/intents/session.go); the runner skips session wire and bearer-proof message vectors"
+ids = [
+  "vector/session-wire-action-open-bump-reject",
+  "vector/session-wire-action-open-initial-voucher-reject",
+  "vector/session-wire-action-open-numeric-open-slot-reject",
+  "vector/session-wire-action-open-numeric-salt-reject",
+  "vector/session-wire-action-open-missing-transaction-reject",
+  "vector/session-wire-action-voucher-missing-channel-id-reject",
+  "vector/session-wire-action-voucher-signature-type-reject",
+  "vector/session-wire-action-voucher-numeric-cumulative-reject",
+  "vector/session-wire-action-voucher-missing-signature-type-reject",
+  "vector/session-wire-action-topup-frozen",
+  "vector/session-wire-action-topup-missing-amount-reject",
+  "vector/session-wire-action-use-frozen",
+  "vector/session-wire-action-use-proof-type-reject",
+  "vector/session-wire-action-close-operator-frozen",
+  "vector/session-wire-request-operator-sponsored-frozen",
+  "vector/session-wire-request-missing-network-reject",
+  "vector/session-wire-request-numeric-recent-slot-reject",
+  "vector/session-wire-request-voucher-signer-unknown-reject",
+  "vector/session-wire-request-missing-channel-program-reject",
+  "vector/session-wire-authentication-message-frozen",
+]

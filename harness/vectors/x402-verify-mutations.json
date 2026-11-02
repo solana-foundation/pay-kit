@@ -859,6 +859,13 @@
     "bugType": "settlement",
     "description": "The transfer pays one base unit more than the route amount; §1.4 tolerates overpayment. See RULINGS S5: default verifiers accept overpayment. Mutation: transfer #0 pays 1 base units more than required.",
     "expect": {
+      "alsoConformant": [
+        {
+          "outcome": "reject",
+          "rejectCode": "amount-mismatch"
+        }
+      ],
+      "alsoConformantReason": "§1.4 tolerates overpayment, but §3.1 also reads “Fee payer isolation, destination ATA derivation, and exact amount match are enforced on both layouts” and §2.3 lets a sponsor's policy refuse a scheme-valid transaction (“A transaction MAY be valid under the `exact` scheme while being rejected by a sponsor's policy.”), so a sponsor that requires the exact amount is conformant too (RULINGS S5).",
       "outcome": "accept",
       "x402EnvelopeShape": {
         "hasAccepted": true,

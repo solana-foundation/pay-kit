@@ -46,8 +46,10 @@ sentence fixes the shape of a client-paid transaction; it does not oblige a
 client to accept the challenge, and Client-Side Verification leaves split
 acceptance to the client. A client that will not fund that rent declines the
 challenge, which is conformant; it never builds a transaction without the
-instruction. Rust's low-level builder includes the creation by default, and
-`PayKitClient`, whose spend cap covers only `amount`, declines.
+instruction. Rust's builders decline unless the caller opts in
+(`PayerFundedAtaCreation::Include`), since the rent sits outside any amount
+cap; the conformance testee opts in so the vectors can pin the client-paid
+shape.
 
 ## MPP core
 
@@ -103,27 +105,45 @@ accepts a credential without decoding its transaction does not conform.
 16–128 characters of `[A-Za-z0-9_-]`. A server that advertises the extension
 as required MUST reject a payload without a valid id.
 
-**S5. Overpayment is tolerated by default.** scheme_exact_svm.md §1.4: “A
-matching transfer MAY exceed PaymentRequirements.amount ... it MUST NOT be
-less.” The generic scheme_exact.md SVM bullet (“Amount exactness: the
-transferred amount MUST equal maxAmountRequired”) is listed under “Examples
-include”, uses the v1 field name, and is superseded by the network binding's
-normative §1 outcome definition. §2.3 lets a sponsor reject overpayment only
-as an explicit stricter policy; default verifiers MUST accept it.
+**S5. Overpayment is tolerated; an exact-amount sponsor is conformant too.**
+scheme_exact_svm.md §1.4: “A matching transfer MAY exceed
+PaymentRequirements.amount ... it MUST NOT be less.” The generic
+scheme_exact.md SVM bullet once required the transferred amount to equal
+maxAmountRequired; it now agrees with the network binding (“Amount: the
+transfer to `payTo` MUST be at least `amount`”). But §3.1 still says “exact
+amount match are enforced on both layouts”, and §2.3 lets a sponsor refuse a
+scheme-valid transaction (“A transaction MAY be valid under the `exact` scheme
+while being rejected by a sponsor's policy.”). The Rust sponsor accepts
+overpayment; `x402-exact-verify-overpayment-accept` pins that and also
+admits `reject amount-mismatch` (`expect.alsoConformant`). Upstream: align
+the §3.1 wording with §1.4.
 
-**S6. A sponsor bounds the priority fee as limit times price.**
+**S6. A cap on limit times price is sponsor policy, not spec.**
 scheme_exact_svm.md §2.2.1: “Sponsors SHOULD bound their fee exposure by
 enforcing maximum compute unit limits and maximum compute unit (priority fee)
-price”. Capping each field alone still lets the largest limit pair with the
-largest price, so the fee the sponsor pays is bounded as their product. The
-pay-kit sponsors cap it at 2,000 lamports; a 200,000 unit limit at 5,000,000
-micro-lamports per unit (each within its own cap, a 1,000,000 lamport fee) is
-refused as `compute-price-over-cap`. Vector:
-`x402-exact-verify-priority-fee-over-cap-reject`. A version-1 header
-`priorityFee` is the same product, so the cap applies to it unchanged; the
-txv1 per-unit cap (5 lamports per unit) still holds below it, and
-`x402-verify-v1-priority-fee-{at,over}-cap-*` pin that boundary at a 300 unit
-limit, where it binds before the total does.
+price”, with reference defaults of 400,000 units and 5,000,000
+micro-lamports per unit, each capped on its own. Capping each field alone
+still lets the largest limit pair with the largest price, so the pay-kit
+sponsors also bound the fee they pay as the product, at 2,000 lamports; a
+200,000 unit limit at 5,000,000 micro-lamports per unit (each within its own
+cap, a 1,000,000 lamport fee) is refused as `compute-price-over-cap`. The spec
+fixes no such total, so it is a stricter local policy (“Sponsors MAY
+introduce stricter limits but MUST NOT relax the §2.1 MUSTs.”): the vectors
+pin pay-kit's reject and also admit `accept` (`expect.alsoConformant`).
+Vector: `x402-exact-verify-priority-fee-over-cap-reject`. A version-1 header
+`priorityFee` is the same product; the txv1 per-unit cap (5 lamports per
+unit) is spec and holds below it, and `x402-verify-v1-priority-fee-{at,over}-cap-*`
+pin that boundary at a 300 unit limit, where it binds before the total does.
+The same policy covers the payment-channel transactions an x402 sponsor
+co-signs (upto `open`, batch `open`, `top_up` and refund `request_close`),
+whose spec ceilings (400,000 units, 5,000,000 micro-lamports) are absolute
+maxima a sponsor MAY tighten (“A sponsor MAY apply a stricter local policy for
+compute-unit limit, compute-unit price, and required-signature count”);
+without a declared limit pay-kit charges the price on the runtime default of
+200,000 units per non-ComputeBudget instruction. Vectors (reject, or accept):
+`x402-upto-verify-{priority-fee,implicit-limit-priority-fee,v1-priority-fee-over-sponsor}-*`
+and `batch-verify-top-up-{priority-fee,implicit-limit-priority-fee}-over-cap-reject`,
+`batch-txv1-top-up-v1-priority-fee-over-sponsor-cap-reject`.
 
 ## x402 upto on SVM
 
@@ -155,6 +175,111 @@ Open-slot freshness against the challenged slot is program-enforced (“The open
 instruction still enforces the program's slot window.”), so no vector requires
 a verifier to pre-check it.
 
+## MPP session (Solana)
+
+Pinned `specs/methods/solana/draft-solana-session-00.md` in
+`external/mpp-specs` at `782abae`; the session server and client cases are
+`rust/crates/conformance/src/cases/session_server.rs`.
+
+**SS1. A close voucher below `acceptedCumulative` is refused.** Close
+authentication reads “A voucher with `cumulativeAmount > settled` advances
+settlement. A voucher at or below `settled` MUST equal the server's
+`acceptedCumulative`, authenticates close only, and MUST NOT be submitted as a
+settlement update.” and the procedure “use the supplied voucher only when
+`cumulativeAmount > settled`; otherwise treat it only as close authentication
+after verifying it equals `acceptedCumulative`.” The text is silent on a
+voucher strictly between the on-chain `settled` and the server's
+`acceptedCumulative`. Settling it would seal below what the server already
+accepted, and voucher verification is against the durable watermark: “Verify
+`cumulativeAmount > acceptedCumulative` using the server's durable watermark,
+even when on-chain `settled` lags.” So a close voucher either exceeds
+`acceptedCumulative` (and advances settlement) or is the accepted voucher
+itself (and only authenticates); anything else is refused
+(`cumulative-amount-mismatch`). Upstream: say `acceptedCumulative` where the
+close text says `settled`.
+
+**SS2. A single-shot voucher has no idempotent replay.** “Voucher submissions
+with `cumulativeAmount <= acceptedCumulative` and no matching cached
+idempotent response MUST be rejected and MUST NOT reduce channel state.” A
+verify vector carries no `Idempotency-Key` and no cached response, so the
+exact highest voucher presented again is a reject
+(`cumulative-amount-mismatch`); the testee drives the SDK's metered voucher
+acceptance at the challenged `amount` (Rust: `verify_voucher_for_amount`).
+Retries with an idempotency key are an interop scenario.
+
+**SS3. Codes the spec does not name.** The spec fixes only the problem types
+(“Servers MUST use the standard problem types defined in
+{{I-D.ryan-httpauth-payment-01}}: `malformed-credential`,
+`invalid-challenge`, and `verification-failed`.”), so the vectors refine
+them: an `open` envelope that disagrees with the challenge or with the
+decoded transaction (payee, mint, splits, grace period, deposit argument,
+`openSlot` window, idle-timeout selection, accounts, privileges, blockhash,
+`authorizedSigner`) is `open-binding-mismatch`; a declared or decoded channel
+that is not the PDA derived from the open parameters is `channel-id-mismatch`
+(as is a voucher, close or top-up bound to another channel than the one it
+names); an instruction outside the open or top-up is `unexpected-instruction`;
+a fee payer other than the policy's is `fee-payer-mismatch`; a deposit below
+`minimumDeposit` or zero, a top-up amount that disagrees or is zero, and a
+voucher increment below the challenged price are `amount-mismatch`; the
+bearer proof is `authentication-invalid` (also a voucher action on an
+operator-signed channel); a close that carries the wrong authentication field
+for its mode is `close-authorization`; a voucher signature or signer is
+`voucher-signature`; monotonicity is `cumulative-amount-mismatch`, the deposit
+ceiling `cumulative-exceeds-deposit`; a pending forced close is
+`channel-closing`, a sealed channel `close-state`, an unknown channel
+`channel-state`; a credential that does not parse is `invalid-payload`; and a
+client refusing a challenge is `invalid-challenge`.
+
+**SS4. Offline open verify stops before the broadcast.** Vectors judge every
+check the server makes before it signs, pays fees or broadcasts, against the
+challenged `recentSlot` (“satisfies the open-slot window relative to both the
+challenged `recentSlot` ... and the window against the server's current view
+of the cluster slot”). The live-slot window and the post-confirmation
+channel-state checks (step 14) need a validator and are interop scenarios.
+No session vector pins a version-0 address lookup table: the base draft
+resolves them (“Validate the complete compiled message — resolving any
+version-0 address-lookup-table entries — not just the channel
+instruction.”), the transaction-versions draft rejects them.
+
+**SS5. The operator's own metered voucher is not caller authentication.**
+`Action: "voucher"` reads “In `operator` mode, vouchers are
+operator-generated settlement artifacts and MUST NOT authenticate the
+caller.” Debit Processing authenticates first (“Authenticate `client` mode
+with a valid voucher, or `operator` mode with a valid `use` proof.”), then
+charges (“For `operator`, sign a voucher for `acceptedCumulative + cost` and
+atomically persist that voucher, the new `acceptedCumulative`, and
+`spentAmount += cost`.”), and `Action: "use"` says “After authenticating the
+request, the operator meters the delivered service and signs the
+corresponding cumulative voucher.” When cost is known only after generation
+the server MUST “persist the operator-signed voucher before releasing the
+response bytes whose cost it authorizes.” So the prohibition covers a voucher
+a caller presents: a `voucher` action on an operator-signed channel is
+refused (`authentication-invalid`, SS3). The operator signing and persisting
+its own cumulative voucher for a request already authenticated with `use` is
+the charge the spec requires, and an SDK must let it advance
+`acceptedCumulative` by a metered amount, not only by the challenged
+`amount`. The `session-use-*` vectors pin it: the persisted voucher's
+`cumulativeAmount` is `acceptedCumulative` plus the metered cost; a `use`
+whose proof is not the one bound at open, or that reaches a client-signed
+server, is `authentication-invalid`; one that would pass the deposit is
+`cumulative-exceeds-deposit`. The spec charges a request's cost but does
+not say how a request metered as it is served is charged more than once;
+this ruling reads `meteredAmount` as the request's running total under its
+`(challengeId, Idempotency-Key)`, and each charge as paying only what the
+request was not yet charged. So a retry at or below the recorded total
+returns the recorded voucher and charges nothing (“Replaying an already
+processed request MAY return the cached receipt and MUST NOT change channel
+state or deliver additional service.”), a higher total charges the
+difference, and the key recorded under another challenge is
+`invalid-challenge`. The spec does not say a zero cost is
+refused; that part is this ruling. A zero charge would persist a voucher equal
+to `acceptedCumulative`, and “Equal or lower amounts MUST be rejected for
+metered voucher acceptance unless they are exact idempotent replays handled
+per "Concurrency and Idempotency".” (with “unused reserved capacity MUST NOT
+advance the voucher”), so a metered cost of zero is `amount-mismatch`: the
+host records nothing for a request it did not charge. Upstream:
+proposed in tempoxyz/mpp-specs `feat/solana-session-operator-hardening`.
+
 ## MPP subscription (Solana)
 
 Pinned as the submodule `external/mpp-specs-solana` at `5c4a528`
@@ -171,9 +296,12 @@ Associated Token program. Both SDK clients prepend a `CreateIdempotent` of the
 subscriber's own ATA so a first-time wallet can activate; it moves no tokens.
 Until the draft lists it, vectors accept that one instruction and reject any
 other ATA creation (the recipient's, a third party's) as
-`unexpected-instruction`: “MUST NOT reference writable accounts that could
-redirect funds away from recipient.” Upstream: list the subscriber's
-idempotent ATA creation explicitly.
+`unexpected-instruction`, on the client list's closing MUST: the activation
+must “contain no instructions other than those above plus optional
+compute-budget and memo instructions.” Creating the recipient's ATA moves no
+funds away from `recipient`, so the writable-account rule is not what refuses
+it; it is an instruction the list does not name. Upstream: list the
+subscriber's idempotent ATA creation explicitly.
 
 **SUB2. Activation is `type="transaction"` only.** “Solana subscription
 activation uses type="transaction".” and “Solana transactions containing
@@ -191,6 +319,28 @@ cancellation (`delegation.expires_at_ts`) equal to `now` has taken effect:
 “a non-zero timestamp only blocks renewal once the current time is at or
 after that timestamp.”
 
+**SUB4. The subscription authority is initialized before the activation,
+not inside it (spec bug).** The client list says the activation must
+“contain an `initialize_subscription_authority` instruction prepended only
+when the `(subscriber, mint)` authority does not yet exist on-chain;”. But
+`subscribe` commits the subscriber's signature to the authority's `init_id`,
+which the program sets when `initialize_subscription_authority` lands (from
+that slot), and every later access check must “require its current `init_id`
+to equal the delegation header's `init_id`.” A client that signs one
+transaction carrying both instructions cannot know the slot it lands in, so
+it cannot sign the `init_id` `subscribe` needs: the prescribed shape cannot be
+built. The Rust client sends `initialize_subscription_authority` first, in
+its own subscriber-signed and subscriber-paid transaction, reads the
+resulting `init_id`, then signs the activation; the Rust server refuses an
+activation carrying the instruction (`invalid-payload`). The vectors do not
+depend on it: every subscription fixture serves an existing authority, so no
+conformant activation carries the instruction, and
+`subscription-verify-unrelated-authority-init-reject` refuses one for another
+mint (`unexpected-instruction`). Upstream: drop the prepended initialization from
+the activation list and say the authority MUST exist before the client signs
+the activation (or let `subscribe` take the `init_id` from the same
+transaction).
+
 ## x402 batch-settlement on SVM
 
 Pinned `scheme_batch_settlement_svm.md` (x402 @03b3919b); transaction-version
@@ -205,9 +355,12 @@ the vector's `batchServerChannel`), so `charged + amount + 1` is rejected
 with `cumulative-amount-mismatch`. A stateless facilitator cannot apply this
 rule: it sees only onchain `settled`, and the txv1 draft gives it a floor
 instead (“the facilitator MUST require `maxClaimableAmount >= Channel.settled +
-PaymentRequirements.amount`”). An SDK whose only verify entry point is a
-facilitator therefore fails the above-amount vectors; that is a known
-failure of the facilitator-only testee, not a reading of the server rule.
+PaymentRequirements.amount`”). The vectors whose verdict rests on the store
+record alone (above, below and at the charged watermark, a close-pending
+mark, a refund at an older accepted cumulative) carry
+`batchVerdictFromStore: true`; a testee whose only verify entry point is a
+stateless facilitator reports them unsupported, since it cannot express the
+resource server they judge.
 
 **B2. A client-mode refund carries the voucher.** “| `voucher` | `BatchVoucher`
 | REQUIRED in client mode.” The `request_close` transaction is the retry path
@@ -226,19 +379,24 @@ requirement) is `invalid-challenge`; wire objects that do not parse are
 
 Pinned drafts: `external/mpp-specs-txv1` (solana-foundation/mpp-specs
 feat/solana-transaction-versions `77aa6a1`, charge and session) and
-`external/x402-txv1` (x402-foundation/x402 PR 3473, solana-foundation/x402
-`3d723dd`, scheme_exact_svm.md §1.5).
+`external/x402-txv1` (x402-foundation/x402 PR 3473, merged; solana-foundation/x402
+`f7043a1`, scheme_exact_svm.md §1.5).
 
 **T1. `transactionVersions` is an array of the integers 0 and 1, read as a
 set.** MPP: “Each entry is the integer `0` or `1`, the Wallet Standard
 `supportedTransactionVersions` vocabulary without `"legacy"`.” x402: “Entries
-are the integers `0` and `1`”. Neither text allows a string entry, a bare
+MUST be the JSON integers `0` and `1` only.” Neither text allows a string entry, a bare
 integer or another version, so an MPP charge or session request carrying one
 is malformed and the SDK's request type refuses it (`invalid-payload` in the
 wire vectors). A repeated entry names the same version: `[1, 1]` advertises
-{1}, and a client builds version 1. x402 clients intersect the advertisement
-with what they can build, so an unknown entry in an x402 offer is not by
-itself a reason to refuse; the vectors pin no x402 verdict for one.
+{1}, and a client builds version 1. x402 is explicit about the rest: “A
+client or server MUST treat a field containing any non-integer entry (a
+string, null, or "legacy") or any integer other than 0 or 1 as invalid and
+fail closed with unsupported_transaction_version.” An x402 client therefore
+refuses the whole offer (`unsupported-version`) rather than dropping the
+entries it does not know and building from the rest
+(`x402-build-unknown-entry-reject`, `x402-build-string-entry-reject`,
+`x402-build-legacy-only-reject`).
 
 **T2. Present and empty is not absent.** Only an omitted field defaults:
 MPP “Defaults to `[0]` when omitted”, x402 “When the field is absent, the
@@ -261,12 +419,19 @@ advertised version. A lookup table, a size over the version's limit, or a
 version-1 header without `computeUnitLimit` or `loadedAccountsDataSizeLimit`
 is `invalid-payload`. A ComputeBudget instruction in a version-1 message is
 `unexpected-instruction` for MPP charge (“Any unexpected instructions MUST
-cause rejection.”) and `invalid-payload` for x402 (the static layout
-mismatch). A charge or session server accepts exactly the versions its
-challenge's `methodDetails.transactionVersions` lists; an x402 sponsor its
-own configured set (`input.x402ServerTransactionVersions`), since “The
-sponsor enforces its own accepted set; it does not read
-`PaymentRequirements.extra.transactionVersions`.”
+cause rejection.”), `invalid-payload` for x402 exact (the static layout
+mismatch), `unexpected-instruction` for an upto open (an instruction outside
+the open) and `setup-transaction` for a batch top-up. A version-1 header over
+the compute caps is `compute-limit-over-cap` / `compute-price-over-cap` for
+x402 exact and upto. A charge or session server accepts exactly the versions
+its challenge's `methodDetails.transactionVersions` lists; an x402 sponsor
+its own configured set (`input.x402ServerTransactionVersions`,
+`batchServer.transactionVersions`), since “The sponsor enforces its own
+accepted set; it does not read `PaymentRequirements.extra.transactionVersions`.”
+That set has no default (“When the field is absent, the accepted set is
+`[0]`” is about the advertised field), so every vector whose verdict depends
+on it states it; an SDK whose sponsor cannot be narrowed reports those
+unsupported.
 
 ## Signatures (both protocols)
 
@@ -291,6 +456,12 @@ both specs' verification steps.
 
 ## Harness consequences
 
+- Where the specs leave a verdict to the implementation (a sponsor's
+  stricter local policy, two checks in no prescribed order, a rule stated for
+  another instruction), a vector pins the Rust kit's verdict and lists the
+  other conformant ones in `expect.alsoConformant`, with the reason
+  (`alsoConformantReason`). The judge passes either; an accepted build is
+  still judged on its artifact.
 - Vectors encode these rulings. Runners pass chain state through the fixture
   RPC (`input.rpcUrl`) and MUST NOT inject defaults, resolve token programs or
   apply field precedence themselves.

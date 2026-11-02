@@ -37,6 +37,7 @@ if _python_src.is_dir():
 
 import httpx  # noqa: E402
 
+from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
 from solana_pay_kit.protocols.x402.client.upto import build_upto_header, parse_upto_challenge  # noqa: E402
 from solana_pay_kit.signer import Signer  # noqa: E402
 
@@ -92,7 +93,15 @@ async def _run() -> None:
             return
 
         expires_at = int(time.time()) + int(requirement.get("maxTimeoutSeconds", 300))
-        payment_header = await build_upto_header(signer, requirement, expires_at)
+        # The challenge normally carries recentBlockhash/recentSlot; the RPC
+        # is read only when it omits one.
+        rpc_url = os.environ.get("X402_HARNESS_RPC_URL")
+        rpc = SolanaRpc(rpc_url) if rpc_url else None
+        try:
+            payment_header = await build_upto_header(signer, requirement, expires_at, rpc=rpc)
+        finally:
+            if rpc is not None:
+                await rpc.aclose()
 
         paid = await http.get(target_url, headers={PAYMENT_SIGNATURE_HEADER: payment_header})
 

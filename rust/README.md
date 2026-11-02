@@ -250,14 +250,26 @@ and client — plus SIWX.
 after the handler runs, so it needs a `fee_payer_signer` (the fee payer signs
 the settlement as the channel's zero-share payee, and doubles as receiver
 authorizer — the voucher signer — by default) and is gated with `paid_upto_get`
-/ `paid_upto_post` rather than `paid_get` / `paid_post`.
+/ `paid_upto_post` rather than `paid_get` / `paid_post`. The recipient's token
+account for each offered currency must already exist: opens are refused until
+it does, and settlement never creates it at the fee payer's expense.
 
 The `upto` gate reads the meter only once the response body is complete, so it
 buffers the whole body before answering: a streaming handler reaches the client
 in one piece at the end. Bodies over 16 MiB, or bodies that fail mid-stream, are
 not delivered; the request settles at what was metered so far and answers 502.
 If settlement is still being retried in the background when the body is ready,
-the response is served without a `PAYMENT-RESPONSE` header.
+the response is served without a `PAYMENT-RESPONSE` header. A request dropped
+after its channel opened (a client disconnect, a timeout layer) still settles
+what was metered. A settlement that lands within the program's open-slot
+window (1,500 slots) leaves the channel account `Distributed`, holding the
+fee payer's rent until a permissionless `reclaim`; the `upto` server does not
+run one. When the payer's token account can no longer take its refund (closed
+or frozen since the open), settlement only seals the channel: `distribute`
+would send that refund to the protocol treasury. Run `distribute_sealed`
+periodically; it finds those channels on chain and distributes each once the
+account is usable again, or once `withdraw_delay` has passed since the open,
+when the refund goes to the treasury and the seller is paid.
 
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /
@@ -270,7 +282,11 @@ operator and caps its total channel escrow; the bundled server currently offers
 client-signed vouchers. When a payer force-closes a channel,
 `finalize_close` applies the server's latest voucher with `settle_and_seal`
 during the grace period rather than forfeiting it, then finalizes
-permissionlessly once the grace period has run out.
+permissionlessly once the grace period has run out. A channel whose payer refund
+account cannot take its refund is sealed without its `distribute`; later
+`finalize_close` passes distribute it once the account is usable, or once the
+channel has been sealed for its grace period, when the refund goes to the
+treasury.
 
 ## Client
 

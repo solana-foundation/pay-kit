@@ -16,6 +16,7 @@
 //! check is the positive control and the filler.
 
 pub mod batch;
+pub mod session;
 pub mod session_open;
 pub mod subscription;
 pub mod upto;
@@ -29,6 +30,7 @@ use solana_pay_kit::core::store::{
 };
 use solana_pay_kit::mpp::client::{
     build_charge_transaction_with_options, BuildChargeTransactionOptions, ComputeBudgetOptions,
+    PayerFundedAtaCreation,
 };
 use solana_pay_kit::mpp::protocol::core::{
     base64url_decode, base64url_encode, compute_challenge_id, Base64UrlJson,
@@ -138,6 +140,9 @@ pub struct Output {
     pub header: Option<String>,
     /// `exactBytes` (canonical-bytes).
     pub exact: Option<Map<String, Value>>,
+    /// The operator-signed voucher a session server persisted for an
+    /// accepted `use` (`channelId`, `cumulativeAmount`, `signer`).
+    pub session_voucher: Option<Value>,
 }
 
 /// A filled case.
@@ -201,6 +206,20 @@ pub async fn materialize(case: &Case) -> Result<Value, String> {
         }
         Input::Subscription(recipe) => subscription::materialize(case, recipe).await,
         Input::SessionOpen(spec) => session_open::materialize(case, spec).await,
+        Input::Session(recipe) => {
+            if let (Provenance::Generated, Expect::Reject { code, .. }, Some(want)) =
+                (&case.provenance, &case.expect, recipe.expected())
+            {
+                if want != *code {
+                    return Err(format!(
+                        "{:?} is paired with {want}, but the case declares {code}",
+                        recipe.tx
+                    ));
+                }
+            }
+            session::materialize(recipe).await
+        }
+        Input::SessionBuild(recipe) => session::build_input(recipe),
     }
 }
 
@@ -419,6 +438,7 @@ pub fn suite_build_artifact_field(intent: &str) -> Option<&'static str> {
         "x402-upto" => Some(upto::BUILD_ARTIFACT),
         "x402-batch-settlement" => Some(batch::BUILD_ARTIFACT),
         "subscription" => Some(subscription::BUILD_ARTIFACT),
+        "session" => Some(session::BUILD_ARTIFACT),
         _ => None,
     }
 }
@@ -441,15 +461,16 @@ pub async fn run(intent: Intent, mode: Mode, input: &Value) -> Observed {
         (Intent::Charge, Mode::VerifyTransaction) => charge_verify(input).await,
         (Intent::X402Exact, Mode::BuildTransaction) => x402_build(input).await,
         (Intent::X402Exact, Mode::VerifyTransaction) => x402_verify(input).await,
+        (Intent::Session, Mode::VerifyTransaction)
+            if input.get("sessionServerVerify").is_some() =>
+        {
+            session::verify(input).await
+        }
+        (Intent::Session, Mode::BuildTransaction) => session::build(input).await,
         (Intent::Session, Mode::VerifyTransaction) if input.get("sessionOpenVerify").is_some() => {
             session_open::verify(input).await
         }
         (Intent::Session, Mode::VerifyTransaction) => session_verify(input).await,
-        (intent, mode) => Ok(Observed::NotExpressible(format!(
-            "no kit path for {} {}",
-            intent.as_str(),
-            mode.as_str()
-        ))),
     };
     result.unwrap_or_else(|setup| Observed::NotExpressible(format!("case setup failed: {setup}")))
 }
@@ -504,6 +525,9 @@ async fn charge_build(input: &Value) -> Result<String, String> {
         external_id: charge.external_id.clone(),
         compute_budget: budget,
         max_tx_version: signer_max_version(input)?,
+        // The vectors pin the spec's client-paid shape, which includes split
+        // ATA creation (RULINGS C5); the kit declines it by default.
+        payer_funded_ata_creation: PayerFundedAtaCreation::Include,
         ..Default::default()
     };
     let recipient = charge
@@ -876,6 +900,24 @@ pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
             Err(e) => return Ok(Observed::reject(format!("invalid payload: {e}"))),
         }
     }
+    if let Some(sam) = input.get("sessionAuthenticationMessage") {
+        // The bearer-proof message bytes the payer signs (JCS of channelId,
+        // domain, payer, sessionChallengeId).
+        let auth = solana_pay_kit::mpp::protocol::intents::session::SessionAuthentication {
+            kind: solana_pay_kit::mpp::protocol::intents::session::SessionAuthenticationType::Proof,
+            challenge_id: str_field(sam, "challengeId").to_string(),
+            payer: str_field(sam, "payer").to_string(),
+            signature: String::new(),
+        };
+        let bytes = auth
+            .message_bytes(str_field(sam, "channelId"))
+            .map_err(|e| e.to_string())?;
+        exact.insert(
+            "canonicalJson".into(),
+            json!(String::from_utf8(bytes.clone()).map_err(|e| e.to_string())?),
+        );
+        exact.insert("base64Url".into(), json!(base64url_encode(&bytes)));
+    }
     if let Some(sw) = input.get("sessionWire") {
         let value = sw.get("value").cloned().unwrap_or(Value::Null);
         let reencoded = match str_field(sw, "shape") {
@@ -952,8 +994,27 @@ pub(crate) fn canonical_bytes(input: &Value) -> Result<Observed, String> {
 
 // ── expectation ────────────────────────────────────────────────────────────
 
-/// Build the `expect` block, enforcing the case's contract with the kit.
+/// Build the `expect` block, enforcing the case's contract with the kit, and
+/// append the verdicts the specs also allow (`alsoConformant`).
 pub fn expectation(case: &Case, input: &Value, observed: &Observed) -> Result<Value, String> {
+    let mut expect = primary_expectation(case, input, observed)?;
+    if let Some(also) = &case.also_conformant {
+        expect["alsoConformant"] = also
+            .verdicts
+            .iter()
+            .map(|alt| match alt {
+                crate::case::Alternative::Accept => json!({ "outcome": "accept" }),
+                crate::case::Alternative::Reject(code) => {
+                    json!({ "outcome": "reject", "rejectCode": code.as_str() })
+                }
+            })
+            .collect();
+        expect["alsoConformantReason"] = json!(also.reason);
+    }
+    Ok(expect)
+}
+
+fn primary_expectation(case: &Case, input: &Value, observed: &Observed) -> Result<Value, String> {
     match &case.provenance {
         Provenance::Generated => match (&case.expect, observed) {
             (Expect::Accept(pin), Observed::Accept(output)) => {
@@ -1063,6 +1124,13 @@ pub fn project(pin: &Pin, output: &Output, input: &Value) -> Result<Value, Strin
                 out.insert((*key).to_string(), value.clone());
             }
             Ok(json!({ "exactBytes": out }))
+        }
+        Pin::SessionVoucher => {
+            let voucher = output
+                .session_voucher
+                .clone()
+                .ok_or("kit produced no session voucher")?;
+            Ok(json!({ "sessionVoucher": voucher }))
         }
         Pin::Envelope(keys) => {
             let header = output.header.as_ref().ok_or("kit produced no header")?;

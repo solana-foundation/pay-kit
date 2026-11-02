@@ -401,8 +401,10 @@ pub enum PendingClaim {
 ///
 /// It is also the floor for how long a [`Store`] keeps charge records and
 /// [`ConsumedSignatures`] claims: an MPP server accepting push credentials
-/// refuses any challenge that expires later than this from now, so a paid
-/// signature cannot outlive its replay record.
+/// refuses any challenge that expires later than this from now, and any
+/// pushed transaction confirmed longer ago than this, so a paid signature
+/// cannot outlive its replay record. A store that loses its records (an
+/// in-memory store across a restart) still reopens that window.
 pub const DEFAULT_CHARGE_RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a charge record may sit in [`ChargeRecordState::Reserved`]
@@ -1331,6 +1333,23 @@ pub enum ObservedLifecycle {
     Terminal { started_at: Option<u64> },
 }
 
+impl ObservedLifecycle {
+    /// The lifecycle a confirmed read of a payment-channel account shows,
+    /// from its `status` and `closure_started_at` fields. `now` stands in
+    /// for a close the account reports without a start time.
+    pub fn of_channel(status: u8, closure_started_at: i64, now: u64) -> Self {
+        const OPEN: u8 = 0;
+        const CLOSING: u8 = 2;
+        let started_at = (closure_started_at != 0 || status != OPEN)
+            .then(|| u64::try_from(closure_started_at).unwrap_or(now).max(1));
+        match (status, started_at) {
+            (OPEN | CLOSING, Some(started_at)) => Self::Closing { started_at },
+            (OPEN, None) => Self::Open,
+            (_, started_at) => Self::Terminal { started_at },
+        }
+    }
+}
+
 /// One onchain read of a channel; see [`ChannelState::record_onchain_observation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OnchainObservation {
@@ -1522,6 +1541,10 @@ pub struct ProcessedUse {
     pub idempotency_key: String,
     pub cumulative: u64,
     pub voucher_signature: String,
+    /// The amount charged. Absent on records written before it was kept;
+    /// such a record never matches a metered retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
 }
 
 // ── Durable payment authorizations ──

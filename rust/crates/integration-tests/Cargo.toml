@@ -28,18 +28,18 @@ serial_test = "3"
 serde_json = "1"
 bytemuck = "1.25"
 spl-record = { version = "0.4.0", features = ["no-entrypoint"] }
-surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "30242a4fe3b87557f3d6f1629f548e2515718242" }
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "9be726da6456b58a3b39c099885c6c5904da4543" }
 # litesvm 0.16 is the first release that executes Transaction V1 and reads
 # the compute budget from its message config.
-litesvm = "0.16"
+litesvm = "0.18"
 # Atomic solana crates the integration tests import directly.
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "~4.4", default-features = false }
+solana-message = { version = "~4.5", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "~4.1", default-features = false }
+solana-transaction = { version = "~4.2", default-features = false }
 solana-rpc-client = { version = "4.1", default-features = false }
 # Confidential-transfer integration test (gated `#![cfg(feature = "confidential")]`).
 solana-zk-sdk = "7.0.1"

@@ -13,6 +13,7 @@ import base64
 import struct
 from typing import Any, cast
 
+from solana_pay_kit._paycore import txv1
 from solana_pay_kit._paycore.mints import derive_ata
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM as SPL_TOKEN_PROGRAM
 from solana_pay_kit.errors import InvalidProofError
@@ -28,6 +29,8 @@ __all__ = [
     "LIGHTHOUSE_PROGRAM",
     "TOKEN_2022_PROGRAM",
     "MAX_COMPUTE_UNIT_PRICE",
+    "MAX_COMPUTE_UNIT_LIMIT",
+    "accepted_transaction_versions",
 ]
 
 #: x402 ``exact`` scheme identifier (rust ``EXACT_SCHEME``, types.rs:6).
@@ -57,6 +60,32 @@ TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 #: Maximum SetComputeUnitPrice in microlamports. Matches the Rust spine
 #: constant ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`` in verify.rs.
 MAX_COMPUTE_UNIT_PRICE = 5_000_000
+#: Maximum compute unit limit the sponsor pays for (scheme_exact_svm.md
+#: §2.2.1). Matches the Rust spine constant ``MAX_COMPUTE_UNIT_LIMIT``.
+MAX_COMPUTE_UNIT_LIMIT = 400_000
+
+_LIMIT_TOO_HIGH = "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high"
+_PRICE_TOO_HIGH = "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
+_UNSUPPORTED_VERSION = "unsupported_transaction_version"
+
+
+def _invalid(reason: str) -> InvalidProofError:
+    return InvalidProofError(reason, code=reason)
+
+
+def accepted_transaction_versions(requirement: dict[str, Any]) -> tuple[int, ...]:
+    """The message versions the route accepts, from its ``extra.transactionVersions``.
+
+    Absent means ``[0]`` (scheme_exact_svm.md §1.5); a present list is the
+    accepted set verbatim. The route's own offer is server configuration, so
+    a malformed list is a configuration error, not a payer error.
+    """
+    extra = requirement.get("extra")
+    advertised = cast("dict[str, object]", extra).get("transactionVersions") if isinstance(extra, dict) else None
+    try:
+        return txv1.accepted_versions(txv1.parse_transaction_versions(advertised))
+    except txv1.TransactionVersionError as exc:
+        raise ValueError(f"solana_pay_kit: the route's extra.transactionVersions is invalid: {exc}") from exc
 
 
 def _u64_le(data: bytes, offset: int) -> int:
@@ -92,97 +121,158 @@ class ExactVerifier:
         facilitator fee payer) that must never be the transfer authority.
         Returns a dict describing the matched transfer on success.
         """
-        from solders.transaction import VersionedTransaction
-
         try:
             raw = base64.b64decode(transaction_base64, validate=True)
         except Exception as exc:  # noqa: BLE001 - any decode failure is a reject
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_base64",
-                code="invalid_exact_svm_payload_base64",
-            ) from exc
+            raise _invalid("invalid_exact_svm_payload_base64") from exc
         if not raw:
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_base64",
-                code="invalid_exact_svm_payload_base64",
-            )
+            raise _invalid("invalid_exact_svm_payload_base64")
 
-        # ``from_bytes`` dispatches on the message-version prefix: legacy and
-        # v0 wires both decode and are held to the same static layout.
+        # Legacy, version 0 and version 1 wires all decode; legacy is policed
+        # as version 0 (scheme_exact_svm.md §1.5).
         try:
-            tx = VersionedTransaction.from_bytes(raw)
+            tx = txv1.decode_transaction(raw)
         except Exception as exc:  # noqa: BLE001
+            raise _invalid("invalid_exact_svm_payload_transaction_parse") from exc
+
+        # §1.5: a version outside the accepted set is refused before any
+        # instruction is inspected; then the per-version wire limits.
+        accepted = accepted_transaction_versions(requirement)
+        version = txv1.policy_version(tx.message)
+        if version not in accepted:
+            listed = ", ".join(str(v) for v in accepted)
             raise InvalidProofError(
-                "invalid_exact_svm_payload_transaction_parse",
-                code="invalid_exact_svm_payload_transaction_parse",
+                f"{_UNSUPPORTED_VERSION}: transaction version {version} is not accepted; accepted versions: {listed}",
+                code=_UNSUPPORTED_VERSION,
+            )
+        try:
+            txv1.check_envelope(tx, accepted)
+        except txv1.TransactionVersionError as exc:
+            raise InvalidProofError(
+                f"invalid_exact_svm_payload_transaction: {exc}",
+                code="invalid_exact_svm_payload_transaction",
             ) from exc
 
         message = tx.message
         instructions = list(message.instructions)
         account_keys = [str(key) for key in message.account_keys]
+        # Version 1 carries its compute budget in the header, so its static
+        # layout has no ComputeBudget prefix (rust ``verify_exact_versioned_transaction``).
+        header_budget = version == 1
+        if header_budget:
+            ExactVerifier._verify_v1_config(message)
 
-        # Rule 1: instruction count 3..=6.
+        # Rule 1: version 0 is [limit, price, transfer, <=4 optional] (3 to 7
+        # instructions); version 1 is [transfer, <=4 optional].
+        prefix = 0 if header_budget else 2
         n = len(instructions)
-        if n < 3 or n > 6:
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_transaction_instructions_length",
-                code="invalid_exact_svm_payload_transaction_instructions_length",
-            )
+        if n < prefix + 1 or n > prefix + 5:
+            raise _invalid("invalid_exact_svm_payload_transaction_instructions_length")
 
-        # Rule 2: ix[0] = ComputeBudget SetComputeUnitLimit (disc 2, 5 bytes).
-        ExactVerifier._verify_compute_limit(instructions[0], account_keys)
-        # Rule 3: ix[1] = ComputeBudget SetComputeUnitPrice (disc 3, 9 bytes, <= MAX).
-        ExactVerifier._verify_compute_price(instructions[1], account_keys)
+        if not header_budget:
+            # Rule 2: ix[0] = ComputeBudget SetComputeUnitLimit (disc 2, 5 bytes, <= MAX).
+            ExactVerifier._verify_compute_limit(instructions[0], account_keys)
+            # Rule 3: ix[1] = ComputeBudget SetComputeUnitPrice (disc 3, 9 bytes, <= MAX).
+            ExactVerifier._verify_compute_price(instructions[1], account_keys)
         # Rules 4 + 5 + 6 + 7 + 8 + 11: transferChecked.
-        transfer = ExactVerifier._verify_transfer(instructions[2], account_keys, requirement, managed_signers)
+        transfer = ExactVerifier._verify_transfer(instructions[prefix], account_keys, requirement, managed_signers)
 
-        # Rule 9: ix[3:] allowlist. Per the official x402 SVM exact contract
-        # (specs/schemes/exact/scheme_exact_svm.md), the only permitted optional
-        # instructions are Lighthouse (wallet-injected user-protection asserts,
-        # Phantom=1 / Solflare=2) and SPL Memo. A Create-ATA / Associated Token
-        # Program instruction is NOT allowed: the destination ATA MUST pre-exist
-        # (Rule 7 derives and pins the destination ATA). This matches the
-        # Rust/Go verifiers, which accept Lighthouse or Memo in ANY optional
-        # slot (rust verify.rs iter().skip(3); go verify.go case Memo/Lighthouse
-        # for all i>=3) and never accept ATA-create in this shape. Lighthouse is
-        # not slot-restricted because wallets inject a variable number of guards.
+        # §2.1.1: the fee payer (any managed signer) MUST NOT appear in the
+        # accounts of ANY instruction, nor be invoked as a program. Checked
+        # before the optional-instruction allowlist, as the Rust spine does, so
+        # a sponsor-drain instruction is named for the fee payer it abuses.
+        for ix in instructions:
+            indexes = [int(ix.program_id_index), *(int(idx) for idx in bytes(ix.accounts))]
+            for idx in indexes:
+                key = account_keys[idx] if 0 <= idx < len(account_keys) else None
+                if key is not None and key in managed_signers:
+                    raise _invalid("invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts")
+
+        # Rule 9: optional-slot allowlist (scheme_exact_svm.md §3.1). Slots
+        # 4-6 take Lighthouse (wallet-injected user-protection asserts) or SPL
+        # Memo; slot 7 takes Memo only. A Create-ATA instruction is never
+        # accepted: the destination ATA MUST pre-exist (Rule 7 pins it).
         reasons = (
             "invalid_exact_svm_payload_unknown_fourth_instruction",
             "invalid_exact_svm_payload_unknown_fifth_instruction",
             "invalid_exact_svm_payload_unknown_sixth_instruction",
+            "invalid_exact_svm_payload_unknown_seventh_instruction",
         )
-        for i in range(3, n):
-            ix = instructions[i]
+        for slot_index, ix in enumerate(instructions[prefix + 1 :]):
             program = ExactVerifier._program_of(account_keys, ix)
-            slot_index = i - 3
-            allowed = program in (MEMO_PROGRAM, LIGHTHOUSE_PROGRAM)
-            if not allowed:
-                reason = (
-                    reasons[slot_index]
-                    if slot_index < len(reasons)
-                    else "invalid_exact_svm_payload_unknown_optional_instruction"
-                )
-                raise InvalidProofError(reason, code=reason)
-
-        # §2.1.1: the fee payer (any managed signer) MUST NOT appear in the
-        # accounts of ANY instruction, not only the transfer.
-        for ix in instructions:
-            for idx in ix.accounts:
-                key = account_keys[int(idx)] if 0 <= int(idx) < len(account_keys) else None
-                if key is not None and key in managed_signers:
-                    raise InvalidProofError(
-                        "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                        code="invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                    )
+            if program == MEMO_PROGRAM or (slot_index < 3 and program == LIGHTHOUSE_PROGRAM):
+                continue
+            reason = (
+                reasons[slot_index]
+                if slot_index < len(reasons)
+                else "invalid_exact_svm_payload_unknown_optional_instruction"
+            )
+            raise _invalid(reason)
 
         # Rule 10: memo binding (exactly one Memo == extra.memo if set).
         expected_memo = ExactVerifier._string_extra(requirement, "memo", required=False)
         if expected_memo:
-            ExactVerifier._find_memo_match(account_keys, instructions, expected_memo)
+            ExactVerifier._find_memo_match(account_keys, instructions[prefix + 1 :], expected_memo)
+
+        # The sponsor pays whatever priority fee the client's limit and price
+        # add up to: bound the product, not each factor (RULINGS S6).
+        try:
+            txv1.check_priority_fee(message, txv1.MAX_SPONSORED_PRIORITY_FEE_LAMPORTS)
+        except txv1.TransactionVersionError as exc:
+            raise InvalidProofError(f"{_PRICE_TOO_HIGH}: {exc}", code=_PRICE_TOO_HIGH) from exc
+
+        # Only the fee payer and the transfer authority may sign: every extra
+        # required signature is a base fee the sponsor pays (§2.1.4).
+        required = int(message.header.num_required_signatures)
+        allowed_signers: set[str] = {account_keys[0], str(transfer["authority"])} if account_keys else set()
+        if any(key not in allowed_signers for key in account_keys[:required]):
+            raise _invalid("invalid_exact_svm_payload_transaction_unexpected_signer")
 
         # The destination ATA must pre-exist; ATA-create is never accepted.
         transfer["destinationCreateAta"] = False
+        transfer["transactionVersion"] = version
         return transfer
+
+    @staticmethod
+    def _verify_v1_config(message: Any) -> None:
+        """Version-1 header budget rules (scheme_exact_svm.md §1.5, §2.2.1).
+
+        Each rule with its own reason is checked first, in the Rust spine's
+        order (``verify_v1_config_presence``): no ComputeBudget instruction
+        (the runtime ignores them on version 1, so bounding one bounds
+        nothing), no heap request, the compute unit limit and the
+        loaded-account-data budget both set. Then the limit and price caps,
+        and the remaining header bounds (a zero value, one over the runtime
+        maximum). The loaded-data budget must be set, not the maximum.
+        """
+        keys = message.account_keys
+        if any(
+            int(ix.program_id_index) < len(keys) and keys[int(ix.program_id_index)] == txv1.COMPUTE_BUDGET_PROGRAM
+            for ix in message.instructions
+        ):
+            raise _invalid("invalid_exact_svm_payload_transaction_v1_compute_budget_instruction")
+        config = message.config
+        if config.heap_size is not None:
+            raise _invalid("invalid_exact_svm_payload_transaction_v1_heap_size")
+        if config.compute_unit_limit is None:
+            raise _invalid("invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction")
+        if config.loaded_accounts_data_size_limit is None:
+            raise _invalid("invalid_exact_svm_payload_transaction_loaded_accounts_data_size_limit_missing")
+        declared = txv1.declared_budget(message)
+        if declared.unit_limit is not None and declared.unit_limit > MAX_COMPUTE_UNIT_LIMIT:
+            raise _invalid(_LIMIT_TOO_HIGH)
+        if (
+            declared.unit_price_micro_lamports is not None
+            and declared.unit_price_micro_lamports > MAX_COMPUTE_UNIT_PRICE
+        ):
+            raise _invalid(_PRICE_TOO_HIGH)
+        try:
+            txv1.check_v1_budget_caps(message, MAX_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_PRICE, loaded_rule="present")
+        except txv1.TransactionVersionError as exc:
+            raise InvalidProofError(
+                f"invalid_exact_svm_payload_transaction: {exc}",
+                code="invalid_exact_svm_payload_transaction",
+            ) from exc
 
     @staticmethod
     def _verify_compute_limit(ix: Any, account_keys: list[str]) -> None:
@@ -193,6 +283,8 @@ class ExactVerifier:
                 "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
                 code="invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
             )
+        if int.from_bytes(data[1:5], "little") > MAX_COMPUTE_UNIT_LIMIT:
+            raise _invalid(_LIMIT_TOO_HIGH)
 
     @staticmethod
     def _verify_compute_price(ix: Any, account_keys: list[str]) -> None:
@@ -305,11 +397,10 @@ class ExactVerifier:
         }
 
     @staticmethod
-    def _find_memo_match(account_keys: list[str], instructions: list[Any], expected_memo: str) -> None:
+    def _find_memo_match(account_keys: list[str], optional: list[Any], expected_memo: str) -> None:
         count = 0
         last_data: bytes | None = None
-        for i in range(3, len(instructions)):
-            ix = instructions[i]
+        for ix in optional:
             if ExactVerifier._program_of(account_keys, ix) == MEMO_PROGRAM:
                 count += 1
                 last_data = bytes(ix.data)

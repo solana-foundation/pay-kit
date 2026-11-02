@@ -115,14 +115,20 @@ class ProcessedUse:
     idempotency_key: str
     cumulative: int
     voucher_signature: str
+    # The request's charged total. ``None`` on records written before it was
+    # kept; such a record never matches a metered retry.
+    amount: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "challengeId": self.challenge_id,
             "idempotencyKey": self.idempotency_key,
             "cumulative": self.cumulative,
             "voucherSignature": self.voucher_signature,
         }
+        if self.amount is not None:
+            d["amount"] = self.amount
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProcessedUse:
@@ -131,6 +137,7 @@ class ProcessedUse:
             idempotency_key=str(data.get("idempotencyKey", "")),
             cumulative=int(data.get("cumulative", 0)),
             voucher_signature=str(data.get("voucherSignature", "")),
+            amount=None if data.get("amount") is None else int(data["amount"]),
         )
 
 

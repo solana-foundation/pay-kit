@@ -440,6 +440,22 @@ fn case_show(root: &Path, id: &str) -> ExitCode {
             .unwrap_or_default(),
         vector.file
     );
+    if let Some(alternatives) = vector.expect()["alsoConformant"].as_array() {
+        let verdicts: Vec<String> = alternatives
+            .iter()
+            .map(|alt| match alt["rejectCode"].as_str() {
+                Some(code) => format!("reject {code}"),
+                None => alt["outcome"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect();
+        println!(
+            "also conformant: {} ({})\n",
+            verdicts.join(", "),
+            vector.expect()["alsoConformantReason"]
+                .as_str()
+                .unwrap_or_default()
+        );
+    }
     if let Some(d) = vector.raw["description"].as_str() {
         println!("{d}\n");
     }

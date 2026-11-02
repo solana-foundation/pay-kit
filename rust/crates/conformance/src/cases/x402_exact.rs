@@ -549,6 +549,10 @@ crate::registry! {
         X402HeaderSpec { mutation: Some(Mutation::OverPay { transfer: 0, delta: 1 }), ..header(devnet_route()) },
         Expect::Accept(Pin::Envelope(vec!["x402Version", "hasAccepted", "payloadHasTransaction"])),
     )
+    .also_conformant(
+        &[crate::case::Alternative::Reject(RejectCode::AmountMismatch)],
+        "§1.4 tolerates overpayment, but §3.1 also reads “Fee payer isolation, destination ATA derivation, and exact amount match are enforced on both layouts” and §2.3 lets a sponsor's policy refuse a scheme-valid transaction (“A transaction MAY be valid under the `exact` scheme while being rejected by a sponsor's policy.”), so a sponsor that requires the exact amount is conformant too (RULINGS S5).",
+    )
     .build();
     x402_exact_verify_accepted_amount_lie_reject => verify_case(
         "x402-exact-verify-accepted-amount-lie-reject",

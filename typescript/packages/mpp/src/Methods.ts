@@ -1,5 +1,7 @@
 import { Method, z } from 'mppx';
 
+import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from './constants.js';
+
 const sessionVoucherSigner = z.enum(['client', 'operator']);
 const sessionAuthentication = z.object({
     challengeId: z.string(),
@@ -28,6 +30,14 @@ const voucherExpiresAt = z
             'expiresAt is an i64 but exceeds JavaScript safe-integer precision (2^53 - 1); larger values cannot be represented as JSON numbers',
         ),
     );
+
+/**
+ * `methodDetails.transactionVersions` (mpp-specs-txv1 Transaction Versions):
+ * the transaction message versions the server accepts, an array of the JSON
+ * integers 0 and 1. Servers MUST NOT advertise "legacy"; strings, other
+ * numbers and a bare integer are refused. Absent means `[0]`.
+ */
+const transactionVersions = z.array(z.union([z.literal(0), z.literal(1)]));
 
 const signedVoucher = z.object({
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
@@ -116,6 +126,8 @@ export const charge = Method.from({
                 ),
                 /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from the currency mint. */
                 tokenProgram: z.optional(z.string()),
+                /** Transaction message versions the server accepts (0 and/or 1). Absent means [0]. */
+                transactionVersions: z.optional(transactionVersions),
             }),
             /** Base58-encoded recipient public key. */
             recipient: z.string(),
@@ -124,6 +136,45 @@ export const charge = Method.from({
 });
 
 const subscriptionPeriodUnit = z.enum(['day', 'week']);
+
+/**
+ * draft-solana-subscription-00 §Shared Fields: `amount` and `periodCount`
+ * "MUST be a string representation of a positive integer in base 10 with no
+ * sign, decimal point, exponent, or surrounding whitespace. Leading zeros
+ * MUST NOT be used."
+ */
+const SUBSCRIPTION_POSITIVE_INTEGER = /^[1-9][0-9]*$/;
+const U64_MAX = (1n << 64n) - 1n;
+
+const subscriptionAmount = z.string().check(
+    z.regex(
+        SUBSCRIPTION_POSITIVE_INTEGER,
+        'amount must be a positive base-10 integer with no sign, decimal point, exponent, whitespace, or leading zeros',
+    ),
+    z.refine(
+        value => !SUBSCRIPTION_POSITIVE_INTEGER.test(value) || BigInt(value) <= U64_MAX,
+        'amount must fit in a u64',
+    ),
+);
+
+const subscriptionPeriodCount = z
+    .string()
+    .check(
+        z.regex(
+            SUBSCRIPTION_POSITIVE_INTEGER,
+            'periodCount must be a positive base-10 integer with no sign, decimal point, exponent, whitespace, or leading zeros',
+        ),
+    );
+
+/** §Method Details: tokenProgram "MUST be the SPL Token program or the SPL Token-2022 program". */
+const subscriptionTokenProgram = z
+    .string()
+    .check(
+        z.refine(
+            value => value === TOKEN_PROGRAM || value === TOKEN_2022_PROGRAM,
+            `tokenProgram must be ${TOKEN_PROGRAM} or ${TOKEN_2022_PROGRAM}`,
+        ),
+    );
 
 /**
  * Solana subscription method — shared schema used by both server and client.
@@ -167,8 +218,8 @@ export const subscription = Method.from({
             ]),
         },
         request: z.object({
-            /** Per-period token amount in base units. */
-            amount: z.string(),
+            /** Per-period token amount in base units (positive base-10 integer, no leading zeros). */
+            amount: subscriptionAmount,
             /** Base58 SPL token mint address. */
             currency: z.string(),
             /** Human-readable subscription description. */
@@ -210,10 +261,10 @@ export const subscription = Method.from({
                 /** Base58 of the subscriptions program deployment. */
                 subscriptionProgram: z.string(),
                 /** Base58 of the SPL Token or Token-2022 program ID. */
-                tokenProgram: z.string(),
+                tokenProgram: subscriptionTokenProgram,
             }),
-            /** Positive integer count of `periodUnit` values per billing period. */
-            periodCount: z.string(),
+            /** Positive integer count of `periodUnit` values per billing period (base 10, no leading zeros). */
+            periodCount: subscriptionPeriodCount,
             /** Billing period unit. The Solana profile supports `day` and `week` only. */
             periodUnit: subscriptionPeriodUnit,
             /** Primary recipient's wallet pubkey (base58). */
@@ -257,6 +308,12 @@ export const session = Method.from({
                     payer: z.string(),
                     salt: z.string(),
                     transaction: z.string(),
+                    /**
+                     * draft-solana-session-00 Action open: the open payload
+                     * "MUST NOT carry an initial voucher". Rejected here rather
+                     * than silently stripped as an unknown key.
+                     */
+                    voucher: z.optional(z.never()),
                 }),
                 z.object({
                     action: z.literal('voucher'),
@@ -317,6 +374,8 @@ export const session = Method.from({
                 recentBlockhash: z.optional(z.string()),
                 recentSlot: z.optional(z.string()),
                 tokenProgram: z.optional(z.string()),
+                /** Transaction message versions the server accepts for the open and topUp transactions. Absent means [0]. */
+                transactionVersions: z.optional(transactionVersions),
                 ttlSeconds: z.optional(z.number()),
                 voucherSigner: z.optional(sessionVoucherSigner),
             }),

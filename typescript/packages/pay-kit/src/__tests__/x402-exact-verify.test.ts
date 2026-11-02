@@ -23,9 +23,12 @@ import { describe, expect, it } from 'vitest';
 import {
     assertX402AcceptedMatchesRoute,
     assertX402FeePayerIsolated,
+    bindX402ExactCredential,
     verifyX402ExactCredential,
     X402_ACCEPTED_MISMATCH,
     X402_FEE_PAYER_IN_INSTRUCTION_ACCOUNTS,
+    X402_NETWORK_MISMATCH,
+    x402V1Network,
 } from '../adapters/x402-exact-verify.js';
 import { InvalidProofError } from '../errors.js';
 
@@ -189,5 +192,67 @@ describe('verifyX402ExactCredential', () => {
                 verifyX402ExactCredential({ accepted: ROUTE, payload: { transaction: wire([memo()]) } }, ROUTE),
             ),
         ).toBeUndefined();
+    });
+});
+
+describe('x402V1Network', () => {
+    it('names each Solana cluster as the v1 spec does', () => {
+        expect(x402V1Network('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe('solana');
+        expect(x402V1Network('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')).toBe('solana-devnet');
+        expect(x402V1Network('solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z')).toBe('solana-testnet');
+    });
+});
+
+// x402-specification-v1.md §5.2: a v1 credential commits only to `scheme`
+// and a plain network name.
+describe('bindX402ExactCredential', () => {
+    const v1 = (overrides: Record<string, unknown> = {}) => ({
+        network: 'solana-devnet',
+        payload: { transaction: wire([memo()]) },
+        scheme: 'exact',
+        x402Version: 1,
+        ...overrides,
+    });
+
+    it('returns a bound v2 credential unchanged', () => {
+        const credential = { accepted: ROUTE, payload: { transaction: wire([memo()]) }, x402Version: 2 };
+        expect(bindX402ExactCredential(credential, ROUTE)).toBe(credential);
+    });
+
+    it('binds a v2 credential with verifyX402ExactCredential', () => {
+        const credential = { accepted: { ...ROUTE, amount: '1' }, payload: {}, x402Version: 2 };
+        expect(codeOf(() => bindX402ExactCredential(credential, ROUTE))).toBe(X402_ACCEPTED_MISMATCH);
+    });
+
+    it('carries a route-bound v1 credential as a v2 payload accepting the route', () => {
+        const credential = v1();
+        expect(bindX402ExactCredential(credential, ROUTE)).toEqual({
+            accepted: ROUTE,
+            payload: credential.payload,
+            x402Version: 2,
+        });
+    });
+
+    it.each([
+        ['another cluster', 'solana'],
+        ['a CAIP-2 id', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'],
+        ['no network', undefined],
+    ])('refuses a v1 network naming %s', (_label, network) => {
+        expect(codeOf(() => bindX402ExactCredential(v1({ network }), ROUTE))).toBe(X402_NETWORK_MISMATCH);
+    });
+
+    it('refuses a v1 scheme other than the route scheme', () => {
+        expect(codeOf(() => bindX402ExactCredential(v1({ scheme: 'upto' }), ROUTE))).toBe('unsupported_scheme');
+    });
+
+    it('keeps the fee payer out of a v1 transaction', () => {
+        const tx = wire([memo([{ address: FEE_PAYER, role: AccountRole.READONLY_SIGNER }])]);
+        expect(codeOf(() => bindX402ExactCredential(v1({ payload: { transaction: tx } }), ROUTE))).toBe(
+            X402_FEE_PAYER_IN_INSTRUCTION_ACCOUNTS,
+        );
+    });
+
+    it.each([undefined, 0, 3, '2'])('refuses x402Version %s', x402Version => {
+        expect(codeOf(() => bindX402ExactCredential(v1({ x402Version }), ROUTE))).toBe('invalid_x402_version');
     });
 });

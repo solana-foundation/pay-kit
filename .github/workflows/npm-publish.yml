@@ -29,6 +29,9 @@ on:
 permissions:
   contents: write
   id-token: write
+  # The called CI workflow's path-filter job reads PR metadata; a reusable
+  # workflow cannot request more than its caller grants (startup_failure).
+  pull-requests: read
 
 # Prevent concurrent publishes
 concurrency:

@@ -93,6 +93,28 @@ pub const INVALID_CHANNEL_CLOSING: &str = "invalid_batch_settlement_svm_channel_
 pub const INVALID_PAYOUT_ATTRIBUTION_AMBIGUOUS: &str =
     "invalid_batch_settlement_svm_payout_attribution_ambiguous";
 
+/// The receiver-authorizer binding of section 3 is unavailable for this
+/// channel, so a cooperative refund cannot be authenticated. The client MAY
+/// retry once with a payer-signed `request_close` transaction.
+pub const INVALID_RECEIVER_BINDING_UNAVAILABLE: &str =
+    "invalid_batch_settlement_svm_receiver_binding_unavailable";
+
+// ── Standard x402 codes this scheme reports ──
+
+/// x402 v2 §9: the envelope's protocol version is not supported (this scheme
+/// requires `x402Version` 2).
+pub const INVALID_X402_VERSION: &str = "invalid_x402_version";
+
+/// x402 v2 §9: the payment requirements are invalid for this request —
+/// reported when `paymentPayload.accepted` does not equal the route's
+/// `paymentRequirements` (spec §4.5).
+pub const INVALID_PAYMENT_REQUIREMENTS: &str = "invalid_payment_requirements";
+
+/// x402-txv1: a client-supplied transaction's message version is outside the
+/// set the facilitator advertises in `extra.transactionVersions`, rejected
+/// before any instruction is inspected.
+pub const UNSUPPORTED_TRANSACTION_VERSION: &str = "unsupported_transaction_version";
+
 /// The same client-supplied setup or refund transaction is already settling.
 /// A standard x402 code rather than a scheme-specific one.
 pub const DUPLICATE_SETTLEMENT: &str = "duplicate_settlement";
@@ -120,6 +142,20 @@ pub const ALL_CODES: &[&str] = &[
     INVALID_REFUND_TRANSACTION,
     INVALID_CHANNEL_CLOSING,
     INVALID_PAYOUT_ATTRIBUTION_AMBIGUOUS,
+    INVALID_RECEIVER_BINDING_UNAVAILABLE,
+    INVALID_X402_VERSION,
+    INVALID_PAYMENT_REQUIREMENTS,
+    UNSUPPORTED_TRANSACTION_VERSION,
+    DUPLICATE_SETTLEMENT,
+];
+
+/// The standard x402 / x402-txv1 codes in [`ALL_CODES`], which carry no
+/// scheme prefix.
+#[cfg(test)]
+const STANDARD_CODES: &[&str] = &[
+    INVALID_X402_VERSION,
+    INVALID_PAYMENT_REQUIREMENTS,
+    UNSUPPORTED_TRANSACTION_VERSION,
     DUPLICATE_SETTLEMENT,
 ];
 
@@ -159,13 +195,29 @@ impl From<BatchError> for crate::x402::error::Error {
 ///
 /// The server composes checks that return the crate-wide [`crate::x402::error::Error`],
 /// which erases the code into a string; this maps it back for the wire without
-/// forcing every intermediate helper to thread a typed error.
+/// forcing every intermediate helper to thread a typed error. The code a
+/// [`BatchError`] leads with wins: its detail may quote client-supplied
+/// text, which must not be able to name a different code.
 pub fn classify(message: &str) -> &'static str {
-    ALL_CODES
-        .iter()
-        .find(|code| message.contains(*code))
-        .copied()
+    leading_code(message)
+        .or_else(|| {
+            ALL_CODES
+                .iter()
+                .find(|code| message.contains(*code))
+                .copied()
+        })
         .unwrap_or("transaction_failed")
+}
+
+/// The code a [`BatchError`] message leads with (`"<code>: <detail>"`), if
+/// it leads with one. Unlike [`classify`] it never searches the detail, so
+/// a decision taken on it cannot be steered by text a client supplied.
+pub fn leading_code(message: &str) -> Option<&'static str> {
+    ALL_CODES.iter().copied().find(|code| {
+        message
+            .strip_prefix(code)
+            .is_some_and(|rest| rest.starts_with(": "))
+    })
 }
 
 #[cfg(test)]
@@ -176,7 +228,7 @@ mod tests {
     fn every_scheme_code_carries_the_spec_prefix() {
         for code in ALL_CODES {
             assert!(
-                code.starts_with("invalid_batch_settlement_svm_") || *code == DUPLICATE_SETTLEMENT,
+                code.starts_with("invalid_batch_settlement_svm_") || STANDARD_CODES.contains(code),
                 "unexpected code shape: {code}"
             );
         }
@@ -195,5 +247,28 @@ mod tests {
         assert_eq!(classify(&err.to_string()), INVALID_VOUCHER_EXPIRY);
         assert!(err.to_string().contains("expiresAt was 42"));
         assert_eq!(classify("something else entirely"), "transaction_failed");
+    }
+
+    #[test]
+    fn a_quoted_code_in_the_detail_does_not_override_the_raised_code() {
+        let err = BatchError::new(
+            INVALID_CHANNEL_STATE,
+            format!("channelConfig.receiver {INVALID_CUMULATIVE_AMOUNT_MISMATCH} does not match"),
+        );
+        assert_eq!(classify(&err.to_string()), INVALID_CHANNEL_STATE);
+        assert_eq!(leading_code(&err.to_string()), Some(INVALID_CHANNEL_STATE));
+        // Positive control: the mismatch itself is still recognised.
+        let err = BatchError::new(INVALID_CUMULATIVE_AMOUNT_MISMATCH, "voucher authorizes 5");
+        assert_eq!(
+            leading_code(&err.to_string()),
+            Some(INVALID_CUMULATIVE_AMOUNT_MISMATCH)
+        );
+        // A message that only quotes a code leads with none.
+        assert_eq!(
+            leading_code(&format!(
+                "store error: {INVALID_CUMULATIVE_AMOUNT_MISMATCH}: x"
+            )),
+            None
+        );
     }
 }

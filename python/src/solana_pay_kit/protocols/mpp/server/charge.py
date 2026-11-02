@@ -123,10 +123,10 @@ def _local_signature(raw_tx: bytes) -> str:
     Derived before broadcast so the charge is tracked under the signature the
     cluster will record, whatever the RPC answers.
     """
-    from solders.transaction import VersionedTransaction
+    from solana_pay_kit._paycore.txv1 import decode_transaction
 
     try:
-        signatures = VersionedTransaction.from_bytes(raw_tx).signatures
+        signatures = decode_transaction(raw_tx).signatures
     except Exception as exc:  # noqa: BLE001
         raise PaymentError(f"could not decode signed transaction: {exc}", code="invalid-payload") from exc
     if not signatures:

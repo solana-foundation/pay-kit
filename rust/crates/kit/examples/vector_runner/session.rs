@@ -1,0 +1,617 @@
+//! Session server and client vectors (`input.sessionServerVerify`,
+//! `input.sessionOpenBuild`). The testee passes the vector's input to the
+//! kit unchanged (harness/AGENTS.md "Never put logic in the testee").
+//!
+//! - verify: a `SessionServer` configured from `sessionServerVerify.server`
+//!   over a channel store holding `sessionServerVerify.channel` (the
+//!   server's per-channel state), and the client's `credential` parsed with
+//!   the kit's wire types (`SessionAction`), then: `open` through
+//!   `server::session::testkit::verify_open_pre_broadcast` against
+//!   `challenge`, `voucher` through `verify_voucher_for_amount` at the
+//!   challenged `amount`, `topUp` through
+//!   `testkit::verify_topup_pre_broadcast`, `close` through
+//!   `process_close`.
+//! - build: `client::session::create_payment_channel_session_opener` on
+//!   `sessionOpenBuild.request`, with the salt its options take; the result
+//!   carries the `open` action as `sessionCredential`.
+//!
+//! Mirrors rust/crates/conformance/src/realize/session.rs.
+
+use std::str::FromStr;
+
+use serde_json::{json, Map, Value};
+use solana_pay_kit::core::store::{
+    ChannelState, ChannelStore, MemoryChannelStore, ObservedLifecycle, OnchainObservation,
+    ProcessedUse, CHANNEL_STATE_SCHEMA_VERSION,
+};
+use solana_pay_kit::core::tx::{TxV1Mode, TxVersion};
+use solana_pay_kit::mpp::client::session::{
+    create_payment_channel_session_opener, OpenBlockhash, PaymentChannelOpenOptions,
+    PaymentChannelSessionOpenOptions, SessionOpenAuthorization,
+};
+use solana_pay_kit::mpp::protocol::intents::session::{
+    SessionAction, SessionAuthentication, SessionRequest, SignedVoucher, UsePayload,
+};
+use solana_pay_kit::mpp::server::session::{
+    testkit, SessionConfig, SessionOpenContext, SessionServer, Split, VoucherSigner,
+};
+use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::mpp::solana_keychain::SolanaSigner;
+use solana_pubkey::Pubkey;
+
+use super::{Outcome, Rejection};
+
+pub async fn run(mode: &str, input: &Value) -> Result<Outcome, Rejection> {
+    match mode {
+        "verify-transaction" => verify(input).await,
+        "build-transaction" => build(input).await,
+        other => Ok(Outcome::Unsupported(format!(
+            "no Rust runner path for session mode {other:?}"
+        ))),
+    }
+}
+
+fn u64_field(value: &Value, key: &str) -> Result<Option<u64>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => s.parse().map(Some).map_err(|_| format!("invalid {key}")),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| format!("invalid {key}")),
+    }
+}
+
+fn signer_from(input: &Value, key: &str) -> Result<MemorySigner, String> {
+    let bytes: Vec<u8> = input
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("input.{key} missing"))?
+        .iter()
+        .map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| format!("input.{key} must be bytes"))?;
+    MemorySigner::from_bytes(&bytes).map_err(|e| format!("invalid {key}: {e}"))
+}
+
+/// The 32-byte Ed25519 seed of the 64-byte secret key at `input.key`.
+fn secret_seed(input: &Value, key: &str) -> Result<[u8; 32], String> {
+    let bytes: Vec<u8> = input
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("input.{key} missing"))?
+        .iter()
+        .map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| format!("input.{key} must be bytes"))?;
+    bytes
+        .get(..32)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or_else(|| format!("input.{key} must be a 64-byte secret key"))
+}
+
+/// The kit session server `server` describes, over `store`.
+fn kit_server<S: ChannelStore>(
+    server: &Value,
+    fee_payer: Option<MemorySigner>,
+    operator_key: Option<[u8; 32]>,
+    store: S,
+) -> Result<SessionServer<S>, String> {
+    let text = |key: &str| {
+        server
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("server.{key} missing"))
+    };
+    let voucher_signer = match server.get("voucherSigner").and_then(Value::as_str) {
+        None | Some("client") => VoucherSigner::Client,
+        Some("operator") => VoucherSigner::Operator,
+        Some(other) => return Err(format!("invalid server.voucherSigner {other:?}")),
+    };
+    let splits = match server.get("distributionSplits") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .map(|entry| {
+                Ok(Split {
+                    recipient: Pubkey::from_str(entry["recipient"].as_str().unwrap_or_default())
+                        .map_err(|e| format!("invalid split recipient: {e}"))?,
+                    bps: entry["shareBps"]
+                        .as_u64()
+                        .and_then(|b| u16::try_from(b).ok())
+                        .ok_or("invalid split shareBps")?,
+                })
+            })
+            .collect::<Result<_, String>>()?,
+        Some(_) => return Err("server.distributionSplits must be an array".into()),
+    };
+    let token_program = match server.get("tokenProgram").and_then(Value::as_str) {
+        None => None,
+        Some(program) => {
+            Some(Pubkey::from_str(program).map_err(|e| format!("invalid tokenProgram: {e}"))?)
+        }
+    };
+    let idle_options = match server.get("idleTimeoutOptionsSeconds") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            serde_json::from_value::<Vec<u32>>(v.clone())
+                .map_err(|e| format!("invalid idleTimeoutOptionsSeconds: {e}"))?,
+        ),
+    };
+    let fee_payer_signer: Option<
+        std::sync::Arc<dyn solana_pay_kit::solana_keychain::TransactionSigner>,
+    > = match (server.get("feePayer").and_then(Value::as_str), fee_payer) {
+        (None, _) => None,
+        (Some(expected), Some(signer)) => {
+            if signer.pubkey().to_string() != expected {
+                return Err("sessionServerFeePayerSecretKey is not server.feePayer".into());
+            }
+            Some(std::sync::Arc::new(signer))
+        }
+        (Some(_), None) => return Err("server.feePayer without its secret key".into()),
+    };
+    let config = SessionConfig {
+        operator: text("operator")?,
+        recipient: text("recipient")?,
+        currency: text("currency")?,
+        network: text("network")?,
+        decimals: u8::try_from(u64_field(server, "decimals")?.ok_or("decimals missing")?)
+            .map_err(|_| "invalid decimals")?,
+        amount: u64_field(server, "amount")?.ok_or("amount missing")?,
+        minimum_deposit: u64_field(server, "minimumDeposit")?,
+        suggested_deposit: u64_field(server, "suggestedDeposit")?,
+        grace_period_seconds: u32::try_from(
+            u64_field(server, "gracePeriodSeconds")?.ok_or("gracePeriodSeconds missing")?,
+        )
+        .map_err(|_| "invalid gracePeriodSeconds")?,
+        idle_timeout_seconds: u32::try_from(
+            u64_field(server, "idleTimeoutSeconds")?.ok_or("idleTimeoutSeconds missing")?,
+        )
+        .map_err(|_| "invalid idleTimeoutSeconds")?,
+        idle_timeout_options_seconds: idle_options,
+        voucher_signer,
+        splits,
+        token_program,
+        fee_payer_signer,
+        operator_signing_key: operator_key.map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed)),
+        ..SessionConfig::default()
+    };
+    let mut versions: Vec<TxVersion> = match server.get("transactionVersions") {
+        None | Some(Value::Null) => vec![TxVersion::V0],
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("invalid transactionVersions: {e}"))?,
+    };
+    versions.sort();
+    versions.dedup();
+    let mode = match versions.as_slice() {
+        [TxVersion::V0] => TxV1Mode::Off,
+        [TxVersion::V0, TxVersion::V1] => TxV1Mode::On,
+        other => return Err(format!("the kit cannot accept exactly {other:?}")),
+    };
+    Ok(SessionServer::new(config, store).with_tx_v1(mode))
+}
+
+/// `channel.processedUses`: requests the server already charged.
+fn processed_uses(channel: &Value) -> Result<Vec<ProcessedUse>, String> {
+    let Some(entries) = channel.get("processedUses") else {
+        return Ok(Vec::new());
+    };
+    let entries = entries
+        .as_array()
+        .ok_or("channel.processedUses is not an array")?;
+    entries
+        .iter()
+        .map(|entry| {
+            let text = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("channel.processedUses[].{key} missing"))
+            };
+            Ok(ProcessedUse {
+                challenge_id: text("challengeId")?,
+                idempotency_key: text("idempotencyKey")?,
+                cumulative: u64_field(entry, "cumulativeAmount")?
+                    .ok_or("channel.processedUses[].cumulativeAmount missing")?,
+                voucher_signature: text("voucherSignature")?,
+                amount: u64_field(entry, "amount")?,
+            })
+        })
+        .collect()
+}
+
+/// The server's per-channel state (`channel`) as the kit stores it.
+fn stored_channel(channel: &Value) -> Result<ChannelState, String> {
+    let text = |key: &str| {
+        channel
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("channel.{key} missing"))
+    };
+    let number = |key: &str| -> Result<u64, String> {
+        u64_field(channel, key)?.ok_or_else(|| format!("channel.{key} missing"))
+    };
+    let highest = channel.get("highestVoucher");
+    let proof = channel.get("authentication").filter(|v| !v.is_null());
+    let mut state = ChannelState {
+        channel_id: text("channelId")?,
+        authorized_signer: text("authorizedSigner")?,
+        deposit: number("escrowedAmount")?,
+        cumulative: number("acceptedCumulative")?,
+        sealed: text("status")? == "closed",
+        highest_voucher_signature: highest
+            .and_then(|v| v.get("signature"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        highest_voucher_expires_at: highest.map(|v| {
+            v.pointer("/voucher/expiresAt")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        }),
+        close_requested_at: channel.get("closureStartedAt").and_then(Value::as_u64),
+        final_cumulative: None,
+        open_slot: u64_field(channel, "openSlot")?,
+        payer: text("payer")?,
+        rent_payer: text("rentPayer")?,
+        opening_challenge_id: channel
+            .get("openingChallengeId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        // The proof bound at open, stored as the kit's server stores it.
+        authentication: proof
+            .map(|v| {
+                serde_json::from_value::<SessionAuthentication>(v.clone())
+                    .and_then(|a| serde_json::to_string(&a))
+                    .map_err(|e| format!("invalid channel.authentication: {e}"))
+            })
+            .transpose()?,
+        voucher_signer: text("voucherSigner")?,
+        idle_timeout_seconds: u64_field(channel, "idleTimeoutSeconds")?
+            .map(|s| u32::try_from(s).map_err(|_| "invalid idleTimeoutSeconds"))
+            .transpose()?,
+        last_activity_at: 0,
+        spent_amount: number("spentAmount")?,
+        settled_on_chain: number("settledOnChain")?,
+        distributed_on_chain: 0,
+        processed_uses: processed_uses(channel)?,
+        processed_topup_signatures: vec![],
+        next_delivery_sequence: 0,
+        pending_deliveries: vec![],
+        committed_deliveries: Default::default(),
+        pending_setup: None,
+        onchain_checked_at: 0,
+        lifecycle: None,
+        schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+        extra: Default::default(),
+    };
+    // The record is the server's view of a channel it confirmed onchain just
+    // now: `status` and `closureStartedAt` are what that read showed.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let lifecycle = match (state.sealed, state.close_requested_at) {
+        (true, started_at) => ObservedLifecycle::Terminal { started_at },
+        (false, Some(started_at)) => ObservedLifecycle::Closing { started_at },
+        (false, None) => ObservedLifecycle::Open,
+    };
+    state.record_onchain_observation(
+        OnchainObservation {
+            slot: None,
+            lifecycle,
+        },
+        now,
+    );
+    Ok(state)
+}
+
+/// The shared code for a kit session server error (mirrors `code_for` in
+/// rust/crates/conformance/src/realize/session.rs).
+fn code_for(message: &str) -> Option<&'static str> {
+    let m = message.to_ascii_lowercase();
+    let has = |n: &str| m.contains(n);
+    Some(if has("transaction version") && has("not accepted") {
+        "unsupported-version"
+    } else if has("used for a different request") {
+        "invalid-challenge"
+    } else if has("compute unit price") && (has("exceed") || has("maximum")) {
+        "compute-price-over-cap"
+    } else if has("compute unit limit") && (has("exceed") || has("maximum")) {
+        "compute-limit-over-cap"
+    } else if has("invalid payload") || has("unknown field") || has("missing field") {
+        "invalid-payload"
+    } else if has("client close requires a final voucher")
+        || has("client close must not include")
+        || has("operator close must not include")
+        || has("operator close requires")
+    {
+        "close-authorization"
+    } else if has("authentication")
+        || has("does not authenticate")
+        || has("only valid for operator-signed")
+    {
+        "authentication-invalid"
+    } else if has("fee payer does not match") || has("fee payer must be") {
+        "fee-payer-mismatch"
+    } else if has("does not match the derived channel pda")
+        || has("does not match derived channel pda")
+        || has("action channelid does not match")
+        || has("close voucher channelid does not match")
+        || has("do not match the stored channel")
+    {
+        "channel-id-mismatch"
+    } else if has("unexpected instruction")
+        || has("does not contain the expected open instruction")
+        || has("top-up instruction not found")
+        || has("unsupported compute budget")
+    {
+        "unexpected-instruction"
+    } else if has("below minimumdeposit")
+        || has("deposit must be greater than zero")
+        || has("additionalamount must be positive")
+        || has("does not match additionalamount")
+        || has("insufficient authorized voucher availability")
+        || has("charge amount must be positive")
+    {
+        "amount-mismatch"
+    } else if has("open transaction")
+        || has("open instruction")
+        || has("payment-channel open")
+        || has("opensl")
+        || has("idletimeoutseconds")
+        || has("authorizedsigner")
+        || has("privileges")
+    {
+        "open-binding-mismatch"
+    } else if has("signature verification failed")
+        || has("signer does not match")
+        || has("invalid voucher signature")
+    {
+        "voucher-signature"
+    } else if has("must exceed watermark") || has("already accepted") {
+        "cumulative-amount-mismatch"
+    } else if has("exceeds deposit") || has("insufficient channel availability") {
+        "cumulative-exceeds-deposit"
+    } else if has("voucher has expired") {
+        "voucher-expired"
+    } else if has("settlement window") {
+        "voucher-expires-before-settlement"
+    } else if has("close is pending") || has("close already requested") {
+        "channel-closing"
+    } else if has("already sealed") || has("closed or close") {
+        "close-state"
+    } else if has("not found") {
+        "channel-state"
+    } else if has("address lookup tables")
+        || has("byte limit")
+        || has("session transaction")
+        || has("invalid")
+        || has("decode")
+    {
+        "invalid-payload"
+    } else {
+        return None;
+    })
+}
+
+fn reject(message: String) -> Rejection {
+    let code = code_for(&message);
+    Rejection { message, code }
+}
+
+async fn verify(input: &Value) -> Result<Outcome, Rejection> {
+    let Some(params) = input.get("sessionServerVerify") else {
+        return Ok(Outcome::Unsupported(
+            "session verify vector without sessionServerVerify".into(),
+        ));
+    };
+    let store = std::sync::Arc::new(MemoryChannelStore::new());
+    if let Some(channel) = params.get("channel") {
+        let state = stored_channel(channel)?;
+        store
+            .put_channel(&state.channel_id.clone(), state)
+            .await
+            .map_err(|e| format!("seed channel: {e}"))?;
+    }
+    let fee_payer = input
+        .get("sessionServerFeePayerSecretKey")
+        .map(|_| signer_from(input, "sessionServerFeePayerSecretKey"))
+        .transpose()?;
+    let server_json = params.get("server").cloned().unwrap_or(Value::Null);
+    let operator_key = input
+        .get("sessionServerOperatorSecretKey")
+        .map(|_| secret_seed(input, "sessionServerOperatorSecretKey"))
+        .transpose()?;
+    let server = match kit_server(&server_json, fee_payer, operator_key, store.clone()) {
+        Ok(server) => server,
+        Err(e) => return Ok(Outcome::Unsupported(e)),
+    };
+    let action: SessionAction = serde_json::from_value(params["credential"].clone())
+        .map_err(|e| reject(format!("invalid payload: session credential: {e}")))?;
+    let result = match &action {
+        SessionAction::Open(open) => {
+            let challenge = params.get("challenge").ok_or("challenge missing")?;
+            let recent_slot = u64_field(challenge, "recentSlot")?.ok_or("recentSlot missing")?;
+            testkit::verify_open_pre_broadcast(
+                &server,
+                open,
+                SessionOpenContext {
+                    challenge_id: challenge["id"].as_str().unwrap_or_default(),
+                    expires: None,
+                    recent_blockhash: challenge["recentBlockhash"].as_str().unwrap_or_default(),
+                    recent_slot,
+                },
+            )
+            .await
+        }
+        SessionAction::Voucher(voucher) => {
+            let amount = u64_field(&server_json, "amount")?.ok_or("amount missing")?;
+            server
+                .verify_voucher_for_amount(voucher, amount)
+                .await
+                .map(|_| ())
+        }
+        SessionAction::TopUp(topup) => testkit::verify_topup_pre_broadcast(&server, topup).await,
+        SessionAction::Close(close) => server.process_close(close).await.map(|_| ()),
+        SessionAction::Use(payload) => {
+            let operator = signer_from(input, "sessionServerOperatorSecretKey")?;
+            let voucher = use_voucher(&server, &operator, params, payload)
+                .await
+                .map_err(reject)?;
+            let mut out = Map::new();
+            out.insert(
+                "sessionVoucher".into(),
+                persisted_use(&store, &voucher).await?,
+            );
+            return Ok(Outcome::Accept(out));
+        }
+    };
+    result.map_err(|e| reject(e.to_string()))?;
+    Ok(Outcome::Accept(Map::new()))
+}
+
+/// The `sessionVoucher` result (mirrors `persisted_use` in
+/// rust/crates/conformance/src/realize/session.rs) of an accepted `use`, read back from the
+/// store: the channel's persisted cumulative and spent amounts, after
+/// checking that the persisted voucher is the one the kit returned. A kit
+/// that answers with a voucher but does not save it fails here.
+async fn persisted_use(
+    store: &MemoryChannelStore,
+    voucher: &SignedVoucher,
+) -> Result<Value, String> {
+    let stored = store
+        .get_channel(&voucher.data.channel_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("channel missing after use")?;
+    if stored.highest_voucher_signature.as_deref() != Some(voucher.signature.as_str())
+        || stored.cumulative.to_string() != voucher.data.cumulative_amount
+    {
+        return Err(format!(
+            "the returned voucher (cumulative {}) is not the persisted one (cumulative {})",
+            voucher.data.cumulative_amount, stored.cumulative
+        ));
+    }
+    Ok(json!({
+        "channelId": stored.channel_id,
+        "cumulativeAmount": stored.cumulative.to_string(),
+        "spentAmount": stored.spent_amount.to_string(),
+        "signer": voucher.signer,
+    }))
+}
+
+/// Charge a `use`: the challenged `amount` through `process_use`, or the
+/// vector's `meteredAmount`, the request's metered total, through `authenticate_use` then
+/// `charge_operator_request` (mirrors `use_voucher` in
+/// rust/crates/conformance/src/realize/session.rs).
+async fn use_voucher<S: ChannelStore>(
+    server: &SessionServer<S>,
+    operator: &MemorySigner,
+    params: &Value,
+    payload: &UsePayload,
+) -> Result<SignedVoucher, String> {
+    let challenge_id = params["challenge"]["id"].as_str().unwrap_or_default();
+    let idempotency_key = params["idempotencyKey"].as_str().unwrap_or_default();
+    let voucher = match u64_field(params, "meteredAmount")? {
+        Some(amount) => {
+            let authenticated = server
+                .authenticate_use(payload, challenge_id, idempotency_key)
+                .await
+                .map_err(|e| e.to_string())?;
+            server
+                .charge_operator_request(&authenticated, operator, amount, |_| Ok(()))
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+        None => {
+            server
+                .process_use(payload, challenge_id, idempotency_key)
+                .await
+                .map_err(|e| e.to_string())?
+                .voucher
+        }
+    };
+    Ok(voucher)
+}
+
+/// The shared code for a kit session client refusal (mirrors
+/// `build_code_for` in rust/crates/conformance/src/realize/session.rs).
+fn build_code_for(message: &str) -> Option<&'static str> {
+    let m = message.to_ascii_lowercase();
+    let has = |n: &str| m.contains(n);
+    // No advertised version the signer can build; first, since the message
+    // also names the challenge's field.
+    if has("advertises no transaction version") || has("signs up to version") {
+        return Some("unsupported-version");
+    }
+    (has("challenge")
+        || has("network")
+        || has("program")
+        || has("tokenprogram")
+        || has("feepayerkey")
+        || has("operator")
+        || has("spl token")
+        || has("graceperiod")
+        || has("decimals")
+        || has("invalid"))
+    .then_some("invalid-challenge")
+}
+
+async fn build(input: &Value) -> Result<Outcome, Rejection> {
+    let Some(params) = input.get("sessionOpenBuild") else {
+        return Ok(Outcome::Unsupported(
+            "session build vector without sessionOpenBuild".into(),
+        ));
+    };
+    let refuse = |message: String| {
+        let code = build_code_for(&message);
+        Rejection { message, code }
+    };
+    let request: SessionRequest = serde_json::from_value(params["request"].clone())
+        .map_err(|e| refuse(format!("invalid challenge: {e}")))?;
+    let payer = signer_from(input, "signerSecretKey")?;
+    let session = signer_from(input, "sessionSignerSecretKey")?;
+    let rpc_url = input
+        .get("rpcUrl")
+        .and_then(Value::as_str)
+        .ok_or("driver did not inject input.rpcUrl")?;
+    let rpc = solana_rpc_client::rpc_client::RpcClient::new(rpc_url.to_string());
+    let blockhash = OpenBlockhash::verify(&rpc, &request)
+        .await
+        .map_err(|e| refuse(e.to_string()))?;
+    let deposit = u64_field(params, "deposit")?.ok_or("sessionOpenBuild.deposit missing")?;
+    // The highest version the signer signs (a hardware wallet that signs
+    // version 0 only); absent is unrestricted.
+    let max_tx_version = match u64_field(input, "signerMaxTransactionVersion")? {
+        None => None,
+        Some(v) => Some(
+            u8::try_from(v)
+                .ok()
+                .and_then(|v| TxVersion::try_from(v).ok())
+                .ok_or("invalid signerMaxTransactionVersion")?,
+        ),
+    };
+    let opened = create_payment_channel_session_opener(
+        &request,
+        &payer,
+        Box::new(session),
+        blockhash,
+        &SessionOpenAuthorization::client_signed(deposit),
+        PaymentChannelSessionOpenOptions {
+            open: PaymentChannelOpenOptions {
+                salt: u64_field(params, "salt")?,
+                max_tx_version,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| refuse(e.to_string()))?;
+    let action = serde_json::to_value(&opened.action).map_err(|e| e.to_string())?;
+    let mut out = Map::new();
+    out.insert("sessionCredential".into(), json!(action.to_string()));
+    Ok(Outcome::Accept(out))
+}

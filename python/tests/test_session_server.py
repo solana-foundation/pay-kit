@@ -11,7 +11,7 @@ from solana_keychain import MemorySigner
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
+from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW, find_channel_pda
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -34,8 +34,23 @@ from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, Memo
 PAYER = Keypair.from_seed(bytes([1] * 32))
 PAYEE = str(Keypair.from_seed(bytes([2] * 32)).pubkey())
 CLIENT_SIGNER = Keypair.from_seed(bytes([3] * 32))
-OPERATOR = Keypair.from_seed(bytes([4] * 32))
-CHANNEL = str(Keypair.from_seed(bytes([5] * 32)).pubkey())
+# The operator-mode authorizedSigner is the operator; sharing the client
+# signer's key keeps one channel PDA for both voucher-signing modes.
+OPERATOR = CLIENT_SIGNER
+# The server binds the open's mint to its currency (USDC on localnet) and its
+# channelId to the PDA of the open's seeds.
+MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+CHANNEL = str(
+    find_channel_pda(
+        PAYER.pubkey(),
+        Pubkey.from_string(PAYEE),
+        Pubkey.from_string(MINT),
+        CLIENT_SIGNER.pubkey(),
+        7,
+        42,
+        PROGRAM_ID,
+    )[0]
+)
 
 # The recentBlockhash/recentSlot every test challenge advertises; matches the
 # _open fixture's open_slot so opens bind to the challenge (mirrors the Rust
@@ -94,7 +109,7 @@ def _open(config: SessionConfig, challenge: PaymentChallenge) -> OpenPayload:
         channel_id=CHANNEL,
         payer=str(PAYER.pubkey()),
         payee=PAYEE,
-        mint=str(Keypair.from_seed(bytes([6] * 32)).pubkey()),
+        mint=MINT,
         authorized_signer=str(OPERATOR.pubkey())
         if config.voucher_signer == "operator"
         else str(CLIENT_SIGNER.pubkey()),
@@ -106,6 +121,20 @@ def _open(config: SessionConfig, challenge: PaymentChallenge) -> OpenPayload:
         transaction="transaction",
         authentication=_authentication(challenge.id) if config.voucher_signer == "operator" else None,
     )
+
+
+def _at_open_slot(payload: OpenPayload, open_slot: int) -> OpenPayload:
+    """``payload`` opened at ``open_slot``, its channelId the PDA of that seed."""
+    channel, _ = find_channel_pda(
+        Pubkey.from_string(payload.payer),
+        Pubkey.from_string(payload.payee),
+        Pubkey.from_string(payload.mint),
+        Pubkey.from_string(payload.authorized_signer),
+        payload.salt,
+        open_slot,
+        PROGRAM_ID,
+    )
+    return replace(payload, open_slot=open_slot, channel_id=str(channel))
 
 
 def _voucher(cumulative: int) -> SignedVoucher:
@@ -219,8 +248,7 @@ async def test_open_binds_open_slot_to_challenged_recent_slot() -> None:
 
     # An openSlot ahead of the challenged recentSlot was not built for this
     # challenge.
-    ahead = _open(config, challenge)
-    ahead.open_slot = CHALLENGED_SLOT + 1
+    ahead = _at_open_slot(_open(config, challenge), CHALLENGED_SLOT + 1)
     with pytest.raises(ValueError, match="ahead of the challenged recentSlot"):
         await server.process_open(ahead, challenge)
 
@@ -246,8 +274,7 @@ async def test_open_binds_open_slot_to_challenged_recent_slot() -> None:
         await SessionServer(stale_challenge_config, MemoryChannelStore()).process_open(payload, stale)
 
     # An earlier openSlot within the window is accepted.
-    earlier = _open(config, challenge)
-    earlier.open_slot = CHALLENGED_SLOT - 1
+    earlier = _at_open_slot(_open(config, challenge), CHALLENGED_SLOT - 1)
     state = await server.process_open(earlier, challenge)
     assert state.open_slot == CHALLENGED_SLOT - 1
 
@@ -629,7 +656,7 @@ async def test_top_up_rejects_invalid_amount_state_and_verifier_errors() -> None
     with pytest.raises(ValueError, match="not found"):
         await server.process_top_up(TopUpPayload("missing", "1", "transaction"))
     await server.mark_sealed(CHANNEL)
-    with pytest.raises(ValueError, match="sealed"):
+    with pytest.raises(ValueError, match="closed or close is pending"):
         await server.process_top_up(TopUpPayload(CHANNEL, "1", "transaction"))
 
 
@@ -782,7 +809,7 @@ async def test_client_close_final_voucher_rules_and_double_close() -> None:
     assert redriven.close_requested_at == first_close_at
     assert redriven.cumulative == 200 and not redriven.sealed
     # The re-drive must replay the recorded final voucher, not present a new one.
-    with pytest.raises(ValueError, match="must replay the recorded final voucher"):
+    with pytest.raises(ValueError, match="must present the recorded final voucher"):
         await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(300)))
 
     # Once a settlement signature is recorded, a second close hard-rejects.
@@ -820,13 +847,13 @@ async def test_process_open_binds_distribution_splits_to_the_challenge() -> None
 
     server = SessionServer(config, MemoryChannelStore())
     # Dropping the challenged splits entirely is rejected.
-    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+    with pytest.raises(ValueError, match="distributionSplits do not match challenge"):
         await server.process_open(open_with([]), challenge)
     # Redirecting the challenged share is rejected.
-    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+    with pytest.raises(ValueError, match="distributionSplits do not match challenge"):
         await server.process_open(open_with([SessionSplit(recipient=attacker, share_bps=500)]), challenge)
     # Inflating the challenged share is rejected.
-    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+    with pytest.raises(ValueError, match="distributionSplits do not match challenge"):
         await server.process_open(open_with([SessionSplit(recipient=platform, share_bps=1)]), challenge)
     # The exact challenged splits are accepted.
     state = await server.process_open(open_with([SessionSplit(recipient=platform, share_bps=500)]), challenge)
@@ -846,7 +873,7 @@ async def test_process_open_rejects_unsolicited_splits() -> None:
     payload = _open(config, challenge)
     payload.distribution_splits = [SessionSplit(recipient=str(PAYER.pubkey()), share_bps=100)]
     server = SessionServer(config, MemoryChannelStore())
-    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+    with pytest.raises(ValueError, match="distributionSplits do not match challenge"):
         await server.process_open(payload, challenge)
 
 

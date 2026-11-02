@@ -54,12 +54,13 @@ pub struct UptoExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_valid_block_height: Option<String>,
 
-    /// Server-prefetched current slot (decimal string), analogous to
-    /// `recentBlockhash`. Feeds the program's `openSlot` — a channel-PDA seed;
-    /// the program rejects opens whose slot falls outside its window, so
-    /// clients MUST use this hint rather than fetch their own.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recent_slot: Option<String>,
+    /// Server-prefetched current slot, analogous to `recentBlockhash`. Feeds
+    /// the program's `openSlot` — a channel-PDA seed; the program rejects
+    /// opens whose slot falls outside its window. Typed `number` by the
+    /// scheme's §4.1 table; the decimal-string form other SDKs emit is read
+    /// too (see [`Slot`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_slot: Option<Slot>,
 
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,13 +133,109 @@ pub struct UptoRequiredEnvelope {
     pub error: Option<String>,
 }
 
+/// A slot (`u64`). The scheme types `openSlot` and `extra.recentSlot` as
+/// JSON numbers (scheme_upto_svm.md §4.1, §4.2); every other SDK emits the
+/// decimal-string form, which is read too (RULINGS.md U1: a verifier that
+/// accepts the string form is not in breach). Anything else — a sign,
+/// whitespace, a fraction, a value over `u64::MAX` — is refused when parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Slot(u64);
+
+impl Slot {
+    pub const fn new(slot: u64) -> Self {
+        Self(slot)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for Slot {
+    fn from(slot: u64) -> Self {
+        Self(slot)
+    }
+}
+
+impl std::fmt::Display for Slot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Serialize for Slot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // RULINGS.md U1: the producer form is still open upstream; every
+        // other SDK requires the decimal string.
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Slot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        slot_from_value(&value).map(Self).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid payload: slot {value} is not a u64"))
+        })
+    }
+}
+
+fn slot_from_value(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => decimal_u64(s),
+        _ => None,
+    }
+}
+
+/// A non-empty run of ASCII digits that fits in a `u64` (no sign, no
+/// whitespace: `u64::from_str` alone would take `"+5"`).
+fn decimal_u64(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// The channel salt: a `u64` carried as a decimal string (§4.2 “Unique
+/// decimal u64 salt”). Parsed once at the boundary, so the open binding
+/// compares integers, never text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UptoNonce(u64);
+
+impl UptoNonce {
+    pub const fn new(salt: u64) -> Self {
+        Self(salt)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for UptoNonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Serialize for UptoNonce {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
 /// The client authorization carried in `PAYMENT-SIGNATURE.payload`.
 ///
 /// The channel `open` is the authorization: the client's signature commits the
 /// deposit ceiling, payee, and mint. The fee payer settles the actual amount
 /// carrying a voucher the receiver authorizer signs.
+///
+/// Deserializing is the scheme's Phase 3 step 0: a payload carrying the
+/// claim-only `voucherSignature` or the per-settle `type` (present at all,
+/// even empty or `null`) does not parse, so no verifier can admit one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "RawUptoPayload")]
 pub struct UptoPayload {
     /// Payer wallet (base58).
     pub from: String,
@@ -152,8 +249,8 @@ pub struct UptoPayload {
     /// Activation time (Unix seconds).
     pub valid_after: i64,
 
-    /// Decimal channel salt used by the open instruction.
-    pub nonce: String,
+    /// Channel salt used by the open instruction.
+    pub nonce: UptoNonce,
 
     /// Channel PDA (base58).
     pub channel_id: String,
@@ -164,14 +261,85 @@ pub struct UptoPayload {
     /// Voucher signer — the receiver authorizer key (base58).
     pub authorized_signer: String,
 
-    /// Decimal channel open slot used by the open instruction.
-    pub open_slot: String,
+    /// Channel open slot used by the open instruction.
+    pub open_slot: Slot,
 
     /// Base64 client-signed `open` transaction for the fee payer to co-sign
     /// (fee payer + `rentPayer`) and broadcast. v1 is **pull-only**: the client
     /// never broadcasts `open` itself, so it needs no SOL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_transaction: Option<String>,
+}
+
+/// Error code for a client payload carrying `voucherSignature` (Phase 3 step 0).
+pub const ERR_UNEXPECTED_VOUCHER: &str = "invalid_upto_svm_payload_unexpected_voucher";
+
+/// Error code for a client payload carrying `type` (Phase 3 step 0).
+pub const ERR_PAYLOAD_TYPE: &str = "invalid_upto_svm_payload_type";
+
+/// The wire shape [`UptoPayload`] is parsed from.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawUptoPayload {
+    from: String,
+    max_amount: String,
+    expires_at: i64,
+    valid_after: i64,
+    nonce: serde_json::Value,
+    channel_id: String,
+    deposit: String,
+    authorized_signer: String,
+    open_slot: serde_json::Value,
+    #[serde(default)]
+    open_transaction: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    voucher_signature: Option<serde_json::Value>,
+    #[serde(default, rename = "type", deserialize_with = "present")]
+    settle_type: Option<serde_json::Value>,
+}
+
+/// `Some` whenever the key is present, `null` included.
+fn present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+impl TryFrom<RawUptoPayload> for UptoPayload {
+    type Error = String;
+
+    fn try_from(raw: RawUptoPayload) -> Result<Self, Self::Error> {
+        if raw.voucher_signature.is_some() {
+            return Err(format!(
+                "{ERR_UNEXPECTED_VOUCHER}: voucherSignature is claim-only and server-owned; \
+                 a client payload must not carry it"
+            ));
+        }
+        if raw.settle_type.is_some() {
+            return Err(format!(
+                "{ERR_PAYLOAD_TYPE}: type is set per settle by the resource server; \
+                 a client payload must not carry it"
+            ));
+        }
+        let nonce =
+            raw.nonce.as_str().and_then(decimal_u64).ok_or_else(|| {
+                format!("invalid payload: nonce {} is not a decimal u64", raw.nonce)
+            })?;
+        let open_slot = slot_from_value(&raw.open_slot)
+            .ok_or_else(|| format!("invalid payload: openSlot {} is not a u64", raw.open_slot))?;
+        Ok(Self {
+            from: raw.from,
+            max_amount: raw.max_amount,
+            expires_at: raw.expires_at,
+            valid_after: raw.valid_after,
+            nonce: UptoNonce(nonce),
+            channel_id: raw.channel_id,
+            deposit: raw.deposit,
+            authorized_signer: raw.authorized_signer,
+            open_slot: Slot(open_slot),
+            open_transaction: raw.open_transaction,
+        })
+    }
 }
 
 impl UptoPayload {
@@ -289,11 +457,11 @@ mod tests {
             max_amount: "1000000".to_string(),
             expires_at: 4_102_444_800,
             valid_after: 0,
-            nonce: "n-1".to_string(),
+            nonce: UptoNonce::new(7),
             channel_id: "Chan1111111111111111111111111111111111111".to_string(),
             deposit: "1000000".to_string(),
             authorized_signer: "Op11111111111111111111111111111111111111111".to_string(),
-            open_slot: "55555".to_string(),
+            open_slot: Slot::new(55555),
             open_transaction: Some("base64tx".to_string()),
         };
         let json = serde_json::to_string(&payload).unwrap();
@@ -318,7 +486,7 @@ mod tests {
                 "maxAmount": "1000000",
                 "expiresAt": 4_102_444_800i64,
                 "validAfter": 0,
-                "nonce": "n-1",
+                "nonce": "7",
                 "channelId": "Chan1111111111111111111111111111111111111",
                 "deposit": "1000000",
                 "authorizedSigner": "Op11111111111111111111111111111111111111111",
@@ -346,7 +514,7 @@ mod tests {
             env.payload.channel_id,
             "Chan1111111111111111111111111111111111111"
         );
-        assert_eq!(env.payload.open_slot, "55555");
+        assert_eq!(env.payload.open_slot, Slot::new(55555));
 
         // The emitted wire shape carries no envelope-level scheme/network.
         let wire = serde_json::to_value(&env).unwrap();
@@ -362,6 +530,108 @@ mod tests {
             wire.get("accepted").is_some(),
             "accepted present on the wire"
         );
+    }
+
+    fn client_payload() -> serde_json::Value {
+        serde_json::json!({
+            "from": "Payer1111111111111111111111111111111111111",
+            "maxAmount": "1000000",
+            "expiresAt": 4_102_444_800i64,
+            "validAfter": 0,
+            "nonce": "4242",
+            "channelId": "Chan1111111111111111111111111111111111111",
+            "deposit": "1000000",
+            "authorizedSigner": "Op11111111111111111111111111111111111111111",
+            "openSlot": "55555",
+            "openTransaction": "base64tx",
+        })
+    }
+
+    fn parse(value: serde_json::Value) -> Result<UptoPayload, String> {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn client_payload_parses() {
+        let payload = parse(client_payload()).unwrap();
+        assert_eq!(payload.nonce.get(), 4242);
+        assert_eq!(payload.open_slot.get(), 55555);
+    }
+
+    #[test]
+    fn client_payload_refuses_settle_only_fields() {
+        // Phase 3 step 0: presence alone, an empty string or null included.
+        for voucher in [
+            serde_json::json!("sig"),
+            serde_json::json!(""),
+            serde_json::Value::Null,
+        ] {
+            let mut p = client_payload();
+            p["voucherSignature"] = voucher;
+            let err = parse(p).unwrap_err();
+            assert!(err.contains(ERR_UNEXPECTED_VOUCHER), "{err}");
+        }
+        for kind in [serde_json::json!("deposit"), serde_json::json!("claim")] {
+            let mut p = client_payload();
+            p["type"] = kind;
+            let err = parse(p).unwrap_err();
+            assert!(err.contains(ERR_PAYLOAD_TYPE), "{err}");
+        }
+    }
+
+    #[test]
+    fn nonce_must_be_a_decimal_u64_string() {
+        for bad in [
+            serde_json::json!("abc"),
+            serde_json::json!(""),
+            serde_json::json!("+5"),
+            serde_json::json!(" 5"),
+            serde_json::json!("18446744073709551616"),
+            serde_json::json!(5),
+        ] {
+            let mut p = client_payload();
+            p["nonce"] = bad.clone();
+            let err = parse(p).unwrap_err();
+            assert!(
+                err.contains("nonce") && err.contains("not a decimal u64"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_slot_reads_the_spec_number_and_the_decimal_string() {
+        let mut p = client_payload();
+        p["openSlot"] = serde_json::json!(55555);
+        assert_eq!(parse(p).unwrap().open_slot.get(), 55555);
+        for bad in [
+            serde_json::json!("abc"),
+            serde_json::json!("-1"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::Value::Null,
+        ] {
+            let mut p = client_payload();
+            p["openSlot"] = bad.clone();
+            let err = parse(p).unwrap_err();
+            assert!(
+                err.contains("openSlot") && err.contains("not a u64"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn recent_slot_reads_the_spec_number_and_the_decimal_string() {
+        let mut req = serde_json::to_value(requirements()).unwrap();
+        req["extra"]["recentSlot"] = serde_json::json!(341_000_000u64);
+        let parsed: UptoRequirements = serde_json::from_value(req.clone()).unwrap();
+        assert_eq!(parsed.extra.recent_slot, Some(Slot::new(341_000_000)));
+        req["extra"]["recentSlot"] = serde_json::json!("341000000");
+        let parsed: UptoRequirements = serde_json::from_value(req.clone()).unwrap();
+        assert_eq!(parsed.extra.recent_slot, Some(Slot::new(341_000_000)));
+        req["extra"]["recentSlot"] = serde_json::json!("soon");
+        assert!(serde_json::from_value::<UptoRequirements>(req).is_err());
     }
 
     #[test]

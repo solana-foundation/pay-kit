@@ -29,7 +29,8 @@ from solana_pay_kit import (
     configure,
 )
 from solana_pay_kit._paycore.mints import resolve, token_program_for
-from solana_pay_kit._paycore.paymentchannels import Distribution
+from solana_pay_kit._paycore.paymentchannels import Distribution, distribution_hash
+from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
@@ -59,6 +60,7 @@ class _FakeRpc:
 
     async def send_raw_transaction(self, raw: bytes):
         self.sent.append(raw)
+        self._holder["sent"] = raw  # type: ignore[assignment]
 
         class _Resp:
             value = "SIG-upto"
@@ -69,6 +71,9 @@ class _FakeRpc:
         return None
 
     async def get_account_info(self, _addr: str, commitment: str = "confirmed"):
+        # The channel PDA is free until the open lands (Phase 3 step 4).
+        if "sent" not in self._holder:
+            return None
         return self._holder["account"]
 
     async def get_latest_blockhash(self, commitment: str = "confirmed"):
@@ -96,7 +101,14 @@ def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] 
     eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT))
     holder: dict[str, tuple[bytes, str] | None] = {"account": None}
     monkeypatch.setattr(upto_mod, "SolanaRpc", lambda *_a, **_k: _FakeRpc(holder))
+    # The stub answers every address with the channel account; settlement
+    # readiness has its own tests below.
+    monkeypatch.setattr(X402Upto, "_ensure_payouts_ready", _payouts_ready)
     return eng, cfg, holder
+
+
+async def _payouts_ready(*_a, **_k) -> None:
+    return None
 
 
 def _gate(cfg) -> Gate:
@@ -117,11 +129,7 @@ def _op_pubkey(cfg: Config) -> str:
 def _expected_distribution_hash(pay_to: str, operator: str) -> list[int]:
     # Always the explicit single-entry 100% payTo split: the payee seat is the
     # fee payer with a zero implicit remainder, even when payTo == operator.
-    return list(
-        upto_mod._distribution_hash(  # noqa: SLF001
-            [Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000)]
-        )
-    )
+    return list(distribution_hash([Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000)]))
 
 
 class _Req:
@@ -397,7 +405,7 @@ async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
     header, _pk, _req = await _client_header(eng, cfg)
     # x402 v2 carries scheme inside `accepted` (the chosen PaymentRequirements).
     bad = _remux(header, lambda e: e["accepted"].update(scheme="exact"))
-    with pytest.raises(InvalidProofError, match="invalid payload type"):
+    with pytest.raises(InvalidProofError, match="(?i)invalid payload type"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 
 
@@ -407,7 +415,7 @@ async def test_verify_open_rejects_network_mismatch(monkeypatch) -> None:
     header, _pk, _req = await _client_header(eng, cfg)
     # x402 v2 carries network inside `accepted` (the chosen PaymentRequirements).
     bad = _remux(header, lambda e: e["accepted"].update(network="solana:wrongwrongwrongwrongwrongwrong"))
-    with pytest.raises(InvalidProofError, match="network mismatch"):
+    with pytest.raises(InvalidProofError, match="does not match any offered"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 
 
@@ -527,11 +535,155 @@ def test_reserve_channel_concurrent(monkeypatch) -> None:
         eng._reserve_channel("CHAN")  # noqa: SLF001
 
 
-def test_parse_payload_missing_field() -> None:
-    with pytest.raises(InvalidProofError, match="missing"):
-        upto_mod._parse_payload({"profile": "payment-channel"})  # noqa: SLF001
+@pytest.mark.asyncio
+async def test_verify_open_refuses_an_existing_channel(monkeypatch) -> None:
+    """Phase 3 step 4: an account already at the channel PDA is refused before
+    anything is signed or broadcast."""
+    eng, cfg, holder = _engine(monkeypatch)
+    header, client_pk, req = await _client_header(eng, cfg)
+    op = _op_pubkey(cfg)
+    holder["sent"] = None  # the stub now answers every address with the account
+    holder["account"] = _fake_channel(payer=client_pk, payee=op, mint=req["asset"], operator=op, deposit=100000)
+    with pytest.raises(InvalidProofError, match="invalid_upto_svm_channel_already_open"):
+        await eng.verify_open(_gate(cfg), _Req(header))
+    assert not eng._in_flight  # noqa: SLF001
 
 
-def test_parse_payload_not_a_dict() -> None:
-    with pytest.raises(InvalidProofError, match="malformed"):
-        upto_mod._parse_payload("nope")  # noqa: SLF001
+@pytest.mark.asyncio
+async def test_verify_open_with_a_distinct_receiver_authorizer(monkeypatch) -> None:
+    """A configured receiver authorizer is advertised, bound as the channel's
+    authorized signer and signs the settlement voucher; the fee payer keeps
+    the payee seat."""
+    eng, cfg, holder = _engine(monkeypatch)
+    authorizer = MemorySigner(Keypair())
+    eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT), receiver_authorizer_signer=authorizer)
+    req = eng.accepts_entry(_gate(cfg), {"path": "/usage"})
+    op = _op_pubkey(cfg)
+    assert req["extra"]["receiverAuthorizer"] == str(authorizer.pubkey) != op
+    client = MemorySigner(Keypair())
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    holder["account"] = (
+        channel_account_bytes(
+            payer=client.pubkey,
+            payee=Pubkey.from_string(op),
+            authorized_signer=authorizer.pubkey,
+            mint=Pubkey.from_string(req["asset"]),
+            rent_payer=Pubkey.from_string(op),
+            deposit=100000,
+            status=0,
+            distribution_hash=bytes(_expected_distribution_hash(cfg.effective_recipient(), op)),
+            open_slot=RECENT_SLOT,
+        ),
+        upto_mod.PAYMENT_CHANNELS_PROGRAM_ID,
+    )
+    verified = await eng.verify_open(_gate(cfg), _Req(encode_upto_header(req, payload)))
+    assert str(verified.payee) == op
+    verified.release()
+    # A channel bound to the fee payer as authorized signer is refused.
+    holder.pop("sent")
+    payload = await build_upto_payload(client, req, int(time.time()) + 300, nonce="m")
+    holder["account"] = _fake_channel(
+        payer=str(client.pubkey),
+        payee=op,
+        mint=req["asset"],
+        operator=op,
+        deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
+    )
+    with pytest.raises(InvalidProofError, match="authorized_signer is not the receiver authorizer"):
+        await eng.verify_open(_gate(cfg), _Req(encode_upto_header(req, payload)))
+    result = await eng.settle_actual(_verified(cfg), 10)
+    assert result["amount"] == "10"
+
+
+def test_engine_rejects_a_non_positive_lifetime_or_delay(monkeypatch) -> None:
+    from solana_pay_kit.errors import ConfigurationError
+
+    _eng, cfg, _ = _engine(monkeypatch)
+    with pytest.raises(ConfigurationError, match="maxChannelLifetimeSecs"):
+        X402Upto(cfg, max_channel_lifetime_seconds=0)
+    with pytest.raises(ConfigurationError, match="withdrawDelay"):
+        X402Upto(cfg, withdraw_delay=0)
+
+
+def test_engine_advertises_its_transaction_versions_and_route_memo(monkeypatch) -> None:
+    _eng, cfg, _ = _engine(monkeypatch)
+    eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT), transaction_versions=[0, 1])
+    req = eng.accepts_entry(_gate(cfg), {"path": "/usage"}, route="GET /reports?id=7")
+    assert req["extra"].get("transactionVersions") == [0, 1]
+    assert req["extra"].get("memo") == "x402-upto:6cfdd3406cd373ee0107ec9cacd5c191"
+    assert "memo" not in eng.accepts_entry(_gate(cfg), {"path": "/usage"})["extra"]
+
+
+@pytest.mark.asyncio
+async def test_settlement_creates_only_the_payee_and_treasury_accounts(monkeypatch) -> None:
+    # Recipient token accounts are never funded by the fee payer: settle,
+    # the payee and treasury creates, distribute (plus the Ed25519 verify).
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
+    eng, cfg, holder = _engine(monkeypatch)
+    await eng.settle_actual(_verified(cfg), 50000)
+    raw = holder["sent"]
+    assert isinstance(raw, bytes)
+    message = VersionedTransaction.from_bytes(raw).message
+    programs = [str(message.account_keys[ix.program_id_index]) for ix in message.instructions]
+    ata_program = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    assert programs.count(ata_program) == 2
+    assert len(programs) == 5
+
+
+def _token_account(mint: Pubkey, owner: Pubkey, state: int = 1, tail: bytes = b"") -> bytes:
+    data = bytearray(165)
+    data[0:32] = bytes(mint)
+    data[32:64] = bytes(owner)
+    data[108] = state
+    return bytes(data) + tail
+
+
+class _AccountsRpc(SolanaRpc):
+    def __init__(self, answer) -> None:
+        self._answer = answer
+
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+@pytest.mark.asyncio
+async def test_an_open_is_refused_until_every_payout_account_is_usable(monkeypatch) -> None:
+    eng, cfg, _ = _engine(monkeypatch)
+    monkeypatch.undo()
+    mint = Pubkey.from_string(str(Keypair().pubkey()))
+    other_mint = Pubkey.from_string(str(Keypair().pubkey()))
+    token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+    recipient = Pubkey.from_string(str(Keypair().pubkey()))
+    fee_payer = Pubkey.from_string(_op_pubkey(cfg))
+    distribution = [Distribution(recipient=recipient, bps=10_000)]
+    program = str(token_program)
+    cases = [
+        (None, "does not exist"),
+        (RuntimeError("rpc down"), "read failed"),
+        ((_token_account(mint, recipient), str(Keypair().pubkey())), "not owned by the declared token program"),
+        ((b"\x00" * 10, program), "not an initialized token account"),
+        ((_token_account(other_mint, recipient), program), "holds mint"),
+        ((_token_account(mint, fee_payer), program), "is owned by"),
+        ((_token_account(mint, recipient, state=2), program), "is frozen"),
+        ((_token_account(mint, recipient, state=0), program), "account state 0"),
+        ((_token_account(mint, recipient, tail=bytes([2, 1, 0, 0, 0])), program), "extension 1"),
+    ]
+    for answer, needle in cases:
+        with pytest.raises(InvalidProofError, match=needle):
+            await eng._ensure_payouts_ready(  # noqa: SLF001
+                _AccountsRpc(answer), mint, token_program, distribution, fee_payer
+            )
+    # Positive controls: a plain and an ImmutableOwner Token-2022 account,
+    # and the fee payer's own seat, which settlement creates itself.
+    immutable = bytes([2, 7, 0, 0, 0]) + bytes(10)
+    for data in (_token_account(mint, recipient), _token_account(mint, recipient, tail=immutable)):
+        await eng._ensure_payouts_ready(  # noqa: SLF001
+            _AccountsRpc((data, program)), mint, token_program, distribution, fee_payer
+        )
+    await eng._ensure_payouts_ready(  # noqa: SLF001
+        _AccountsRpc(None), mint, token_program, [Distribution(recipient=fee_payer, bps=10_000)], fee_payer
+    )

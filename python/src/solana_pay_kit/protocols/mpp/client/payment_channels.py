@@ -17,7 +17,7 @@ from __future__ import annotations
 import base64
 import secrets
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Protocol, cast
 
 from solana_keychain import MemorySigner, TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -25,8 +25,15 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
-from solana_pay_kit._paycore.solana import default_token_program_for_currency
-from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
+from solana_pay_kit._paycore.paymentchannels import PROGRAM_ID
+from solana_pay_kit._paycore.solana import (
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+    default_token_program_for_currency,
+    validate_network,
+)
+from solana_pay_kit._paycore.transaction import build_partially_signed_transaction
+from solana_pay_kit._paycore.txv1 import negotiate, runtime_default_unit_limit, v1_config
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     Distribution,
     OpenChannelParams,
@@ -56,6 +63,8 @@ __all__ = [
     "derive_payment_channel_open",
     "generate_authorized_signer",
     "unique_salt",
+    "validate_session_challenge",
+    "verify_open_blockhash",
 ]
 
 #: Default payment-channel close grace period, in seconds, applied to a derived
@@ -63,6 +72,17 @@ __all__ = [
 DEFAULT_GRACE_PERIOD_SECONDS = 900
 
 _U64_MAX = 2**64 - 1
+
+#: Compute unit ceiling of the default version-1 open budget: the runtime
+#: default (200,000 units per instruction) capped at what a sponsor accepts
+#: for an open. Mirrors the Rust kit's ``OPEN_MAX_COMPUTE_UNIT_LIMIT``.
+_OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000
+
+
+class BlockhashValidator(Protocol):
+    """The RPC surface :func:`verify_open_blockhash` needs."""
+
+    async def is_blockhash_valid(self, blockhash: str, commitment: str = ...) -> bool: ...
 
 
 def unique_salt() -> int:
@@ -216,6 +236,12 @@ class PaymentChannelOpenOptions:
     salt: int | None = None
     #: SPL token program; defaults to the program resolved from the currency.
     token_program: Pubkey | None = None
+    #: Highest transaction message version the signer can sign (a hardware
+    #: wallet may sign version 0 only); ``None`` is unrestricted. The open is
+    #: built at the highest version the challenge's
+    #: ``methodDetails.transactionVersions`` (absent: ``[0]``) advertises up
+    #: to this cap, and refused before signing when none qualifies.
+    max_transaction_version: int | None = None
 
 
 @dataclass
@@ -262,6 +288,7 @@ def derive_payment_channel_open(
     enforces the same bound).
     """
     options = options if options is not None else PaymentChannelOpenOptions()
+    validate_session_challenge(request)
     details = request.method_details
     network = details.network
     resolved_mint = resolve_stablecoin_mint(request.currency, network)
@@ -275,6 +302,8 @@ def derive_payment_channel_open(
     deposit = (
         options.deposit if options.deposit is not None else _parse_u64_string(cast("str", requested_deposit), "deposit")
     )
+    if request.minimum_deposit is not None and deposit < _parse_u64_string(request.minimum_deposit, "minimumDeposit"):
+        raise ValueError("deposit is below minimumDeposit")
     grace_period = (
         options.grace_period
         if options.grace_period is not None
@@ -329,6 +358,54 @@ def derive_payment_channel_open(
     )
 
 
+def validate_session_challenge(request: SessionRequest) -> None:
+    """The method-details rules a client checks before it signs an open
+    (draft-solana-session-00 Method Details): ``network`` is one of the three
+    clusters, ``decimals`` is present (session currencies are always mints)
+    and within 0 through 9, ``tokenProgram`` (when present) is SPL Token or
+    Token-2022, ``gracePeriodSeconds`` is greater than zero, and
+    ``channelProgram`` is the payment-channels deployment this client builds
+    for."""
+    details = request.method_details
+    validate_network(details.network)
+    if details.decimals is None:
+        raise ValueError("session challenge is missing decimals for its mint")
+    if isinstance(details.decimals, bool) or not 0 <= details.decimals <= 9:
+        raise ValueError(f"session challenge decimals {details.decimals} is outside 0 through 9")
+    if details.token_program is not None and details.token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        raise ValueError(f"session challenge tokenProgram {details.token_program} is neither SPL Token nor Token-2022")
+    if details.grace_period_seconds is not None and details.grace_period_seconds <= 0:
+        raise ValueError("session challenge gracePeriodSeconds must be greater than zero")
+    if _parse_pubkey(details.channel_program, "channelProgram") != PROGRAM_ID:
+        raise ValueError(f"session challenge names an unknown channel program {details.channel_program}")
+
+
+async def verify_open_blockhash(rpc: BlockhashValidator, request: SessionRequest) -> Hash:
+    """The challenge's ``recentBlockhash``, once ``rpc`` (which serves the
+    cluster the client means to pay on) confirms it is live there.
+
+    A transaction is bound to a cluster only by its blockhash, and the server
+    requires the open to use the challenged one. That value is untrusted: a
+    hash from another cluster would make the signed open valid there rather
+    than on the network the deposit was approved for. Pass the result to the
+    openers as ``recent_blockhash``.
+    """
+    challenged = request.method_details.recent_blockhash
+    if not challenged:
+        raise ValueError("session challenge is missing recentBlockhash; a new-channel challenge must provide it")
+    try:
+        blockhash = Hash.from_string(challenged)
+    except Exception as exc:  # noqa: BLE001 - solders raises its own parse error type
+        raise ValueError(f"invalid challenged recentBlockhash: {exc}") from exc
+    try:
+        live = await rpc.is_blockhash_valid(str(blockhash))
+    except Exception as exc:  # noqa: BLE001 - any RPC failure leaves the hash unproven
+        raise ValueError(f"could not check the challenged recentBlockhash: {exc}") from exc
+    if not live:
+        raise ValueError(f"challenge recentBlockhash {blockhash} is not a live blockhash on the client's cluster")
+    return blockhash
+
+
 def _resolve_open_blockhash(override: Hash | str | None, request: SessionRequest) -> Hash:
     """Resolve the open transaction's blockhash: an explicit override wins,
     otherwise the challenged ``recentBlockhash`` is required — the client
@@ -365,6 +442,7 @@ async def build_open_payment_channel_transaction(
     ``feePayerKey`` and leaves that signature slot empty for the server.
     Otherwise the payer is also the fee payer.
     """
+    version = _negotiate_open_version(request, options)
     payer = _signer_pubkey(signer)
     details = request.method_details
     advertised_fee_payer = (
@@ -383,7 +461,7 @@ async def build_open_payment_channel_transaction(
         options,
     )
     return await _build_open_payment_channel_tx(
-        signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request)
+        signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request), version
     )
 
 
@@ -402,8 +480,11 @@ async def create_payment_channel_session_opener(
     :class:`PaymentChannelOpenOptions`).
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
-    if request.method_details.voucher_signer == "operator" and options.authentication is None:
-        raise ValueError("operator voucher signing requires authentication")
+    version = _negotiate_open_version(request, options.open)
+    if request.method_details.voucher_signer == "operator":
+        _require_string(request.method_details.operator, "operator")
+        if options.authentication is None:
+            raise ValueError("operator voucher signing requires authentication")
     if options.idle_timeout_seconds is not None:
         from solana_pay_kit.protocols.mpp.intents.session import resolve_idle_timeout_seconds
 
@@ -431,7 +512,7 @@ async def create_payment_channel_session_opener(
         options.open,
     )
     blockhash = _resolve_open_blockhash(recent_blockhash, request)
-    tx = await _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash)
+    tx = await _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash, version)
     session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
     action = SessionAction.open_action(
         open_.open_payload(
@@ -443,29 +524,48 @@ async def create_payment_channel_session_opener(
     return PaymentChannelSessionOpen(open=open_, session=session, action=action)
 
 
+def _negotiate_open_version(request: SessionRequest, options: PaymentChannelOpenOptions | None) -> int:
+    """The message version of the open (mpp-specs-txv1 Transaction Versions):
+    "Clients MUST build one of the advertised versions and SHOULD build the
+    highest one their signer can produce." Raises
+    :class:`~solana_pay_kit._paycore.txv1.TransactionVersionError` before
+    anything is signed when no advertised version is buildable.
+    """
+    max_version = options.max_transaction_version if options is not None else None
+    return negotiate(request.method_details.transaction_versions, max_version)
+
+
 async def _build_open_payment_channel_tx(
     signer: TransactionSigner,
     open_: PaymentChannelOpen,
     fee_payer: Pubkey,
     recent_blockhash: Hash | str,
+    version: int = 0,
 ) -> PaymentChannelOpenTransaction:
     """Assemble the open message and partial-sign only the payer slot.
 
-    Builds a v0 transaction whose fee payer is the operator (its signature
-    slot left as the default placeholder) and whose payer signature slot is
-    filled in, serialized as standard-alphabet base64 with padding.
+    Builds a ``version`` transaction whose fee payer is the operator (its
+    signature slot left as the default placeholder) and whose payer
+    signature slot is filled in, serialized as standard-alphabet base64 with
+    padding. A version-0 open carries no ComputeBudget prefix; a version-1
+    open carries its budget in the message header (the runtime default
+    limit, capped at the open ceiling, no priority fee and the maximum
+    loaded-accounts data size), never as instructions.
     """
     blockhash = recent_blockhash if isinstance(recent_blockhash, Hash) else Hash.from_string(recent_blockhash)
     open_params = open_.open_channel_params()
     # rentPayer is pinned to the operator / fee payer already in scope.
     open_params.rent_payer = fee_payer
     ix = build_open_instruction(open_params)
+    config = v1_config(min(runtime_default_unit_limit(1), _OPEN_MAX_COMPUTE_UNIT_LIMIT), 0) if version == 1 else None
     try:
-        wire = await build_partially_signed_v0_transaction(
+        wire = await build_partially_signed_transaction(
             [ix],
             fee_payer,
             blockhash,
             signer,
+            version=version,
+            config=config,
         )
     except ValueError as exc:
         raise ValueError("payment-channel open signing failed: payer is not a transaction signer") from exc

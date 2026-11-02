@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from solana_keychain import SolanaSigner
 
+from solana_pay_kit._paycore.txv1 import parse_transaction_versions
 from solana_pay_kit.protocols.mpp.intents.charge import parse_units
 
 __all__ = [
@@ -234,6 +235,10 @@ class SessionMethodDetails:
     idle_timeout_seconds: int | None = None
     grace_period_seconds: int | None = None
     distribution_splits: list[SessionSplit] = field(default_factory=list)
+    # Message versions the server accepts for client-submitted open and topUp
+    # transactions (mpp-specs-txv1). ``None`` (absent) means ``[0]``; an
+    # explicit list, even empty, is kept and re-encoded as integers.
+    transaction_versions: list[int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -261,6 +266,8 @@ class SessionMethodDetails:
             data["idleTimeoutOptionsSeconds"] = list(self.idle_timeout_options_seconds)
         if self.distribution_splits:
             data["distributionSplits"] = [split.to_dict() for split in self.distribution_splits]
+        if self.transaction_versions is not None:
+            data["transactionVersions"] = list(self.transaction_versions)
         return data
 
     @classmethod
@@ -294,6 +301,9 @@ class SessionMethodDetails:
                 int(data["gracePeriodSeconds"]) if data.get("gracePeriodSeconds") is not None else None
             ),
             distribution_splits=[SessionSplit.from_dict(value) for value in data.get("distributionSplits", [])],
+            transaction_versions=parse_transaction_versions(
+                data.get("transactionVersions"), field_name="methodDetails.transactionVersions"
+            ),
         )
 
 
@@ -437,6 +447,10 @@ class OpenPayload:
     def from_dict(cls, data: dict[str, Any]) -> OpenPayload:
         if "bump" in data:
             raise ValueError("open payload must not include bump")
+        # draft-solana-session-00 Action open: "MUST NOT carry an initial
+        # voucher"; the first voucher is a separate action after the open.
+        if "voucher" in data:
+            raise ValueError("open payload with an initial voucher")
         salt = _u64_from_wire(data.get("salt"), "salt")
         open_slot = _u64_from_wire(data.get("openSlot"), "openSlot")
         if salt is None or open_slot is None:

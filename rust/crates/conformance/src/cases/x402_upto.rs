@@ -54,7 +54,7 @@ const REDERIVE_PDA: &str = "X402-cf373442ff";
 const OPEN_ENCODES: &str = "X402-d75fb10a6f";
 const DEPOSIT_NO_VOUCHER: &str = "X402-f747c74e76";
 const STATIC_INSPECT: &str = "X402-52c9f1e405";
-const NO_LOOKUP_TABLES: &str = "X402-c1174b72d8";
+const NO_LOOKUP_TABLES: &str = "X402-4de59a1f27";
 const FEE_PAYER_EQ: &str = "X402-9d68660de5";
 const SIGNER_SET: &str = "X402-9af8f33cd6";
 const FROM_SIGNATURE: &str = "X402-bcbf7025e5";
@@ -85,11 +85,11 @@ const TV_CLIENT: &str = "X402TX-61c735c7a9";
 const TV_CLIENT_EMPTY: &str = "X402TX-2909c4b4ec";
 const TV_REJECT_FIRST: &str = "X402TX-5267172b18";
 const TV_SIZE: &str = "X402TX-dc7b0f3305";
-const TV_V1_BUDGET: &str = "X402TX-644919eb3b";
+const TV_V1_BUDGET: &str = "X402TX-f9bcc1a14a";
 const TV_MESSAGE: &str = "X402TX-4de59a1f27";
 const TV_NO_PREFIX: &str = "X402TX-125d312b26";
-const TV_V1_CAPS: &str = "X402TX-0f874a9c63";
-const TV_V1_NO_CB: &str = "X402TX-936b492daa";
+const TV_V1_CAPS: &str = "X402TX-703c03cfb5";
+const TV_V1_NO_CB: &str = "X402TX-915632f040";
 const TV_LEGACY: &str = "X402TX-77742f428c";
 const TV_OPEN_VERSION: &str = "X402TX-d444d01b9e";
 
@@ -195,7 +195,7 @@ fn s_txv1_budget() -> SpecRef {
     spec(
         TXV1,
         "Top-level instruction layout",
-        "In a version-1 transaction the same caps apply to the message TransactionConfig instead: computeUnitLimit MUST be present and MUST NOT exceed 400000, loadedAccountsDataSizeLimit MUST be present, and priorityFee (total lamports) MUST satisfy priorityFee 1000000 <= 5000000 computeUnitLimit.",
+        "computeUnitLimit (bit 2) MUST be set and MUST NOT exceed 400000, loadedAccountsDataSizeLimit (bit 3) MUST be set, and priorityFee (bits 0 and 1, total lamports) MUST satisfy priorityFee * 1000000 <= 5000000 * computeUnitLimit, evaluated without overflow.",
     )
 }
 
@@ -215,6 +215,17 @@ fn route_bound() -> Route {
 fn v1_route() -> Route {
     Route {
         versions: Some(vec![0, 1]),
+        ..Route::default()
+    }
+}
+
+/// A sponsor configured to accept version 0 only, stated explicitly: the
+/// scheme gives a facilitator's own accepted set no default (“The facilitator
+/// enforces its own accepted set; it does not read
+/// `PaymentRequirements.extra.transactionVersions`.”).
+fn v0_only_route() -> Route {
+    Route {
+        versions: Some(vec![0]),
         ..Route::default()
     }
 }
@@ -261,6 +272,28 @@ fn verify_case(
     builder.build()
 }
 
+/// An accept a stricter-than-spec verifier would refuse.
+fn accept_lenient(
+    id: &str,
+    file: &'static str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    vspec: VerifySpec,
+) -> Case {
+    verify_case(
+        id,
+        file,
+        spec,
+        reqs,
+        BugType::Defaults,
+        description,
+        vspec,
+        Expect::Accept(Pin::Outcome),
+        None,
+    )
+}
+
 fn accept(
     id: &str,
     file: &'static str,
@@ -279,29 +312,6 @@ fn accept(
         vspec,
         Expect::Accept(Pin::Outcome),
         None,
-    )
-}
-
-/// An accept the spec requires and the kit refuses.
-fn accept_authored(
-    id: &str,
-    file: &'static str,
-    spec: SpecRef,
-    reqs: &[&str],
-    description: &str,
-    vspec: VerifySpec,
-    divergence: &str,
-) -> Case {
-    verify_case(
-        id,
-        file,
-        spec,
-        reqs,
-        BugType::Defaults,
-        description,
-        vspec,
-        Expect::AcceptAuthored(json!({})),
-        Some(divergence),
     )
 }
 
@@ -426,20 +436,6 @@ fn ra() -> String {
     key(RECEIVER_AUTHORIZER_SEED).to_string()
 }
 
-const KIT_NO_CLIENT_FIELD_REJECT: &str = "UptoPayload deserializes with serde, which ignores keys it does not model; verify_open never looks for voucherSignature or type (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_NO_LIFETIME: &str = "X402Upto has no maxChannelLifetimeSecs and never bounds expiresAt by now + maxTimeoutSeconds; verify_upto_payload checks only validAfter <= now < expiresAt (rust/crates/kit/src/x402/protocol/schemes/upto/verify.rs)";
-const KIT_NO_CHANNEL_EXISTS: &str = "verify_open_for_route does not read the channel account before co-signing; an existing channel only fails at broadcast (rust/crates/kit/src/x402/server/upto.rs prepare_open)";
-const KIT_NO_SIGNATURE_CHECK: &str = "prepare_open never verifies the payer's signature before the fee payer co-signs (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_NO_SIGNER_SET: &str = "the open policy never compares the required-signer set with { payload.from, extra.feePayer } (rust/crates/kit/src/core/payment_channel/v1.rs scan_channel_tx_layout)";
-const KIT_NO_PRIVILEGES: &str = "validate_open_instruction compares account keys only, never writable flags (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_REMAINING_ACCOUNTS: &str = "validate_open_instruction checks positions 0..=13 and ignores remaining accounts (rust/crates/kit/src/x402/server/upto.rs)";
-const KIT_ONE_MEMO: &str = "MemoPolicy::Optional still refuses a second Memo, though an undeclared memo leaves the four-instruction suffix free (rust/crates/kit/src/core/payment_channel/v1.rs scan_channel_tx_layout)";
-const KIT_TEXTUAL_SEEDS: &str = "the kit compares payload.nonce / payload.openSlot with the open arguments as text and reports a binding mismatch, never that the field is not a decimal u64 (rust/crates/kit/src/x402/server/upto.rs validate_open_instruction)";
-const KIT_SLOT_STRING: &str = "UptoPayload.open_slot is a String, so the spec's numeric openSlot fails to deserialize (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_RECENT_SLOT_STRING: &str = "UptoExtra.recent_slot is an Option<String>, so the spec example's numeric recentSlot fails to deserialize (rust/crates/kit/src/x402/protocol/schemes/upto/types.rs)";
-const KIT_NO_MEMO_NONCE: &str = "build_upto_payload emits a bare open when the challenge declares no memo (rust/crates/kit/src/x402/client/upto/payment.rs OpenTxOptions)";
-const KIT_V1_LOADED_LIMIT: &str = "check_v1_budget_caps requires loadedAccountsDataSizeLimit to equal the 64 MiB maximum rather than be present (rust/crates/kit/src/core/tx/policy.rs)";
-
 crate::registry! {
     // ── wire goldens ───────────────────────────────────────────────────────
     x402_upto_voucher_message_golden => wire_case(
@@ -540,7 +536,7 @@ crate::registry! {
     x402_upto_verify_legacy_message_accept => accept(
         "x402-upto-verify-legacy-message-accept",
         POLICY_FILE,
-        spec(SVM, "Message and signer rules", "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."),
+        spec(SVM, "Message and signer rules", "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."),
         &[NO_LOOKUP_TABLES],
         "The same open compiled as a legacy (unversioned) message is accepted and policed like version 0.",
         with(base(), Tamper::Form(Form::Legacy)),
@@ -550,26 +546,32 @@ crate::registry! {
         POLICY_FILE,
         spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
         &[CB_LIMIT, CB_PRICE, CB_ABSOLUTE],
-        "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000 sit exactly at the absolute ceilings and are accepted.",
-        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
+        "SetComputeUnitLimit 400000 sits exactly at the absolute ceiling and SetComputeUnitPrice 5000 makes a 2000 lamport priority fee, exactly the sponsor's cap on the fee it pays (RULINGS S6): accepted.",
+        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000)])),
     );
-    x402_upto_verify_two_memos_unbound_accept => accept_authored(
+    x402_upto_verify_implicit_limit_at_fee_cap_accept => accept(
+        "x402-upto-verify-implicit-limit-at-fee-cap-accept",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_PRICE, CB_ABSOLUTE, VERIFIER_POLICY],
+        "SetComputeUnitPrice 5000 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the open and the memo, a 2000 lamport priority fee, exactly the sponsor's cap (RULINGS S6): accepted. Pair: x402-upto-verify-implicit-limit-priority-fee-over-cap-reject.",
+        with(base(), Tamper::Prefix(vec![unit_price_ix(5_000)])),
+    );
+    x402_upto_verify_two_memos_unbound_accept => accept_lenient(
         "x402-upto-verify-two-memos-unbound-accept",
         POLICY_FILE,
         spec(SVM, "Top-level instruction layout", "An optional suffix of at most four instructions, each invoking either Lighthouse (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95) or SPL Memo (MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr)."),
         &[LAYOUT],
         "The route declares no extra.memo, so the suffix is only bounded at four Lighthouse/Memo instructions; two memos are allowed.",
         with(base(), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), memo_ix("second-memo-0123456789abcdef")])),
-        KIT_ONE_MEMO,
     );
-    x402_upto_verify_open_slot_number_accept => accept_authored(
+    x402_upto_verify_open_slot_number_accept => accept_lenient(
         "x402-upto-verify-open-slot-number-accept",
         VERIFY_FILE,
         spec(SVM, "4.2 UptoPayload (in PAYMENT-SIGNATURE.payload)", "| openSlot | number | u64 slot encoded in the open instruction and used as a channel PDA seed. |"),
         &[OPEN_ENCODES],
         "payload.openSlot as the JSON number the pinned table types it as (every fixture elsewhere uses the decimal string all SDKs emit; RULINGS.md U1).",
         with(base(), Tamper::PayloadValue("openSlot", json!(SLOT))),
-        KIT_SLOT_STRING,
     );
 
     // ── verify: payload and requirement bindings ───────────────────────────
@@ -582,7 +584,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("voucherSignature", json!("5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW")),
         RejectCode::UnexpectedVoucher,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_client_voucher_empty_reject => reject(
         "x402-upto-verify-client-voucher-empty-reject",
@@ -593,7 +595,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("voucherSignature", json!("")),
         RejectCode::UnexpectedVoucher,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_client_type_reject => reject(
         "x402-upto-verify-client-type-reject",
@@ -604,7 +606,7 @@ crate::registry! {
         base(),
         Tamper::PayloadKey("type", json!("deposit")),
         RejectCode::UnexpectedType,
-        Some(KIT_NO_CLIENT_FIELD_REJECT),
+        None,
     );
     x402_upto_verify_max_amount_mismatch_reject => reject(
         "x402-upto-verify-max-amount-mismatch-reject",
@@ -703,7 +705,7 @@ crate::registry! {
         "payload.nonce is not a decimal u64 (\"abc\"): the payload is malformed, rejected as invalid-payload.",
         with(base(), Tamper::PayloadValue("nonce", json!("abc"))),
         Expect::Reject { code: RejectCode::InvalidPayload, reason: Some("nonce is not a decimal u64".into()) },
-        Some(KIT_TEXTUAL_SEEDS),
+        None,
     );
     x402_upto_verify_open_slot_not_decimal_reject => verify_case(
         "x402-upto-verify-open-slot-not-decimal-reject",
@@ -714,7 +716,7 @@ crate::registry! {
         "payload.openSlot is not an integer (\"abc\"): the payload is malformed, rejected as invalid-payload.",
         with(base(), Tamper::PayloadValue("openSlot", json!("abc"))),
         Expect::Reject { code: RejectCode::InvalidPayload, reason: Some("openSlot is not a u64".into()) },
-        Some(KIT_TEXTUAL_SEEDS),
+        None,
     );
     x402_upto_verify_missing_open_transaction_reject => verify_case(
         "x402-upto-verify-missing-open-transaction-reject",
@@ -850,7 +852,7 @@ crate::registry! {
             s
         },
         Expect::Reject { code: RejectCode::ExpiresAtMismatch, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
     x402_upto_verify_timeout_over_lifetime_reject => verify_case(
         "x402-upto-verify-timeout-over-lifetime-reject",
@@ -861,7 +863,7 @@ crate::registry! {
         "The route's maxTimeoutSeconds (7200) exceeds the facilitator's maxChannelLifetimeSecs (3600): rejected as channel-lifetime-exceeded even though expiresAt is near.",
         with(VerifySpec::honest(Route { max_timeout_seconds: 7_200, ..Route::default() }), Tamper::ExpiresAt(300)),
         Expect::Reject { code: RejectCode::ChannelLifetimeExceeded, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
     x402_upto_verify_expires_over_lifetime_reject => verify_case(
         "x402-upto-verify-expires-over-lifetime-reject",
@@ -872,7 +874,7 @@ crate::registry! {
         "expiresAt - now (86400) exceeds maxChannelLifetimeSecs (3600) by far more than any clock skew: rejected as channel-lifetime-exceeded.",
         with(base(), Tamper::ExpiresAt(86_400)),
         Expect::Reject { code: RejectCode::ChannelLifetimeExceeded, reason: None },
-        Some(KIT_NO_LIFETIME),
+        None,
     );
 
     // ── verify: replay ─────────────────────────────────────────────────────
@@ -885,14 +887,14 @@ crate::registry! {
         base(),
         Tamper::ChannelExists,
         RejectCode::ChannelAlreadyOpen,
-        Some(KIT_NO_CHANNEL_EXISTS),
+        None,
     );
 
     // ── open policy: message and signers ───────────────────────────────────
     x402_upto_verify_lookup_table_reject => reject(
         "x402-upto-verify-lookup-table-reject",
         POLICY_FILE,
-        spec(SVM, "Message and signer rules", "The message MAY be legacy or version 0, but it MUST NOT contain Address Lookup Table lookups."),
+        spec(SVM, "Message and signer rules", "The message version MUST be one advertised in extra.transactionVersions (0 when the field is absent; see [Transaction versions](#transaction-versions)), and the message MUST NOT contain Address Lookup Table lookups."),
         &[NO_LOOKUP_TABLES],
         BugType::AuthBypass,
         base(),
@@ -920,7 +922,7 @@ crate::registry! {
         base(),
         Tamper::ExtraSigner,
         RejectCode::UnexpectedInstruction,
-        Some(KIT_NO_SIGNER_SET),
+        None,
     );
     x402_upto_verify_missing_payer_signature_reject => reject(
         "x402-upto-verify-missing-payer-signature-reject",
@@ -931,7 +933,7 @@ crate::registry! {
         base(),
         Tamper::Signature(PayerSignature::Missing),
         RejectCode::InvalidPayload,
-        Some(KIT_NO_SIGNATURE_CHECK),
+        None,
     );
     x402_upto_verify_invalid_payer_signature_reject => reject(
         "x402-upto-verify-invalid-payer-signature-reject",
@@ -942,7 +944,7 @@ crate::registry! {
         base(),
         Tamper::Signature(PayerSignature::Invalid),
         RejectCode::InvalidPayload,
-        Some(KIT_NO_SIGNATURE_CHECK),
+        None,
     );
 
     // ── open policy: layout ────────────────────────────────────────────────
@@ -1121,6 +1123,30 @@ crate::registry! {
         RejectCode::ComputePriceOverCap,
         None,
     );
+    x402_upto_verify_priority_fee_over_cap_reject => verify_case(
+        "x402-upto-verify-priority-fee-over-cap-reject",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_LIMIT, CB_PRICE, VERIFIER_POLICY],
+        BugType::AuthBypass,
+        "SetComputeUnitLimit 400000 and SetComputeUnitPrice 5000000: each at its absolute ceiling, but the sponsor would pay a 2000000 lamport priority fee. The sponsor bounds the fee it pays as limit times price (RULINGS S6): rejected as compute-price-over-cap. Pair: x402-upto-verify-compute-at-caps-accept.",
+        with(base(), Tamper::Prefix(vec![unit_limit_ix(400_000), unit_price_ix(5_000_000)])),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+        None,
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
+    x402_upto_verify_implicit_limit_priority_fee_over_cap_reject => verify_case(
+        "x402-upto-verify-implicit-limit-priority-fee-over-cap-reject",
+        POLICY_FILE,
+        spec(SVM, "Top-level instruction layout", "A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit price, and required-signature count (operator-configurable caps), but MUST NOT admit a compute-unit limit above 400000 or a compute-unit price above 5000000 microlamports."),
+        &[CB_PRICE, VERIFIER_POLICY],
+        BugType::AuthBypass,
+        "SetComputeUnitPrice 5001 with no SetComputeUnitLimit: the runtime budgets 200000 units for each of the open and the memo, so the sponsor would pay 2001 lamports, one over its cap (RULINGS S6). A verifier that bounds only declared limits accepts it: rejected as compute-price-over-cap. Pair: x402-upto-verify-implicit-limit-at-fee-cap-accept.",
+        with(base(), Tamper::Prefix(vec![unit_price_ix(5_001)])),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+        None,
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
     x402_upto_verify_compute_limit_over_cap_reject => reject(
         "x402-upto-verify-compute-limit-over-cap-reject",
         POLICY_FILE,
@@ -1146,7 +1172,7 @@ crate::registry! {
     x402_upto_verify_compute_duplicate_limit_reject => reject(
         "x402-upto-verify-compute-duplicate-limit-reject",
         POLICY_FILE,
-        spec(SVM, "Top-level instruction layout", "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
+        spec(SVM, "Top-level instruction layout", "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
         &[LAYOUT],
         BugType::Wire,
         base(),
@@ -1157,7 +1183,7 @@ crate::registry! {
     x402_upto_verify_compute_duplicate_price_reject => reject(
         "x402-upto-verify-compute-duplicate-price-reject",
         POLICY_FILE,
-        spec(SVM, "Top-level instruction layout", "An optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
+        spec(SVM, "Top-level instruction layout", "In a legacy or version-0 transaction, an optional Compute Budget prefix containing at most one SetComputeUnitLimit instruction and at most one SetComputeUnitPrice instruction."),
         &[LAYOUT],
         BugType::Wire,
         base(),
@@ -1209,7 +1235,7 @@ crate::registry! {
         base(),
         Tamper::OpenExtraAccount,
         RejectCode::OpenBindingMismatch,
-        Some(KIT_REMAINING_ACCOUNTS),
+        None,
     );
     x402_upto_verify_open_missing_account_reject => reject(
         "x402-upto-verify-open-missing-account-reject",
@@ -1341,7 +1367,7 @@ crate::registry! {
         base(),
         Tamper::OpenWritableMint,
         RejectCode::OpenBindingMismatch,
-        Some(KIT_NO_PRIVILEGES),
+        None,
     );
     x402_upto_verify_deposit_arg_above_reject => reject(
         "x402-upto-verify-deposit-arg-above-reject",
@@ -1483,7 +1509,7 @@ crate::registry! {
         "The offer declares no memo: the client still emits one Memo carrying a random nonce of at least 16 bytes, hex encoded.",
         build_input(Route::default().offer()),
         Expect::AcceptAuthored(json!({"exactBytes": {"openMemo": "nonce"}})),
-        Some(KIT_NO_MEMO_NONCE),
+        None,
     );
     x402_upto_build_memo_max_length => build_case(
         "x402-upto-build-memo-max-length",
@@ -1557,7 +1583,7 @@ crate::registry! {
         "extra.recentSlot as the JSON number the pinned table and its examples use (\"recentSlot\": 341000000): the client builds the open (RULINGS.md U1).",
         build_input(offer_with(|o| o["extra"]["recentSlot"] = json!(SLOT))),
         Expect::AcceptAuthored(json!({"exactBytes": {"openMessageVersion": 0}})),
-        Some(KIT_RECENT_SLOT_STRING),
+        None,
     );
     x402_upto_build_zero_withdraw_delay_reject => build_case(
         "x402-upto-build-zero-withdraw-delay-reject",
@@ -1655,7 +1681,7 @@ crate::registry! {
         s_txv1_reject(),
         &[TV_REJECT_FIRST, TV_MESSAGE],
         BugType::Wire,
-        base(),
+        VerifySpec::honest(v0_only_route()),
         Tamper::Form(Form::v1()),
         RejectCode::UnsupportedVersion,
         None,
@@ -1666,7 +1692,7 @@ crate::registry! {
         s_txv1_reject(),
         &[TV_REJECT_FIRST],
         BugType::Wire,
-        with(base(), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), solana_instruction::Instruction { program_id: keys::pubkey(keys::SPLIT_RECIPIENT_2), accounts: vec![], data: vec![1] }])),
+        with(VerifySpec::honest(v0_only_route()), Tamper::Suffix(vec![memo_ix(NONCE_MEMO), solana_instruction::Instruction { program_id: keys::pubkey(keys::SPLIT_RECIPIENT_2), accounts: vec![], data: vec![1] }])),
         Tamper::Form(Form::v1()),
         RejectCode::UnsupportedVersion,
         None,
@@ -1674,7 +1700,7 @@ crate::registry! {
     x402_upto_verify_v1_compute_budget_instruction_reject => reject(
         "x402-upto-verify-v1-compute-budget-instruction-reject",
         TXV1_FILE,
-        spec(TXV1, "Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected."),
+        spec(TXV1, "Top-level instruction layout", "A version-1 transaction that contains a Compute Budget instruction MUST be rejected (an x402 sponsor rule; the runtime treats such instructions as no-ops)."),
         &[TV_V1_NO_CB, TV_NO_PREFIX],
         BugType::Wire,
         with(VerifySpec::honest(v1_route()), Tamper::Form(Form::v1())),
@@ -1699,8 +1725,8 @@ crate::registry! {
         s_txv1_budget(),
         &[TV_V1_CAPS],
         BugType::AuthBypass,
-        "A version-1 open at 200000 units with priorityFee 1000001 lamports (priorityFee * 1000000 > 5000000 * computeUnitLimit): rejected as compute-price-over-cap.",
-        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1_000_001), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        "A version-1 open at 300 units with priorityFee 1501 lamports (priorityFee * 1000000 > 5000000 * computeUnitLimit), still under the 2000 lamport cap on the total fee, so only the per-unit rule rejects it: rejected as compute-price-over-cap.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(300), priority_fee_lamports: Some(1_501), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
         Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
         None,
     );
@@ -1709,9 +1735,21 @@ crate::registry! {
         TXV1_FILE,
         s_txv1_budget(),
         &[TV_V1_CAPS],
-        "A version-1 open at 200000 units with priorityFee 1000000 lamports: exactly 5000000 micro-lamports per unit, accepted.",
-        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1_000_000), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        "A version-1 open at 300 units with priorityFee 1500 lamports: exactly 5000000 micro-lamports per unit and under the 2000 lamport cap a sponsor puts on the total fee (RULINGS S6), accepted.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(300), priority_fee_lamports: Some(1_500), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
     );
+    x402_upto_verify_v1_priority_fee_over_sponsor_cap_reject => verify_case(
+        "x402-upto-verify-v1-priority-fee-over-sponsor-cap-reject",
+        TXV1_FILE,
+        s_txv1_budget(),
+        &[TV_V1_CAPS],
+        BugType::AuthBypass,
+        "A version-1 open at 200000 units with priorityFee 2001 lamports: far under 5000000 micro-lamports per unit, but one lamport over the cap the sponsor puts on the total fee it pays (RULINGS S6): rejected as compute-price-over-cap.",
+        with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(2_001), loaded_accounts_data_size_limit: Some(64 * 1024 * 1024) })),
+        Expect::Reject { code: RejectCode::ComputePriceOverCap, reason: None },
+        None,
+    )
+    .also_conformant(&[crate::case::Alternative::Accept], super::CHANNEL_FEE_PRODUCT_POLICY);
     x402_upto_verify_v1_missing_limit_reject => verify_case(
         "x402-upto-verify-v1-missing-limit-reject",
         TXV1_FILE,
@@ -1734,14 +1772,13 @@ crate::registry! {
         Expect::Reject { code: RejectCode::InvalidPayload, reason: None },
         None,
     );
-    x402_upto_verify_v1_small_loaded_limit_accept => accept_authored(
+    x402_upto_verify_v1_small_loaded_limit_accept => accept_lenient(
         "x402-upto-verify-v1-small-loaded-limit-accept",
         TXV1_FILE,
         s_txv1_budget(),
         &[TV_V1_CAPS],
         "A version-1 open whose loadedAccountsDataSizeLimit is present but below the runtime maximum (1 MiB): the spec requires presence only, so it is accepted.",
         with(VerifySpec::honest(v1_route()), Tamper::Form(Form::V1 { unit_limit: Some(200_000), priority_fee_lamports: Some(1), loaded_accounts_data_size_limit: Some(1024 * 1024) })),
-        KIT_V1_LOADED_LIMIT,
     );
     x402_upto_verify_v0_oversize_reject => verify_case(
         "x402-upto-verify-v0-oversize-reject",

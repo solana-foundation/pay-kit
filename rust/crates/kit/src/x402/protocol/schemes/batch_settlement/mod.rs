@@ -7,7 +7,7 @@ mod tx_policy;
 mod types;
 mod verify;
 
-pub use errors::{classify, BatchError};
+pub use errors::{classify, leading_code, BatchError};
 pub use tx_policy::*;
 pub use types::*;
 pub use verify::*;

@@ -19,7 +19,9 @@ import json
 import time
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.paymentchannels import find_channel_pda
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, SignedVoucher, VoucherData
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
@@ -65,7 +67,20 @@ def _far_future() -> int:
 
 async def _open(server: SessionServer) -> tuple[_Signer, str]:
     signer = _Signer()
-    channel_id = str(Keypair().pubkey())
+    # The server binds the open to its currency's mint and the channelId to
+    # the PDA of the open's seeds.
+    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    channel_id = str(
+        find_channel_pda(
+            Pubkey.from_string(SESSION_TEST_RECIPIENT),
+            Pubkey.from_string(SESSION_TEST_RECIPIENT),
+            Pubkey.from_string(mint),
+            Pubkey.from_string(signer.address()),
+            1,
+            1,
+            Pubkey.from_string(server.config.channel_program),
+        )[0]
+    )
     # The opening challenge must carry the open-transaction context
     # (recentBlockhash/recentSlot) the open payload's openSlot binds to.
     challenge = PaymentChallenge(
@@ -97,7 +112,7 @@ async def _open(server: SessionServer) -> tuple[_Signer, str]:
             channel_id=channel_id,
             payer=SESSION_TEST_RECIPIENT,
             payee=SESSION_TEST_RECIPIENT,
-            mint=SESSION_TEST_RECIPIENT,
+            mint=mint,
             authorized_signer=signer.address(),
             salt=1,
             deposit_amount="1000",

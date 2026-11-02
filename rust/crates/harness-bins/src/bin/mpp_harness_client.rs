@@ -22,7 +22,7 @@ fn write_stdout_line(line: &str) {
     }
 }
 use solana_pay_kit::mpp::client::{
-    build_credential_header_with_options, BuildChargeTransactionOptions,
+    build_credential_header_with_options, BuildChargeTransactionOptions, PayerFundedAtaCreation,
 };
 use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 use solana_pay_kit::mpp::{
@@ -56,15 +56,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or_else(|| "server did not return a supported Payment challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
-    // Split ATA rent is funded from the client wallet on servers without a
-    // fee payer, which is the kit's default (the spec requires it).
-    let authorization = build_credential_header_with_options(
-        &signer,
-        &rpc,
-        &challenge,
-        BuildChargeTransactionOptions::default(),
-    )
-    .await?;
+    // The client's configuration: the cluster it pays on, the amount it was
+    // asked to pay and who it pays. The kit refuses a challenge that
+    // disagrees with any of them. The harness server is trusted to name split
+    // recipients, so split ATA rent is funded from the client wallet on
+    // servers without a fee payer (the spec requires it; the kit declines it
+    // unless asked).
+    let options = BuildChargeTransactionOptions {
+        payer_funded_ata_creation: PayerFundedAtaCreation::Include,
+        expected_network: env::var("MPP_HARNESS_NETWORK").ok(),
+        max_amount_base_units: env::var("MPP_HARNESS_AMOUNT")
+            .ok()
+            .map(|amount| amount.parse())
+            .transpose()?,
+        expected_recipient: env::var("MPP_HARNESS_PAY_TO").ok(),
+        ..BuildChargeTransactionOptions::default()
+    };
+    let authorization =
+        build_credential_header_with_options(&signer, &rpc, &challenge, options).await?;
 
     let paid_response = http
         .get(&target_url)

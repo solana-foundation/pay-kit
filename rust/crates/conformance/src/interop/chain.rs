@@ -230,6 +230,22 @@ impl Chain {
             // create it (draft-solana-charge-00 "SPL Tokens").
             self.fund_token(&acc.pay_to.pubkey, mint, 1, program)?;
             self.fund_token(&acc.upto_pay_to.pubkey, mint, 1, program)?;
+            // batch-settlement: the sponsor holds the channel's zero-share
+            // payee seat, whose token account the settlement simulation reads.
+            // Its distribute also pays the protocol treasury's token account,
+            // which a deployed cluster already has.
+            if scenario.intent == super::claims::Intent::X402Batch {
+                self.fund_token(&acc.fee_payer.pubkey, mint, 0, program)?;
+            }
+            // Payment-channels `distribute` (batch and upto) also pays the
+            // protocol treasury's token account, which a deployed cluster
+            // already has; the upto readiness check refuses the open without it.
+            if matches!(
+                scenario.intent,
+                super::claims::Intent::X402Batch | super::claims::Intent::X402Upto
+            ) {
+                self.fund_token(PAYMENT_CHANNEL_TREASURY_OWNER, mint, 0, program)?;
+            }
             if scenario.pre_create_platform_ata {
                 self.fund_token(&acc.platform.pubkey, mint, 0, program)?;
             }
@@ -241,6 +257,24 @@ impl Chain {
         self.rpc()
             .send::<Value>(RpcRequest::Custom { method }, params)
             .map_err(|e| format!("{method}: {e}"))
+    }
+
+    /// Confirmed signatures touching `address`, newest first.
+    pub fn signatures_for_address(&self, address: &str) -> Result<Vec<String>, String> {
+        let v = self.send(
+            "getSignaturesForAddress",
+            json!([address, {"commitment": "confirmed"}]),
+        )?;
+        v.as_array()
+            .ok_or_else(|| format!("getSignaturesForAddress {address}: {v}"))?
+            .iter()
+            .map(|entry| {
+                entry["signature"]
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("getSignaturesForAddress {address}: {entry}"))
+            })
+            .collect()
     }
 
     /// Token balance of `owner`'s ATA; a missing account reads as zero.
@@ -283,7 +317,8 @@ impl Chain {
         loop {
             let v = self.send(
                 "getTransaction",
-                json!([signature, {"commitment": "confirmed", "encoding": "base64", "maxSupportedTransactionVersion": 0}]),
+                // Version 1 (SIMD-0385) settlements are read back too.
+                json!([signature, {"commitment": "confirmed", "encoding": "base64", "maxSupportedTransactionVersion": 1}]),
             );
             match v {
                 Ok(v) if !v.is_null() => return Ok(v),

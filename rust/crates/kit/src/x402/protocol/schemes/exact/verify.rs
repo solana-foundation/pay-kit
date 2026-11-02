@@ -15,8 +15,9 @@ use crate::x402::error::Error;
 
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 
-/// Highest compute-unit limit a sponsored fee payer co-signs.
-const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+/// Highest compute-unit limit a sponsored fee payer co-signs: the reference
+/// default of scheme_exact_svm.md §2.2.1 ("Max compute units | `400,000`").
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 400_000;
 
 /// Verify a confirmed transaction matches the expected payment requirements.
 ///
@@ -284,6 +285,7 @@ pub fn verify_exact_versioned_transaction(
     // has no ComputeBudget prefix; the price cap is applied to the header.
     let budgeted = version == crate::core::tx::TxVersion::V1;
     if budgeted {
+        verify_v1_config_presence(&tx.message)?;
         let declared = crate::core::tx::DeclaredBudget::of(&tx.message)
             .map_err(|e| Error::Other(format!("invalid_exact_svm_payload_transaction: {e}")))?;
         if declared
@@ -294,17 +296,26 @@ pub fn verify_exact_versioned_transaction(
                 "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction_too_high",
             );
         }
-        crate::core::tx::check_v1_budget_caps(
+        if declared
+            .unit_price_micro_lamports
+            .is_some_and(|price| price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)
+        {
+            return invalid(
+                "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+            );
+        }
+        // The limit and price caps are checked above with their own reasons;
+        // what is left (a zero unit limit or loaded-data budget, one above the
+        // runtime maximum) is a malformed version-1 header. §1.5 requires the
+        // loaded-data budget to be set, not to be the maximum: clients size it
+        // (the reference SDKs request 4 MiB).
+        crate::core::tx::check_v1_budget_caps_with(
             &tx.message,
             MAX_COMPUTE_UNIT_LIMIT,
             MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+            crate::core::tx::LoadedDataLimitRule::Present,
         )
-        .map_err(|_| {
-            Error::Other(
-                "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
-                    .into(),
-            )
-        })?;
+        .map_err(|e| Error::Other(format!("invalid_exact_svm_payload_transaction: {e}")))?;
     }
     verify_exact_instructions(
         tx.message.static_account_keys(),
@@ -326,6 +337,39 @@ pub fn verify_exact_versioned_transaction(
         )
     })?;
     verify_required_signers(&tx.message, budgeted)
+}
+
+/// The version-1 config rules of scheme_exact_svm.md §1.5 and §2.2.1 that
+/// have their own reasons, checked before the shared budget caps so each
+/// failure names its rule: no ComputeBudget instruction (the runtime ignores
+/// them, so bounding one bounds nothing), no heap request (version 0 rejects
+/// RequestHeapFrame the same way), and both the compute unit limit and the
+/// loaded-account-data budget set (an unset value is zero, which cannot
+/// execute after the sponsor has paid the fee).
+fn verify_v1_config_presence(message: &solana_message::VersionedMessage) -> Result<(), Error> {
+    let solana_message::VersionedMessage::V1(v1) = message else {
+        return Ok(());
+    };
+    let keys = message.static_account_keys();
+    if message.instructions().iter().any(|ix| {
+        keys.get(ix.program_id_index as usize) == Some(&crate::core::tx::COMPUTE_BUDGET_PROGRAM_ID)
+    }) {
+        return invalid("invalid_exact_svm_payload_transaction_v1_compute_budget_instruction");
+    }
+    if v1.config.heap_size.is_some() {
+        return invalid("invalid_exact_svm_payload_transaction_v1_heap_size");
+    }
+    if v1.config.compute_unit_limit.is_none() {
+        return invalid(
+            "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
+        );
+    }
+    if v1.config.loaded_accounts_data_size_limit.is_none() {
+        return invalid(
+            "invalid_exact_svm_payload_transaction_loaded_accounts_data_size_limit_missing",
+        );
+    }
+    Ok(())
 }
 
 /// Only the fee payer and the transfer authority may sign: every extra
@@ -1612,6 +1656,81 @@ mod tests {
         }
     }
 
+    /// A version-1 header without loadedAccountsDataSizeLimit is a malformed
+    /// payload, not a price-cap violation: each budget rule keeps its own
+    /// reason (x402-txv1 §1.5).
+    #[test]
+    fn verify_exact_v1_budget_errors_keep_their_reason() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let mut tx = build_exact_v1_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![memo_ix()],
+            crate::core::tx::ComputeBudget::new(20_000, 1),
+        );
+        assert!(verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).is_ok());
+        let solana_message::VersionedMessage::V1(message) = &mut tx.message else {
+            panic!("version-1 message expected");
+        };
+        let base = message.config;
+        let reason_for = |tx: &VersionedTransaction| {
+            verify_exact_versioned_transaction(tx, &requirements, &[fee_payer])
+                .unwrap_err()
+                .to_string()
+        };
+        let with_config = |edit: &dyn Fn(&mut solana_message::v1::TransactionConfig)| {
+            let mut tx = tx.clone();
+            let solana_message::VersionedMessage::V1(message) = &mut tx.message else {
+                unreachable!()
+            };
+            message.config = base;
+            edit(&mut message.config);
+            tx
+        };
+
+        assert_eq!(
+            reason_for(&with_config(&|c| c.loaded_accounts_data_size_limit = None)),
+            "invalid_exact_svm_payload_transaction_loaded_accounts_data_size_limit_missing"
+        );
+        assert_eq!(
+            reason_for(&with_config(&|c| c.compute_unit_limit = None)),
+            "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction"
+        );
+        assert_eq!(
+            reason_for(&with_config(&|c| c.heap_size = Some(64 * 1024))),
+            "invalid_exact_svm_payload_transaction_v1_heap_size"
+        );
+        // §1.5 requires the loaded-data budget to be set, not to be the
+        // runtime maximum: the reference TypeScript and Go clients set 4 MiB.
+        let sized = with_config(&|c| c.loaded_accounts_data_size_limit = Some(4 * 1024 * 1024));
+        assert!(verify_exact_versioned_transaction(&sized, &requirements, &[fee_payer]).is_ok());
+        let zero = with_config(&|c| c.loaded_accounts_data_size_limit = Some(0));
+        assert!(reason_for(&zero).starts_with("invalid_exact_svm_payload_transaction: "));
+    }
+
+    /// A ComputeBudget instruction in a version-1 message is refused with its
+    /// own reason (x402 scheme_exact_svm.md §2.2.1).
+    #[test]
+    fn verify_exact_v1_rejects_compute_budget_instructions() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let tx = build_exact_v1_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![crate::core::tx::unit_price_instruction(1)],
+            crate::core::tx::ComputeBudget::new(20_000, 1),
+        );
+        let err = verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid_exact_svm_payload_transaction_v1_compute_budget_instruction"
+        );
+    }
     #[test]
     fn verify_exact_transaction_caps_v1_compute_unit_limit() {
         let requirements = requirements("1000");

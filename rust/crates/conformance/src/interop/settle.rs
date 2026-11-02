@@ -24,6 +24,23 @@ pub struct Message {
 }
 
 impl Message {
+    /// The message version: `"legacy"`, `"0"` or `"1"`.
+    pub fn version(&self) -> &'static str {
+        match self.msg {
+            VersionedMessage::Legacy(_) => "legacy",
+            VersionedMessage::V0(_) => "0",
+            VersionedMessage::V1(_) => "1",
+        }
+    }
+
+    /// The channel an `x402-upto` settlement closes: account 1 (`channel`) of
+    /// its `settle_and_seal`, which follows the Ed25519 verify when the
+    /// metered amount is non-zero.
+    pub fn upto_channel(&self, actual: u64) -> Option<&str> {
+        let settle = self.instructions().get(usize::from(actual != 0))?;
+        settle.accounts.get(1).map(|index| self.account(*index))
+    }
+
     fn account(&self, index: u8) -> &str {
         self.keys
             .get(index as usize)
@@ -279,17 +296,22 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
     let m = c.m;
     let actual = scenario.primary_delta();
     let ixs = m.instructions();
-    let expected_len = if actual == 0 { 5 } else { 6 };
-    if ixs.len() != expected_len {
+    let verify_len = usize::from(actual != 0);
+    // The payee and treasury ATA creates are optional: the spec has the
+    // facilitator confirm those accounts are usable before `open` (readiness
+    // step 8), so a facilitator may rely on them existing (the TypeScript
+    // one does) or create them idempotently (the Rust one does).
+    let with_creates = ixs.len() == verify_len + 4;
+    if !with_creates && ixs.len() != verify_len + 2 {
         c.problems.push(format!(
-            "x402-upto settlement has {} instructions, expected {expected_len}",
-            ixs.len()
+            "x402-upto settlement has {} instructions, expected {} or {}",
+            ixs.len(),
+            verify_len + 2,
+            verify_len + 4
         ));
         return;
     }
-    let (settle, create_payee, create_treasury, create_recipient, distribute) = if actual == 0 {
-        (&ixs[0], &ixs[1], &ixs[2], &ixs[3], &ixs[4])
-    } else {
+    if actual != 0 {
         let verify = &ixs[0];
         c.check(m.program(verify) == ED25519_PROGRAM, || {
             "first instruction is not an Ed25519 verify".into()
@@ -312,7 +334,12 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
         c.check(u64_le(&verify.data, 112 + 2 + 32) == Some(actual), || {
             format!("voucher cumulative amount != {actual}")
         });
-        (&ixs[1], &ixs[2], &ixs[3], &ixs[4], &ixs[5])
+    }
+    let rest = &ixs[verify_len..];
+    let (settle, creates, distribute) = if with_creates {
+        (&rest[0], Some((&rest[1], &rest[2])), &rest[3])
+    } else {
+        (&rest[0], None, &rest[1])
     };
     c.check(m.program(settle) == PAYMENT_CHANNELS_PROGRAM, || {
         "settle_and_seal is not a payment-channels instruction".into()
@@ -333,21 +360,18 @@ fn upto_shape(c: &mut Checker<'_>, scenario: &Scenario, acc: &Accounts) {
     let pay_to = acc.upto_pay_to.pubkey.as_str();
     let recipient_ata = ata(pay_to, mint, program);
     let treasury_ata = ata(PAYMENT_CHANNEL_TREASURY_OWNER, mint, program);
-    for (ix, owner, ata_addr, what) in [
-        (create_payee, pay_to, recipient_ata.as_str(), "payee"),
-        (
-            create_treasury,
-            PAYMENT_CHANNEL_TREASURY_OWNER,
-            treasury_ata.as_str(),
-            "treasury",
-        ),
-        (
-            create_recipient,
-            pay_to,
-            recipient_ata.as_str(),
-            "recipient",
-        ),
-    ] {
+    let creates = creates.map(|(create_payee, create_treasury)| {
+        [
+            (create_payee, pay_to, recipient_ata.as_str(), "payee"),
+            (
+                create_treasury,
+                PAYMENT_CHANNEL_TREASURY_OWNER,
+                treasury_ata.as_str(),
+                "treasury",
+            ),
+        ]
+    });
+    for (ix, owner, ata_addr, what) in creates.into_iter().flatten() {
         let ok = m.program(ix) == ATA_PROGRAM
             && ix.data.first() == Some(&1)
             && c.ata_accounts_match(ix, ata_addr, owner, mint, program);

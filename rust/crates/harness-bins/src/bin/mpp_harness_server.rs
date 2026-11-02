@@ -128,12 +128,37 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
         .unwrap_or(false);
     let fee_payer: Arc<dyn TransactionSigner> =
         Arc::new(read_memory_signer("MPP_HARNESS_FEE_PAYER_SECRET_KEY")?);
-    let price = env::var("MPP_HARNESS_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
+    let decimals = match env::var("MPP_HARNESS_DECIMALS") {
+        Ok(raw) if !raw.is_empty() => raw.parse::<u8>()?,
+        _ => DEFAULT_TOKEN_DECIMALS,
+    };
+    // The scenario's amount in base units is authoritative (every server
+    // adapter charges MPP_HARNESS_AMOUNT); the kit's decimal-priced API gets
+    // it as the exact human price for the mint's decimals.
+    let price_for = |amount: Result<String, env::VarError>,
+                     price: Result<String, env::VarError>|
+     -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        match (amount, price) {
+            (Ok(units), _) if !units.is_empty() => {
+                Ok(Some(solana_pay_kit::core::format_units(&units, decimals)?))
+            }
+            (_, Ok(price)) => Ok(Some(price)),
+            _ => Ok(None),
+        }
+    };
+    let price = price_for(
+        env::var("MPP_HARNESS_AMOUNT"),
+        env::var("MPP_HARNESS_PRICE"),
+    )?
+    .unwrap_or_else(|| DEFAULT_PRICE.to_string());
     let replay_source = match (
         env::var("MPP_HARNESS_REPLAY_SOURCE_PATH"),
-        env::var("MPP_HARNESS_REPLAY_SOURCE_PRICE"),
+        price_for(
+            env::var("MPP_HARNESS_REPLAY_SOURCE_AMOUNT"),
+            env::var("MPP_HARNESS_REPLAY_SOURCE_PRICE"),
+        )?,
     ) {
-        (Ok(resource_path), Ok(price)) => Some(ReplaySource {
+        (Ok(resource_path), Some(price)) => Some(ReplaySource {
             price,
             resource_path,
         }),
@@ -141,10 +166,6 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
     };
     let challenge_binding_secret =
         env::var("MPP_HARNESS_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
-    let decimals = match env::var("MPP_HARNESS_DECIMALS") {
-        Ok(raw) if !raw.is_empty() => raw.parse::<u8>()?,
-        _ => DEFAULT_TOKEN_DECIMALS,
-    };
     let splits = read_splits()?;
     // Refuse to boot with invalid splits (audit #21). The harness
     // misconfig scenario depends on this — every server SDK should

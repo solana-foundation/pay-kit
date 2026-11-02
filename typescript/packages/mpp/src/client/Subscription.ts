@@ -36,13 +36,22 @@ import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction }
 import type { Challenge as MppxChallenge } from 'mppx';
 import { Credential, Method } from 'mppx';
 
-import { DEFAULT_RPC_URLS, MEMO_PROGRAM, normalizeNetwork, SYSTEM_PROGRAM } from '../constants.js';
+import {
+    DEFAULT_RPC_URLS,
+    MEMO_PROGRAM,
+    normalizeNetwork,
+    SUBSCRIPTIONS_PROGRAM,
+    SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+} from '../constants.js';
 import * as Methods from '../Methods.js';
 import {
     assertPeriodHoursInRange,
     deriveSubscriptionAuthorityPda,
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
+    parseSubscriptionInteger,
 } from '../shared/subscription.js';
 
 /** Domain separator for reusable subscription authentication proofs. */
@@ -166,6 +175,9 @@ export function subscription(parameters: subscription.Parameters) {
             if (serverPaysFees && broadcast) {
                 throw new Error('broadcast=true cannot be used with fee sponsorship (feePayer: true)');
             }
+            // Refuse an out-of-spec challenge (untrusted program, currency/mint
+            // mismatch, malformed amount) before signing the bearer proof.
+            assertSubscriptionChallengeRequest(challenge.request, parameters.trustedSubscriptionProgram);
 
             const subscriptionDelegation = await deriveSubscriptionPda({
                 planPda: address(challenge.request.methodDetails.planAddress),
@@ -212,6 +224,7 @@ export function subscription(parameters: subscription.Parameters) {
                 rpcUrl,
                 signer,
                 subscriptionAuthorityInitId,
+                trustedSubscriptionProgram: parameters.trustedSubscriptionProgram,
             });
 
             const rpc = createSolanaRpc(rpcUrl);
@@ -270,7 +283,8 @@ export async function buildSubscriptionActivationTransaction(
         recentBlockhash: serverBlockhash,
     } = methodDetails;
 
-    const periodHours = mapSubscriptionPeriodToHours(periodUnit, Number(periodCount));
+    assertSubscriptionChallengeRequest(parameters.request, parameters.trustedSubscriptionProgram);
+    const periodHours = mapSubscriptionPeriodToHours(periodUnit, periodCount);
     assertPeriodHoursInRange(periodHours);
 
     const rpcUrl =
@@ -314,6 +328,10 @@ export async function buildSubscriptionActivationTransaction(
         owner: subscriberAddress,
         tokenProgram: tokenProgramAddress,
     });
+    // The receiver ATA is only referenced by transfer_subscription. The
+    // activation does not create it: draft-solana-subscription-00 lists the
+    // activation's instructions and allows nothing else beyond compute-budget
+    // and memo instructions; the recipient's ATA must already exist.
     const [recipientAta] = await findAssociatedTokenPda({
         mint: mintAddress,
         owner: recipientAddress,
@@ -333,6 +351,7 @@ export async function buildSubscriptionActivationTransaction(
     if (plan.data.terms.periodHours !== BigInt(periodHours)) {
         throw new Error('Subscription plan period does not match the challenge');
     }
+    assertPlanPullerAndDestinations(plan, address(methodDetails.puller), recipientAddress);
 
     const payerAddress = useServerFeePayer ? address(feePayerKey!) : subscriberAddress;
     const payerSigner = payerAddress === subscriberAddress ? signer : remoteSigner(payerAddress);
@@ -350,21 +369,14 @@ export async function buildSubscriptionActivationTransaction(
         }),
         payerAddress,
     );
-    const recipientAtaIx = stripRemoteSigner(
-        getCreateAssociatedTokenIdempotentInstruction({
-            ata: recipientAta,
-            mint: mintAddress,
-            owner: recipientAddress,
-            payer: payerSigner,
-            tokenProgram: tokenProgramAddress,
-        }),
-        payerAddress,
-    );
     const generatedSubscribe = await getSubscribeInstructionAsync(
         {
             eventAuthority,
             merchant: plan.owner,
-            payer: payerSigner,
+            // The optional payer account names a sponsor; without one the
+            // subscriber pays and the account is omitted (the Rust kit's
+            // eight-account layout).
+            ...(useServerFeePayer ? { payer: payerSigner } : {}),
             planPda,
             selfProgram: programAddress,
             subscribeData: {
@@ -404,7 +416,7 @@ export async function buildSubscriptionActivationTransaction(
         pullerAddress,
     );
 
-    const instructions: Instruction[] = [subscriberAtaIx, recipientAtaIx, subscribeIx, transferIx];
+    const instructions: Instruction[] = [subscriberAtaIx, subscribeIx, transferIx];
 
     if (externalId) {
         instructions.push(buildMemoInstruction(externalId));
@@ -507,6 +519,75 @@ async function readSubscriptionAuthorityInitId(parameters: {
     return await fetchAuthorityInitId(rpc, authority, programAddress);
 }
 
+const U64_MAX = (1n << 64n) - 1n;
+/** Base58 of the all-zero address: an unused slot in a Plan's fixed-size lists. */
+const ZERO_ADDRESS = SYSTEM_PROGRAM;
+
+/**
+ * Challenge checks that need no RPC (draft-solana-subscription-00):
+ *
+ * - §Intent Semantics: "clients MUST validate that address
+ *   [methodDetails.subscriptionProgram] before signing" — pinned to
+ *   `trustedProgram` (default: the canonical deployment).
+ * - §Currency Formats: "Implementations MUST treat `currency` and
+ *   `methodDetails.mint` as the same value".
+ * - §Shared Fields: `amount` and `periodCount` are positive base-10 integers
+ *   without sign, decimal point, exponent, whitespace, or leading zeros.
+ * - §Method Details: tokenProgram "MUST be the SPL Token program or the SPL
+ *   Token-2022 program".
+ */
+function assertSubscriptionChallengeRequest(
+    request: buildSubscriptionActivationTransaction.Parameters['request'],
+    trustedProgram: string = SUBSCRIPTIONS_PROGRAM,
+): void {
+    const { methodDetails } = request;
+    if (methodDetails.subscriptionProgram !== trustedProgram) {
+        throw new Error(
+            `Untrusted subscription program ${methodDetails.subscriptionProgram} (expected ${trustedProgram})`,
+        );
+    }
+    if (request.currency !== methodDetails.mint) {
+        throw new Error(
+            `currency must match methodDetails.mint (currency ${request.currency}, mint ${methodDetails.mint})`,
+        );
+    }
+    if (parseSubscriptionInteger(request.amount, 'amount') > U64_MAX) {
+        throw new Error(`Invalid amount: ${request.amount} does not fit in a u64`);
+    }
+    parseSubscriptionInteger(request.periodCount, 'periodCount');
+    if (methodDetails.tokenProgram !== TOKEN_PROGRAM && methodDetails.tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error(
+            `methodDetails.tokenProgram must be ${TOKEN_PROGRAM} or ${TOKEN_2022_PROGRAM}, got ${methodDetails.tokenProgram}`,
+        );
+    }
+}
+
+/**
+ * draft-solana-subscription-00 §Method Details: `methodDetails.puller` "MUST
+ * be `plan.owner` or appear in `plan.pullers`", and "Servers and clients MUST
+ * reject request objects referencing a plan with an empty destination
+ * whitelist, more than one non-zero destination, or a destination different
+ * from `recipient`."
+ */
+function assertPlanPullerAndDestinations(
+    plan: ReturnType<ReturnType<typeof getPlanDecoder>['decode']>,
+    puller: Address,
+    recipient: Address,
+): void {
+    const pullers = plan.data.pullers.filter(entry => entry !== ZERO_ADDRESS);
+    if (puller !== plan.owner && !pullers.includes(puller)) {
+        throw new Error(
+            'The on-chain Plan does not match the challenge: methodDetails.puller is neither plan.owner nor in plan.pullers',
+        );
+    }
+    const destinations = plan.data.destinations.filter(entry => entry !== ZERO_ADDRESS);
+    if (destinations.length !== 1 || destinations[0] !== recipient) {
+        throw new Error(
+            'The on-chain Plan does not match the challenge: plan.destinations must be exactly one address equal to recipient',
+        );
+    }
+}
+
 function remoteSigner(remoteAddress: Address): TransactionSigner {
     return {
         address: remoteAddress,
@@ -602,6 +683,12 @@ export declare namespace subscription {
         rpcUrl?: string;
         /** Solana transaction signer. The subscriber's funding key. */
         signer: SubscriptionSigner;
+        /**
+         * Subscriptions program deployment the client trusts. A challenge whose
+         * `methodDetails.subscriptionProgram` names any other program is refused
+         * before anything is signed. Defaults to {@link SUBSCRIPTIONS_PROGRAM}.
+         */
+        trustedSubscriptionProgram?: string;
     };
 
     type ProgressEvent =
@@ -668,5 +755,10 @@ export declare namespace buildSubscriptionActivationTransaction {
         signer: SubscriptionSigner;
         /** Live init id returned by the separately initialized SubscriptionAuthority. */
         subscriptionAuthorityInitId?: bigint;
+        /**
+         * Subscriptions program deployment the client trusts. Defaults to
+         * {@link SUBSCRIPTIONS_PROGRAM}; any other `subscriptionProgram` is refused.
+         */
+        trustedSubscriptionProgram?: string;
     };
 }

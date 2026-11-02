@@ -2,10 +2,12 @@
 //! process boundary exactly like `runnerResultSchema` in
 //! `harness/src/conformance/contract-schema.ts` (`additionalProperties:
 //! false` everywhere, so an over-typed result is a contract drift), plus the
-//! two additive fields the Rust judge needs to verify builds:
+//! additive fields the Rust judge needs to verify builds:
 //!
 //! - `transaction`: the built base64 wire transaction (charge builds);
-//! - `x402PaymentHeader`: the built base64 payment header (x402 builds).
+//! - `x402PaymentHeader`: the built base64 payment header (x402 builds);
+//! - `sessionCredential`: the built session `open` action as JSON text
+//!   (session builds).
 
 use serde_json::{Map, Value};
 
@@ -62,7 +64,12 @@ fn object(
     Some(obj.clone())
 }
 
-const NESTED: [&str; 3] = ["transactionShape", "x402EnvelopeShape", "exactBytes"];
+const NESTED: [&str; 4] = [
+    "transactionShape",
+    "x402EnvelopeShape",
+    "exactBytes",
+    "sessionVoucher",
+];
 
 fn check_transfer(value: &Value, path: &str, errors: &mut Vec<String>) {
     if let Some(t) = object(
@@ -102,6 +109,7 @@ pub fn validate(result: &Value) -> Result<(), String> {
             ("rejectCode", is_string),
             ("transaction", is_string),
             ("x402PaymentHeader", is_string),
+            ("sessionCredential", is_string),
         ],
         &mut errors,
     ) else {
@@ -172,6 +180,20 @@ pub fn validate(result: &Value) -> Result<(), String> {
             &mut errors,
         );
     }
+    if let Some(voucher) = root.get("sessionVoucher") {
+        object(
+            voucher,
+            "/sessionVoucher",
+            &["channelId", "cumulativeAmount", "spentAmount", "signer"],
+            &[
+                ("channelId", is_string),
+                ("cumulativeAmount", is_string),
+                ("spentAmount", is_string),
+                ("signer", is_string),
+            ],
+            &mut errors,
+        );
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -191,6 +213,7 @@ mod tests {
             json!({"id": "a", "outcome": "reject", "error": "boom", "rejectCode": "amount-mismatch"}),
             json!({"id": "a", "outcome": "unsupported-mode", "error": "unsupported-mode: x"}),
             json!({"id": "a", "outcome": "accept", "exactBytes": {"bytes": [1, 2], "base64Url": "AQI"}}),
+            json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": "107", "spentAmount": "107", "signer": "o"}}),
             json!({"id": "a", "outcome": "accept", "x402EnvelopeShape": {"x402Version": 2, "hasAccepted": true, "payloadHasTransaction": true}, "x402PaymentHeader": "e30="}),
         ] {
             validate(&ok).unwrap();
@@ -221,6 +244,10 @@ mod tests {
             (
                 json!({"id": "a", "outcome": "accept", "exactBytes": {"hex": "00"}}),
                 "additional property 'hex'",
+            ),
+            (
+                json!({"id": "a", "outcome": "accept", "sessionVoucher": {"channelId": "c", "cumulativeAmount": 107, "spentAmount": "107", "signer": "o"}}),
+                "/sessionVoucher/cumulativeAmount has the wrong type",
             ),
         ] {
             let err = validate(&bad).unwrap_err();

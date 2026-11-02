@@ -217,6 +217,31 @@ pub fn send_and_confirm_with_outcome(
     tx: &VersionedTransaction,
     prior: PriorBroadcast,
 ) -> Result<Signature, BroadcastFailure> {
+    send_and_confirm_settlement(rpc, tx, prior).map(|settled| match settled {
+        Settled::Confirmed(signature) | Settled::AlreadyLanded(signature) => signature,
+    })
+}
+
+/// How [`send_and_confirm_settlement`] saw a transaction confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    /// This broadcast (or a resumed earlier one) landed it.
+    Confirmed(Signature),
+    /// The node's preflight refused the first broadcast of these bytes and
+    /// the signature already has a successful status: someone else landed
+    /// the same transaction before this caller ever sent it (another server
+    /// with its own replay ledger, or a run whose record was lost). A
+    /// settlement claimed fresh must not be served again for it.
+    AlreadyLanded(Signature),
+}
+
+/// [`send_and_confirm_with_outcome`] that also tells a transaction this
+/// caller landed from one it found already landed ([`Settled`]).
+pub fn send_and_confirm_settlement(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+    prior: PriorBroadcast,
+) -> Result<Settled, BroadcastFailure> {
     let blockhash = *tx.message.recent_blockhash();
     let signature = match send_transaction(rpc, tx, preflight_config(rpc)) {
         Ok(signature) => signature,
@@ -248,6 +273,9 @@ pub fn send_and_confirm_with_outcome(
                 None if never_sent => return Err(BroadcastFailure::NotLanded(error)),
                 None => return Err(BroadcastFailure::Unknown(error)),
                 Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
+                // Refused at preflight, so never sent by this caller, yet it
+                // landed: the landing is someone else's.
+                Some(Ok(())) if never_sent => return Ok(Settled::AlreadyLanded(signature)),
                 Some(Ok(())) => signature,
             }
         }
@@ -258,7 +286,7 @@ pub fn send_and_confirm_with_outcome(
             .get_signature_status_with_commitment(&signature, rpc.commitment())
             .map_err(BroadcastFailure::Unknown)?
         {
-            Some(Ok(())) => return Ok(signature),
+            Some(Ok(())) => return Ok(Settled::Confirmed(signature)),
             Some(Err(e)) => return Err(BroadcastFailure::FailedOnChain(e.into())),
             None => {
                 let valid = rpc

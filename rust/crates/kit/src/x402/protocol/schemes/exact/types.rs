@@ -404,12 +404,9 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             bool_field(object, "feePayer").or_else(|| fee_payer_key.as_ref().map(|_| true));
         let transaction_versions = extra_object
             .and_then(|extra| extra.get("transactionVersions"))
-            .map(|value| {
-                serde_json::from_value::<Vec<crate::core::tx::TxVersion>>(value.clone()).map_err(
-                    |e| serde::de::Error::custom(format!("extra.transactionVersions: {e}")),
-                )
-            })
-            .transpose()?;
+            .map(buildable_transaction_versions)
+            .transpose()
+            .map_err(serde::de::Error::custom)?;
         let max_age =
             u64_field(object, "maxTimeoutSeconds").or_else(|| u64_field(object, "maxAge"));
 
@@ -448,6 +445,35 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             resource_info: None,
         })
     }
+}
+
+/// `extra.transactionVersions` as the accepted set.
+///
+/// §1.5: "A client or server MUST treat a field containing any non-integer
+/// entry (a string, null, or "legacy") or any integer other than 0 or 1 as
+/// invalid and fail closed with unsupported_transaction_version." The whole
+/// field is refused, never filtered down to the entries the kit knows. A value
+/// that is not an array is malformed the same way.
+fn buildable_transaction_versions(
+    value: &serde_json::Value,
+) -> Result<Vec<crate::core::tx::TxVersion>, String> {
+    let entries = value
+        .as_array()
+        .ok_or("unsupported_transaction_version: extra.transactionVersions must be an array")?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_u64()
+                .and_then(|n| u8::try_from(n).ok())
+                .and_then(|n| crate::core::tx::TxVersion::try_from(n).ok())
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported_transaction_version: extra.transactionVersions entries must be the integers 0 or 1 (got {entry})"
+                    )
+                })
+        })
+        .collect()
 }
 
 fn normalize_network_identifier(network: &str) -> String {
@@ -1414,5 +1440,57 @@ mod tests {
 
         let requirement: PaymentRequirements = serde_json::from_value(v2_offer()).unwrap();
         assert_eq!(requirement.network, SOLANA_MAINNET);
+    }
+
+    /// `extra.transactionVersions` holds only the integers 0 and 1; any other
+    /// entry invalidates the whole field (x402 scheme_exact_svm.md §1.5: "fail
+    /// closed with unsupported_transaction_version"), rather than being
+    /// filtered out.
+    #[test]
+    fn transaction_versions_fail_closed_on_any_invalid_entry() {
+        use crate::core::tx::TxVersion;
+        let with_versions = |versions: serde_json::Value| {
+            let mut offer = v2_offer();
+            offer["extra"]["transactionVersions"] = versions;
+            serde_json::from_value::<PaymentRequirements>(offer)
+        };
+        assert_eq!(
+            with_versions(serde_json::json!([1, 0]))
+                .unwrap()
+                .transaction_versions,
+            Some(vec![TxVersion::V1, TxVersion::V0])
+        );
+        for invalid in [
+            serde_json::json!(["legacy"]),
+            serde_json::json!([1, "legacy", 7]),
+            serde_json::json!([2, 1, 0]),
+            serde_json::json!(["1", 0]),
+            serde_json::json!([null, 0]),
+            serde_json::json!([0.5, 0]),
+            serde_json::json!("0"),
+        ] {
+            let err = with_versions(invalid.clone()).unwrap_err().to_string();
+            assert!(
+                err.contains("unsupported_transaction_version"),
+                "{invalid}: {err}"
+            );
+        }
+        // Present and empty is valid and accepts nothing (RULINGS T2).
+        assert_eq!(
+            with_versions(serde_json::json!([]))
+                .unwrap()
+                .transaction_versions,
+            Some(vec![])
+        );
+        let mut absent = v2_offer();
+        if let Some(extra) = absent["extra"].as_object_mut() {
+            extra.remove("transactionVersions");
+        }
+        assert_eq!(
+            serde_json::from_value::<PaymentRequirements>(absent)
+                .unwrap()
+                .transaction_versions,
+            None
+        );
     }
 }

@@ -334,13 +334,27 @@ because stock x402 facilitators settle to one address.
 |--------------------|:------:|:------:|
 | `exact`            | ✅     | ✅     |
 | `upto`             | ✅     | ✅     |
-| `batch-settlement` | —      | —      |
+| `batch-settlement` | ✅     | ✅     |
 
 `upto` charges for actual usage up to a ceiling: the client opens a payment
 channel depositing the authorized maximum, the handler meters the response and
 reports it via the `Charge` dependency, then the gate settles the actual amount
 and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
 (rather than `require_payment`) and needs an operator signer.
+
+`batch-settlement` ships as
+`solana_pay_kit.protocols.x402.batch_settlement` (the self-facilitating
+`X402BatchSettlement` server: deposit and voucher verification, claim, settle
+and close) and `solana_pay_kit.protocols.x402.client.batch_settlement`
+(deposit, top-up, voucher and refund builders). It is not yet exposed as a
+gate adapter.
+
+Every scheme accepts version 0 transactions by default and can also accept
+version 1 (SIMD-0385), advertising the set on `extra.transactionVersions`:
+`X402Config.transaction_versions=(0, 1)` for `exact` gates, the
+`transaction_versions` argument of `X402Upto` for `upto`, and
+`BatchConfig.transaction_versions` for `batch-settlement`. Legacy messages are
+policed as version 0.
 
 ### Client
 
@@ -419,7 +433,25 @@ Use MPP when:
 | `charge/pull`  | ✅     | ✅     |
 | `charge/push`  | —      | ✅     |
 | `session`      | ✅     | ✅     |
-| `subscription` | —      | —      |
+| `subscription` | ✅     | ◐¹     |
+
+¹ `subscription` (draft-solana-subscription-00): the client
+(`build_subscription_activation_credential`) reads and checks the on-chain
+`Plan` against the challenge before it signs, initializes a missing
+`SubscriptionAuthority` in its own transaction, and binds the reusable bearer
+proof to the delegation. The server is partial (◐: offline verify and active
+check only). `SubscriptionServer` issues challenges, verifies an activation
+offline (challenge binding, route terms, bearer proof, `source`, activation
+scope, fee-payer co-signature) and returns the transaction to broadcast, and
+checks on-chain that a subscriber's delegation is live and paid
+(`verify_active_subscription`). It does not yet port the Rust kit's
+`verify_credential` end to end: reserving the activation signature (replay
+protection, `signature_consumed`), broadcast and confirm, checking that the
+landed delegation matches the payer, plan and terms with a current authority,
+the proof binding store, `type="proof"` access verification and the receipt
+are the host's. `verify_activation` refuses `type="proof"` credentials.
+Tracked as `python-subscription-server-partial` in
+`harness/expectations/FINDINGS.md`.
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =
@@ -439,7 +471,9 @@ fresh `recentBlockhash`, parses and validates the `Authorization: Payment`
 credential, pins the echoed charge request, decodes the client-signed
 transaction and checks recipient, amount, mint, splits, ATA, memos, and
 compute budget, rejects Surfpool-signed transactions on non-localnet
-networks, optionally fee-payer co-signs (legacy + v0), broadcasts via
+networks, refuses legacy messages and admits only the versions the challenge
+advertises in `methodDetails.transactionVersions` (`[0]` by default; version 1
+gets the SIMD-0385 budget checks), optionally fee-payer co-signs, broadcasts via
 `sendTransaction`, consumes the signature in the replay store, awaits
 confirmation, and emits `payment-receipt` with the on-chain signature.
 

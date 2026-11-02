@@ -6,6 +6,7 @@ import base64
 from dataclasses import dataclass
 
 import pytest
+from solana_keychain import MemorySigner
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.message import Message, MessageV0  # type: ignore[import-untyped]
@@ -44,9 +45,10 @@ class _Fixture:
     payer: Keypair
 
 
-def _fixture(*, legacy: bool = False) -> _Fixture:
+def _fixture(*, legacy: bool = False, version: int = 0) -> _Fixture:
     """Build an open payload; ``legacy=True`` compiles the unversioned wire a
-    pre-cutover client sends, which servers still accept."""
+    pre-cutover client sends, which session servers refuse; ``version=1``
+    compiles a version-1 message with a header compute budget."""
     payer = Keypair.from_seed(bytes([1] * 32))
     payee = Keypair.from_seed(bytes([2] * 32)).pubkey()
     authorized = Keypair.from_seed(bytes([3] * 32)).pubkey()
@@ -72,6 +74,11 @@ def _fixture(*, legacy: bool = False) -> _Fixture:
         transaction = Transaction(
             [payer], Message.new_with_blockhash([instruction], payer.pubkey(), Hash.default()), Hash.default()
         )
+    elif version == 1:
+        from solana_pay_kit._paycore.txv1 import MessageV1, TransactionV1, v1_config
+
+        message_v1 = MessageV1.try_compile(payer.pubkey(), [instruction], Hash.default(), v1_config(200_000, 0))
+        transaction = TransactionV1.populate(message_v1, [payer.sign_message(bytes(message_v1))])
     else:
         message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
         transaction = VersionedTransaction(message, [payer])
@@ -115,13 +122,29 @@ def _context(recent_blockhash: str | None = None, recent_slot: int = 42) -> Sess
     )
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_verify_open_tx_accepts_exact_legacy_and_v0(legacy: bool) -> None:
-    fixture = _fixture(legacy=legacy)
+async def test_verify_open_tx_accepts_exact_v0() -> None:
+    fixture = _fixture()
     result = await verify_open_tx(fixture.expected, fixture.payload, None)
     assert result.channel_id == fixture.payload.channel_id
     assert result.deposit == 1_000
     assert result.open_slot == 42
+
+
+async def test_verify_open_tx_refuses_a_legacy_message() -> None:
+    # MPP servers never accept an unprefixed message (Rust
+    # check_envelope_without_legacy; vector session-open-legacy-reject).
+    fixture = _fixture(legacy=True)
+    with pytest.raises(PaymentError, match="legacy transaction version is not accepted"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_admits_version_1_only_when_accepted() -> None:
+    fixture = _fixture(version=1)
+    with pytest.raises(PaymentError, match="transaction version 1 is not accepted"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+    fixture.expected.accepted_versions = (0, 1)
+    result = await verify_open_tx(fixture.expected, fixture.payload, None)
+    assert result.channel_id == fixture.payload.channel_id
 
 
 @pytest.mark.parametrize(
@@ -149,12 +172,11 @@ async def test_verify_open_tx_rejects_challenge_policy_mismatch() -> None:
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_verify_open_tx_rejects_wrong_challenged_blockhash(legacy: bool) -> None:
+async def test_verify_open_tx_rejects_wrong_challenged_blockhash() -> None:
     # The fixture transaction compiles against Hash.default(); a challenge
     # that advertised a different recentBlockhash means the transaction was
     # not built for this challenge — rejected before broadcast.
-    fixture = _fixture(legacy=legacy)
+    fixture = _fixture()
     fixture.expected.recent_blockhash = str(Hash.new_unique())
     with pytest.raises(PaymentError, match="challenged recentBlockhash"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
@@ -661,23 +683,59 @@ def _sponsored_top_up(payload: TopUpPayload, fee_payer_signature) -> TopUpPayloa
     return TopUpPayload(payload.channel_id, payload.additional_amount, base64.b64encode(bytes(transaction)).decode())
 
 
+async def _sponsored_top_up_verifier(rpc: _MainnetLikeRpc, state: ChannelState) -> TopUpTxVerifier:
+    """A verifier for a sponsored channel: the stored rent payer is the
+    server's fee payer, whose signer the config carries."""
+    from dataclasses import replace
+
+    sponsor = Keypair.from_seed(bytes([15] * 32))
+    sponsored = replace(state, rent_payer=str(sponsor.pubkey()))
+    store = MemoryChannelStore()
+    await store.update_channel(sponsored.channel_id, lambda _: sponsored)
+    config = SessionConfig(
+        currency="USDC",
+        network="mainnet",
+        channel_program=str(PROGRAM_ID),
+        fee_payer=True,
+        fee_payer_key=str(sponsor.pubkey()),
+        fee_payer_signer=MemorySigner(sponsor),
+    )
+    return new_top_up_tx_verifier(config, store, rpc)
+
+
 async def test_top_up_verifier_refuses_an_unverified_fee_payer_signature_before_sending() -> None:
     # The payer's own signature verifies, but slot 0 (the signature the
     # rescue path resolves a failed broadcast on) is a copy from elsewhere.
     payload, state, account = _top_up_scenario(deposit_after=1_250)
     forged = _sponsored_top_up(payload, lambda _kp, _msg: Signature(bytes([7]) * 64))
     rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
-    verifier = await _seeded_top_up_verifier(rpc, state)
+    verifier = await _sponsored_top_up_verifier(rpc, state)
     with pytest.raises(PaymentError, match="signature verification failed"):
         await verifier(forged)
     assert rpc.sent == []
 
 
-async def test_top_up_verifier_accepts_a_fully_signed_sponsored_top_up() -> None:
-    # Positive control: the same top-up with the fee payer's real signature.
+async def test_top_up_verifier_cosigns_a_sponsored_top_up() -> None:
+    # The client leaves the sponsor's slot empty; the server fills it before
+    # broadcasting, and every required signature then verifies.
+    from solana_pay_kit._paycore.transaction import verify_required_signatures
+
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    unsigned = _sponsored_top_up(payload, lambda _kp, _msg: Signature.default())
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
+    verifier = await _sponsored_top_up_verifier(rpc, state)
+    await verifier(unsigned)
+    assert len(rpc.sent) == 1
+    verify_required_signatures(VersionedTransaction.from_bytes(rpc.sent[0]))
+
+
+async def test_top_up_verifier_refuses_a_third_party_fee_payer_on_a_client_paid_channel() -> None:
+    # A client-paid channel's top-up is paid by its payer: another fee payer,
+    # even fully signed, is not the channel's policy.
     payload, state, account = _top_up_scenario(deposit_after=1_250)
     signed = _sponsored_top_up(payload, lambda kp, msg: kp.sign_message(msg))
     rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
     verifier = await _seeded_top_up_verifier(rpc, state)
-    await verifier(signed)
-    assert len(rpc.sent) == 1
+    with pytest.raises(PaymentError, match="fee payer does not match"):
+        await verifier(signed)
+    assert rpc.sent == []

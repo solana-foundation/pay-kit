@@ -83,6 +83,8 @@ export type UptoSettlement = {
  */
 export class X402Upto {
     readonly #facilitator: x402Facilitator;
+    /** The facilitator's `extra.transactionVersions`, copied into every challenge. */
+    readonly #transactionVersions: unknown;
     readonly #network: Network;
     readonly #feePayer: string;
     readonly #receiverAuthorizer: string;
@@ -102,22 +104,29 @@ export class X402Upto {
         this.#recipient = config.operator.recipient;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
-        this.#facilitator = new x402Facilitator().register(
-            this.#network,
-            // The facilitator reads and broadcasts through the signer's RPC
-            // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
-            // A configured pending-settlement store is shared with the exact
-            // adapter so a settle retry on another replica reconciles for
-            // both schemes.
-            new UptoSvmFacilitator(
-                toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
-                {
-                    ...(config.x402.pendingSettlementStore && {
-                        pendingSettlementStore: config.x402.pendingSettlementStore,
-                    }),
-                },
-            ),
+        // The facilitator reads and broadcasts through the signer's RPC
+        // (`defaultRpcUrl`); upstream dropped the separate `rpcUrl` option.
+        // A configured pending-settlement store is shared with the exact
+        // adapter so a settle retry on another replica reconciles for
+        // both schemes.
+        const scheme = new UptoSvmFacilitator(
+            toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+            {
+                ...(config.x402.pendingSettlementStore && {
+                    pendingSettlementStore: config.x402.pendingSettlementStore,
+                }),
+                ...(config.x402.paymentChannelsTreasuryOwner && {
+                    paymentChannelsTreasuryOwner: config.x402.paymentChannelsTreasuryOwner,
+                }),
+                ...(config.x402.transactionVersions && {
+                    transactionVersions: [...config.x402.transactionVersions],
+                }),
+            },
         );
+        this.#facilitator = new x402Facilitator().register(this.#network, scheme);
+        // scheme_upto_svm.md: the server copies the facilitator's
+        // `transactionVersions` into the requirements.
+        this.#transactionVersions = scheme.getExtra(this.#network)?.transactionVersions;
     }
 
     /** Whether `request` carries an x402 payment credential. */
@@ -227,13 +236,13 @@ export class X402Upto {
      */
     #assertOpenSlotBoundToChallenge(payload: PaymentPayload, recentSlot: bigint | undefined): void {
         const raw = payload.payload as { openSlot?: unknown } | undefined;
-        if (!raw || typeof raw.openSlot !== 'string' || !/^\d+$/.test(raw.openSlot)) {
+        const openSlot = parseOpenSlot(raw?.openSlot);
+        if (openSlot === undefined) {
             throw new InvalidProofError(
                 'invalid_upto_svm_payload_channel_seed',
-                'payload.openSlot must be a u64 decimal string',
+                'payload.openSlot must be a u64, as a non-negative safe integer or a decimal string',
             );
         }
-        const openSlot = BigInt(raw.openSlot);
         if (recentSlot === undefined) return;
         if (openSlot > recentSlot) {
             throw new InvalidProofError(
@@ -313,6 +322,7 @@ export class X402Upto {
                 receiverAuthorizer: this.#receiverAuthorizer,
                 ...(recentSlot !== undefined && { recentSlot: recentSlot.toString() }),
                 tokenProgram: getStablecoinTokenProgram(mint, this.#network),
+                ...(this.#transactionVersions !== undefined && { transactionVersions: this.#transactionVersions }),
                 withdrawDelay: DEFAULT_WITHDRAW_DELAY_SECONDS,
             },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
@@ -371,4 +381,27 @@ function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
         throw new InvalidProofError('invalid_upto_payload');
     }
     return { channelId: raw.channelId, expiresAt: raw.expiresAt, from: raw.from };
+}
+
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * Read `payload.openSlot` as a u64. The scheme types it as a number
+ * (scheme_upto_svm.md §4.2); a decimal string is accepted too, as the
+ * facilitator does, so a slot past 2^53 survives JSON.
+ *
+ * @param value - The wire `openSlot`.
+ * @returns The slot, or `undefined` when it is not a u64.
+ */
+export function parseOpenSlot(value: unknown): bigint | undefined {
+    let slot: bigint;
+    if (typeof value === 'number') {
+        if (!Number.isSafeInteger(value) || value < 0) return undefined;
+        slot = BigInt(value);
+    } else if (typeof value === 'string' && /^\d+$/.test(value)) {
+        slot = BigInt(value);
+    } else {
+        return undefined;
+    }
+    return slot <= U64_MAX ? slot : undefined;
 }

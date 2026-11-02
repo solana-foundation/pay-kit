@@ -598,6 +598,10 @@ pub enum Pin {
     Envelope(Vec<&'static str>),
     /// `exactBytes` keys (`canonicalJson`, `base64Url`, `bytes`).
     ExactBytes(Vec<&'static str>),
+    /// The operator-signed voucher a session server persisted for an
+    /// accepted `use`: `channelId`, `cumulativeAmount` and `signer`. The
+    /// signature is not pinned (SDKs choose the voucher's `expiresAt`).
+    SessionVoucher,
 }
 
 /// What a case must yield.
@@ -614,6 +618,27 @@ pub enum Expect {
         /// Documentation only; never asserted.
         reason: Option<String>,
     },
+}
+
+/// A verdict the pinned specs also allow beside a case's primary `expect`.
+///
+/// The primary verdict is the Rust kit's (or the authored one); when the spec
+/// text leaves the choice to the implementation (a sponsor's stricter local
+/// policy, a check the spec does not order, a rule it states for another
+/// instruction only), the vector lists the other conformant verdicts in
+/// `expect.alsoConformant` and the judge passes a result that matches any of
+/// them. Every use carries the reason, quoting the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alternative {
+    Accept,
+    Reject(RejectCode),
+}
+
+/// The alternatives and the reason they are conformant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlsoConformant {
+    pub verdicts: Vec<Alternative>,
+    pub reason: String,
 }
 
 /// Where the expected value comes from.
@@ -667,6 +692,14 @@ pub enum Input {
     /// issues under `server` (or under `built_from`, so the server verifies
     /// an open built for another challenge), optionally mutated.
     SessionOpen(Box<SessionOpenSpec>),
+    /// A session server vector (`input.sessionServerVerify`): the kit
+    /// server configured from the recipe, and the client's `open`,
+    /// `voucher`, `topUp` or `close` credential built and signed by the
+    /// filler, then edited. See `realize/session.rs`.
+    Session(Box<crate::realize::session::Recipe>),
+    /// A session client build vector (`input.sessionOpenBuild`): the kit
+    /// server's challenge for the recipe's server, then edited.
+    SessionBuild(Box<crate::realize::session::BuildRecipe>),
 }
 
 /// Recipe for a session `open` verify vector (`input.sessionOpenVerify`).
@@ -749,6 +782,35 @@ pub struct Case {
     pub input: Input,
     pub expect: Expect,
     pub provenance: Provenance,
+    /// Other verdicts the specs allow (`expect.alsoConformant`).
+    pub also_conformant: Option<AlsoConformant>,
+}
+
+impl Case {
+    /// Record verdicts the specs also allow beside the primary one, with the
+    /// reason (quote the spec). Panics on an empty list, a reason shorter
+    /// than a sentence, or an alternative equal to the primary verdict.
+    pub fn also_conformant(mut self, verdicts: &[Alternative], reason: &str) -> Self {
+        let primary = match &self.expect {
+            Expect::Reject { code, .. } => Alternative::Reject(*code),
+            Expect::Accept(_) | Expect::AcceptAuthored(_) => Alternative::Accept,
+        };
+        assert!(
+            !verdicts.is_empty() && reason.trim().len() >= 24,
+            "{}: also_conformant needs verdicts and a reason",
+            self.id
+        );
+        assert!(
+            !verdicts.contains(&primary),
+            "{}: an alternative repeats the primary verdict",
+            self.id
+        );
+        self.also_conformant = Some(AlsoConformant {
+            verdicts: verdicts.to_vec(),
+            reason: reason.to_string(),
+        });
+        self
+    }
 }
 
 /// Fluent constructor so registry entries stay readable. Every field without
@@ -788,6 +850,7 @@ impl CaseBuilder {
                 input,
                 expect,
                 provenance: Provenance::Generated,
+                also_conformant: None,
             },
         }
     }
@@ -804,6 +867,12 @@ impl CaseBuilder {
         self.case.provenance = Provenance::Authored {
             kit_divergence: kit_divergence.map(str::to_string),
         };
+        self
+    }
+
+    /// See [`Case::also_conformant`].
+    pub fn also_conformant(mut self, verdicts: &[Alternative], reason: &str) -> Self {
+        self.case = self.case.also_conformant(verdicts, reason);
         self
     }
 

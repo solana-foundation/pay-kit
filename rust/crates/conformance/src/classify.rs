@@ -19,6 +19,7 @@ pub fn classify(message: &str) -> Option<RejectCode> {
     let code = if (has("transaction version") && has("not accepted"))
         || has("unsupported_transaction_version")
         || has("signs up to version")
+        || has("advertises no transaction version")
     {
         // A message version the server does not accept (MPP: before any
         // instruction is inspected; x402 §1.5 `unsupported_transaction_version`),

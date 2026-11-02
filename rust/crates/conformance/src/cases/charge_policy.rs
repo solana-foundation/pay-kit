@@ -649,7 +649,7 @@ crate::registry! {
         input(sol_request("1000", json!({ "splits": [{ "recipient": SPLIT_RECIPIENT, "amount": "100", "ataCreationRequired": true }] }))),
         reject(RejectCode::InvalidChallenge, "ataCreationRequired on a SOL charge"),
     );
-    charge_build_sol_token_program_reject => diverges(build_case(
+    charge_build_sol_token_program_reject => from_spec(build_case(
         "charge-build-sol-token-program-reject",
         BUILD,
         BugType::Defaults,
@@ -658,8 +658,8 @@ crate::registry! {
         "Client refuses a native SOL challenge that carries methodDetails.tokenProgram.",
         input(sol_request("1000", json!({ "tokenProgram": TOKEN_PROGRAM }))),
         reject(RejectCode::InvalidChallenge, "tokenProgram on a SOL charge"),
-    ), "the Rust kit builds the SOL transfer and ignores tokenProgram (rust/crates/kit/src/mpp/client/charge.rs:376); see FINDINGS.md#charge-client-sol-token-program-ignored");
-    charge_build_fee_payer_without_key_reject => diverges(build_case(
+    ));
+    charge_build_fee_payer_without_key_reject => from_spec(build_case(
         "charge-build-fee-payer-without-key-reject",
         BUILD,
         BugType::Defaults,
@@ -668,7 +668,7 @@ crate::registry! {
         "Client refuses a fee-sponsored challenge (feePayer: true) that names no feePayerKey rather than paying fees itself or guessing a key.",
         input(spl_request("1000", json!({ "feePayer": true }))),
         reject(RejectCode::InvalidChallenge, "feePayer without feePayerKey"),
-    ), "the Rust kit builds a client-paid transaction when feePayer is true without feePayerKey (rust/crates/kit/src/mpp/client/charge.rs:333); see FINDINGS.md#charge-client-fee-payer-without-key");
+    ));
     charge_build_zero_amount_reject => build_case(
         "charge-build-zero-amount-reject",
         BUILD,
@@ -701,12 +701,11 @@ crate::registry! {
     );
 }
 
-/// The case's expectation comes from the spec text and the Rust kit
-/// currently disagrees (asserted by the positive-control test, so fixing
-/// the kit forces the entry's removal).
-fn diverges(mut case: Case, reason: &str) -> Case {
+/// The case's expectation comes from the spec text rather than the Rust
+/// kit; the positive-control test still requires the kit to agree.
+fn from_spec(mut case: Case) -> Case {
     case.provenance = crate::case::Provenance::Authored {
-        kit_divergence: Some(reason.to_string()),
+        kit_divergence: None,
     };
     case
 }

@@ -162,12 +162,26 @@ export type TransactionShape = {
   memo?: string[];
 };
 
+// The operator-signed voucher a session server persisted for an accepted
+// `use`.
+// The channel's persisted accounting after an accepted `use`, read back from
+// the server's store.
+export type SessionVoucher = {
+  channelId: string;
+  cumulativeAmount: string;
+  spentAmount: string;
+  signer: string;
+};
+
 export type VectorExpect = {
   outcome: VectorOutcome;
   // For build/verify accept vectors: the decoded semantic shape to assert.
   transactionShape?: TransactionShape;
   // For x402-exact build/verify accept vectors: the decoded envelope shape.
   x402EnvelopeShape?: X402EnvelopeShape;
+  // For session `use` accept vectors: the operator-signed voucher the server
+  // persisted. The signature is not pinned (SDKs choose its expiresAt).
+  sessionVoucher?: SessionVoucher;
   // For canonical-bytes vectors: the exact bytes the SDK must produce.
   exactBytes?: {
     canonicalJson?: string;
@@ -178,6 +192,14 @@ export type VectorExpect = {
   // Optional human-readable reason for reject vectors; not asserted, just
   // documents the divergence class.
   rejectReason?: string;
+  // Other verdicts the pinned specs allow where they leave the choice to the
+  // implementation (a sponsor's stricter local policy, an unordered pair of
+  // checks, a rule stated for another instruction). The judge passes a
+  // result matching the primary verdict or any of these (outcome and, for a
+  // reject, its code); an accepted build is still judged on its artifact.
+  alsoConformant?: Array<{ outcome: VectorOutcome; rejectCode?: RejectCode }>;
+  // Why the alternatives conform, quoting the spec.
+  alsoConformantReason?: string;
   // Normalized reject category asserted across every SDK. Pins WHY the SDK
   // rejected, not just that it did, so a guard that fires for the wrong
   // reason (e.g. a decimals-mismatch caught only by a generic
@@ -550,10 +572,14 @@ export type VectorInput = {
   // `methodDetails.transactionVersions` (`[0]` when absent); charge verify
   // runners configure the server from it.
   signerMaxTransactionVersion?: 0 | 1;
-  // verify-transaction (x402): the sponsor's own accepted message versions
-  // (scheme_exact_svm §1.5: "The sponsor enforces its own accepted set";
-  // absent means [0]). The route advertises them as
-  // `extra.transactionVersions` and the vector's `accepted` echoes them.
+  // verify-transaction (x402 exact and upto): the sponsor's own accepted
+  // message versions (scheme_exact_svm §1.5: "The sponsor enforces its own
+  // accepted set"). The spec gives that set no default, so every vector
+  // whose verdict depends on it states it; absent, the Rust reference
+  // sponsor accepts [0]. The route advertises them as
+  // `extra.transactionVersions` (nothing for [0]) and the vector's
+  // `accepted` echoes them. A testee whose SDK cannot configure the set
+  // reports unsupported-mode for a value it cannot express.
   x402ServerTransactionVersions?: Array<0 | 1>;
   // canonical-bytes (charge): an MPP charge request round-trip. The runner
   // DECODES `value` with the production SDK charge-request type (incl.
@@ -589,6 +615,83 @@ export type VectorInput = {
     challengedBlockhash: string;
     open: Record<string, unknown>;
   };
+  // verify-transaction (session): one client credential against a session
+  // server (rust/crates/conformance/src/realize/session.rs). The runner
+  // configures its SDK's session server from `server`, seeds its channel
+  // store with `channel` (the server's per-channel state, named as in the
+  // spec's "Per-Channel State" table), parses `credential` with the SDK's
+  // session action schema and hands it to the server: `open` checked against
+  // `challenge` before any co-sign or broadcast, `voucher` accepted for one
+  // request at the challenged `amount`, `topUp` checked before broadcast,
+  // `close` processed. Accept means the server would act on it.
+  sessionServerVerify?: {
+    server: {
+      operator: string;
+      recipient: string;
+      currency: string;
+      decimals: number;
+      network: string;
+      amount: string;
+      minimumDeposit?: string;
+      suggestedDeposit?: string;
+      gracePeriodSeconds: number;
+      idleTimeoutSeconds: number;
+      voucherSigner: "client" | "operator";
+      // The sponsor (fee payer and rent payer); its key is
+      // `sessionServerFeePayerSecretKey`.
+      feePayer?: string;
+      idleTimeoutOptionsSeconds?: number[];
+      distributionSplits?: Array<{ recipient: string; shareBps: number }>;
+      tokenProgram?: string;
+      transactionVersions?: Array<0 | 1>;
+    };
+    challenge?: { id: string; recentBlockhash: string; recentSlot: string };
+    channel?: {
+      channelId: string;
+      openSlot: string;
+      status: "open" | "closed";
+      payer: string;
+      rentPayer: string;
+      voucherSigner: "client" | "operator";
+      authorizedSigner: string;
+      escrowedAmount: string;
+      acceptedCumulative: string;
+      spentAmount: string;
+      settledOnChain: string;
+      idleTimeoutSeconds: number;
+      openingChallengeId: string;
+      highestVoucher?: Record<string, unknown>;
+      closureStartedAt?: number;
+      authentication?: Record<string, unknown>;
+      // operator mode: requests already charged, keyed by challenge and
+      // Idempotency-Key, with the operator's voucher signature.
+      processedUses?: Array<{
+        challengeId: string;
+        idempotencyKey: string;
+        cumulativeAmount: string;
+        amount: string;
+        voucherSignature: string;
+      }>;
+    };
+    credential: Record<string, unknown>;
+  };
+  sessionServerFeePayerSecretKey?: number[];
+  // verify-transaction (session `use`): the operator's voucher key.
+  sessionServerOperatorSecretKey?: number[];
+  // build-transaction (session): the client's `open` for `request` (the
+  // challenge's SessionRequest) with the channel `salt` its builder takes
+  // and the `deposit` its caller authorizes; `signerSecretKey` is the payer,
+  // `sessionSignerSecretKey` the voucher key it authorizes. `server` /
+  // `challenge` are for the judge only. An accepted build returns the open
+  // action as `sessionCredential`.
+  sessionOpenBuild?: {
+    request: Record<string, unknown>;
+    salt: string;
+    deposit: string;
+    server: Record<string, unknown>;
+    challenge: { id: string; recentBlockhash: string; recentSlot: string };
+  };
+  sessionSignerSecretKey?: number[];
 };
 
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a
@@ -644,6 +747,8 @@ export type RunnerResult = {
   transactionShape?: TransactionShape;
   // Present on x402-exact build/verify accept. The decoded envelope shape.
   x402EnvelopeShape?: X402EnvelopeShape;
+  // Present on a session `use` accept. The operator-signed voucher.
+  sessionVoucher?: SessionVoucher;
   // Present on canonical-bytes.
   exactBytes?: {
     canonicalJson?: string;
@@ -662,4 +767,8 @@ export type RunnerResult = {
   // Present on an accepted x402 build: the built base64 payment header,
   // judged the same way.
   x402PaymentHeader?: string;
+  // Present on an accepted session build: the built `open` action as JSON
+  // text, run through the Rust kit's session server and compared with the
+  // kit's own build.
+  sessionCredential?: string;
 };

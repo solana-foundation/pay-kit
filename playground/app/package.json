@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
-    "@solana-program/token": "^0.11.0",
-    "@solana/kit": "^6.5.0",
+    "@solana-program/token": "^0.18.0",
+    "@solana/kit": "^8.5.0",
     "@solana/mpp": "link:../../typescript/packages/mpp",
     "@solana/pay-kit": "link:../../typescript/packages/pay-kit",
     "highlight.js": "^11.11.1",

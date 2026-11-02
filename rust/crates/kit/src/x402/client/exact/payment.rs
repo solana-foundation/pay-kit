@@ -18,6 +18,10 @@ use crate::x402::{
     X402_VERSION_V2,
 };
 
+/// Loaded-account-data budget an x402 `exact` client sets on a version-1
+/// payment, matching the TypeScript, Go and Python reference clients.
+pub const X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+
 /// Build a payment transaction from x402 payment requirements.
 ///
 /// Returns a `PaymentPayload` ready to be wrapped in `PAYMENT-SIGNATURE`.
@@ -59,7 +63,13 @@ pub async fn build_payment(
 
     // Compute budget. Canonical SVM exact validates these by index; on version
     // 0 they are the first two instructions, on version 1 the header config.
-    let budget = crate::core::tx::ComputeBudget::new(20_000, 1);
+    // Version 1 also carries a loaded-account-data budget (§1.5: it MUST be
+    // set); the reference x402 clients request 4 MiB, which covers the mainnet
+    // Token-2022 program data (about 1.4 MiB) and the rest of a payment.
+    let budget = crate::core::tx::ComputeBudget {
+        loaded_accounts_data_size_limit: X402_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+        ..crate::core::tx::ComputeBudget::new(20_000, 1)
+    };
 
     let cluster = signing_cluster(requirements)?;
     let mint = try_resolve_mint(&requirements.currency, Some(cluster))?;
@@ -182,8 +192,10 @@ fn encode_payment_envelope(envelope: &PaymentSignatureEnvelope) -> Result<String
 /// `accepts` list. Mirrors the MPP TS `SelectSolanaChargeChallengeOptions`.
 #[derive(Debug, Clone, Default)]
 pub struct ChallengeSelection<'a> {
-    /// Solana network the client wants to pay on (cluster slug or CAIP-2).
-    /// `None` defaults to mainnet.
+    /// Solana network the client is configured for (cluster slug or CAIP-2).
+    /// When set, only offers on that network are selected: a client never
+    /// pays on a network it was not configured for. `None` pins nothing; it
+    /// prefers mainnet and otherwise takes the cheapest Solana offer.
     pub network: Option<&'a str>,
     /// Priority-ordered list of currencies the client is willing to pay in.
     /// Entries can be stablecoin symbols (`"USDC"`) or mint addresses; both
@@ -357,13 +369,17 @@ fn select_requirement(
         return None;
     }
 
-    // No currency preference: pick cheapest on preferred network, falling
-    // back to overall cheapest if the preferred network has no offers.
-    on_preferred_network
+    // No currency preference: pick cheapest on the preferred network. Only a
+    // client that pinned no network falls back to the overall cheapest; a
+    // configured network is a requirement, never a preference.
+    let cheapest = on_preferred_network
         .into_iter()
         .min_by_key(|requirement| amount(requirement))
-        .cloned()
-        .or_else(|| solana_accepts.into_iter().min_by_key(amount))
+        .cloned();
+    if selection.network.is_some() {
+        return cheapest;
+    }
+    cheapest.or_else(|| solana_accepts.into_iter().min_by_key(amount))
 }
 
 /// Currency equivalence: `accepted` (client's preference, symbol or mint)
@@ -841,6 +857,30 @@ mod tests {
         };
         let req = parse_x402_challenge_with_selection(&[], Some(&body), &selection).unwrap();
         assert_eq!(req.currency, mints::USDC_DEVNET);
+    }
+
+    /// A client configured for a network never pays an offer on another
+    /// one, even when nothing else is offered; an unpinned client still
+    /// takes the cheapest Solana offer.
+    #[test]
+    fn select_never_leaves_the_configured_network() {
+        let body = multi_currency_body();
+        let mainnet = ChallengeSelection {
+            network: Some("mainnet"),
+            currencies: None,
+        };
+        assert!(parse_x402_challenge_with_selection(&[], Some(&body), &mainnet).is_none());
+        let devnet = ChallengeSelection {
+            network: Some("devnet"),
+            currencies: None,
+        };
+        assert!(parse_x402_challenge_with_selection(&[], Some(&body), &devnet).is_some());
+        assert!(parse_x402_challenge_with_selection(
+            &[],
+            Some(&body),
+            &ChallengeSelection::default()
+        )
+        .is_some());
     }
 
     #[test]

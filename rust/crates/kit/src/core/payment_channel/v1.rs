@@ -814,6 +814,10 @@ pub struct OpenTxOptions {
     /// requires exactly one matching Memo, so the text is passed through
     /// verbatim.
     pub memo: Option<String>,
+    /// A second SPL Memo emitted after `memo`: the x402 `batch-settlement`
+    /// receiver-binding memo, which every `open` of that scheme carries in
+    /// addition to the seller memo. Unused by other schemes.
+    pub binding_memo: Option<String>,
     /// Message version to build. Version 1 requires `compute_budget`.
     pub version: TxVersion,
     /// Compute budget: a ComputeBudget prefix on version 0, the header config
@@ -899,7 +903,10 @@ pub async fn build_open_payment_channel_tx_with_options(
     };
     let channel_id = derive_channel_addresses(&params).channel;
     let mut instructions = vec![build_open_instruction(&params)];
-    if let Some(memo) = options.memo.as_deref() {
+    for memo in [options.memo.as_deref(), options.binding_memo.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         if memo.len() > OPEN_MAX_MEMO_BYTES {
             return Err(Error::Other(format!(
                 "channel open memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
@@ -912,12 +919,24 @@ pub async fn build_open_payment_channel_tx_with_options(
             data: memo.as_bytes().to_vec(),
         });
     }
+    // A version-1 open must carry its budget in the header. Without one the
+    // builder budgets the runtime default (200,000 units per instruction),
+    // which an open with both memos would put over the 400,000 a sponsor
+    // accepts for an open, so the default is capped at that ceiling.
+    let budget = match (options.version, options.compute_budget) {
+        (TxVersion::V1, None) => {
+            let mut budget = ComputeBudget::runtime_default(instructions.len());
+            budget.unit_limit = budget.unit_limit.min(OPEN_MAX_COMPUTE_UNIT_LIMIT);
+            Some(budget)
+        }
+        (_, budget) => budget,
+    };
     let mut tx = crate::core::tx::build_unsigned(
         options.version,
         fee_payer,
         &instructions,
         recent_blockhash,
-        options.compute_budget.as_ref(),
+        budget.as_ref(),
     )?;
     crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
@@ -951,10 +970,12 @@ pub const MIN_MEMO_NONCE_BYTES: usize = 16;
 /// How [`scan_channel_tx_layout`] polices the Memo suffix.
 #[derive(Debug, Clone, Copy)]
 pub enum MemoPolicy<'a> {
-    /// A Memo may appear at most once and its contents are not inspected.
+    /// Memos are neither required nor inspected; only the suffix bounds
+    /// apply (at most [`OPEN_MAX_OPTIONAL_SUFFIX`] instructions).
     ///
-    /// Used by an unbound `upto` challenge, which declares no `extra.memo`, so any memo
-    /// the client chose is acceptable.
+    /// Used by an unbound `upto` challenge, which declares no `extra.memo`:
+    /// exactly one Memo is required only “If extra.memo is present”, so any
+    /// memos the client or its wallet chose are acceptable.
     Optional,
     /// Exactly one Memo is required.
     ///
@@ -962,6 +983,25 @@ pub enum MemoPolicy<'a> {
     /// `None` instead requires a random nonce of at least
     /// [`MIN_MEMO_NONCE_BYTES`] bytes encoded as hexadecimal text.
     Required(Option<&'a str>),
+    /// [`MemoPolicy::Required`] plus exactly one more Memo whose UTF-8 data
+    /// starts with `binding_prefix`: the x402 `batch-settlement` `open`, which
+    /// carries the seller memo and a receiver-binding memo. The binding
+    /// memo's payload (the bound key) is not inspected here; the caller binds
+    /// it to the key it expects.
+    RequiredWithBinding {
+        memo: Option<&'a str>,
+        binding_prefix: &'a str,
+    },
+}
+
+impl MemoPolicy<'_> {
+    /// How many Memo instructions the suffix may carry.
+    fn max_memos(&self) -> usize {
+        match self {
+            MemoPolicy::Optional | MemoPolicy::Required(_) => 1,
+            MemoPolicy::RequiredWithBinding { .. } => 2,
+        }
+    }
 }
 
 /// Enforce the sponsor's top-level instruction allowlist and return the single
@@ -972,10 +1012,15 @@ pub enum MemoPolicy<'a> {
 /// 1. An optional ComputeBudget prefix: at most one `SetComputeUnitLimit` and
 ///    at most one `SetComputeUnitPrice`, limit before price, each within
 ///    [`OPEN_MAX_COMPUTE_UNIT_LIMIT`] / [`MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`].
+///    The sponsor pays the priority fee, so the fee itself (limit times price,
+///    the runtime default limit when none is declared, or the version-1
+///    header fee) is held to
+///    [`MAX_SPONSORED_PRIORITY_FEE_LAMPORTS`](crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS).
 /// 2. Exactly one instruction on `program_id` whose first data byte is
 ///    `discriminator`.
 /// 3. A suffix of at most [`OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS`] Lighthouse
-///    assertions plus a Memo governed by `memo`, capped at
+///    assertions plus Memos governed by `memo` (exactly one when
+///    required, any number when optional), capped at
 ///    [`OPEN_MAX_OPTIONAL_SUFFIX`] instructions in total.
 ///
 /// No wrapper instruction may name the transaction fee payer among its
@@ -1084,11 +1129,15 @@ pub fn scan_channel_tx_layout<'tx>(
     let memo_program = memo_program_id();
     let lighthouse = lighthouse_program_id();
     let (mut lighthouse_count, mut optional_count, mut memo_count) = (0usize, 0usize, 0usize);
+    let mut binding_count = 0usize;
+    // The binding memo rides beside the seller memo, so it widens the suffix
+    // by exactly one instruction and nothing else.
+    let max_suffix = OPEN_MAX_OPTIONAL_SUFFIX + memo.max_memos() - 1;
     while let Some(ix) = instructions.get(index) {
         optional_count += 1;
-        if optional_count > OPEN_MAX_OPTIONAL_SUFFIX {
+        if optional_count > max_suffix {
             return Err(Error::Other(format!(
-                "{label} transaction allows at most {OPEN_MAX_OPTIONAL_SUFFIX} instructions after {label}"
+                "{label} transaction allows at most {max_suffix} instructions after {label}"
             )));
         }
         let program = program_of(ix)?;
@@ -1101,14 +1150,43 @@ pub fn scan_channel_tx_layout<'tx>(
             }
             reject_fee_payer(ix, "Lighthouse")?;
         } else if program == memo_program {
-            memo_count += 1;
-            if memo_count > 1 {
-                return Err(Error::Other(format!(
-                    "{label} transaction allows at most one Memo instruction"
-                )));
-            }
             reject_fee_payer(ix, "Memo")?;
-            check_memo_data(&ix.data, label, memo)?;
+            match memo {
+                MemoPolicy::RequiredWithBinding { binding_prefix, .. }
+                    if ix.data.starts_with(binding_prefix.as_bytes()) =>
+                {
+                    binding_count += 1;
+                    if binding_count > 1 {
+                        return Err(Error::Other(format!(
+                            "{label} transaction must carry exactly one binding Memo"
+                        )));
+                    }
+                    // Bounded and UTF-8 like the seller memo; its key is the
+                    // caller's to bind.
+                    memo_text(&ix.data, label)?;
+                }
+                MemoPolicy::RequiredWithBinding { .. } => {
+                    memo_count += 1;
+                    if memo_count > 1 {
+                        return Err(Error::Other(format!(
+                            "{label} transaction allows at most one Memo instruction besides \
+                             the binding Memo"
+                        )));
+                    }
+                    check_memo_data(&ix.data, label, memo)?;
+                }
+                MemoPolicy::Optional | MemoPolicy::Required(_) => {
+                    memo_count += 1;
+                    // An unbound route may carry several Memos; a declared
+                    // memo admits exactly one.
+                    if memo_count > 1 && matches!(memo, MemoPolicy::Required(_)) {
+                        return Err(Error::Other(format!(
+                            "{label} transaction allows at most one Memo instruction"
+                        )));
+                    }
+                    check_memo_data(&ix.data, label, memo)?;
+                }
+            }
         } else {
             return Err(Error::Other(format!(
                 "{label} transaction instruction after {label} must be Lighthouse or Memo, found {}",
@@ -1117,28 +1195,58 @@ pub fn scan_channel_tx_layout<'tx>(
         }
         index += 1;
     }
-    if memo_count == 0 && matches!(memo, MemoPolicy::Required(_)) {
+    if memo_count == 0
+        && matches!(
+            memo,
+            MemoPolicy::Required(_) | MemoPolicy::RequiredWithBinding { .. }
+        )
+    {
         return Err(Error::Other(format!(
             "{label} transaction must carry exactly one Memo instruction"
         )));
     }
+    if binding_count == 0 && matches!(memo, MemoPolicy::RequiredWithBinding { .. }) {
+        return Err(Error::Other(format!(
+            "{label} transaction must carry exactly one binding Memo"
+        )));
+    }
+    // Each field within its ceiling still lets the largest limit pair with the
+    // largest price, and an undeclared limit is priced at the runtime default
+    // for every instruction. Checked once the layout is known to be canonical.
+    crate::core::tx::check_priority_fee(
+        &tx.message,
+        crate::core::tx::MAX_SPONSORED_PRIORITY_FEE_LAMPORTS,
+    )
+    .map_err(|e| {
+        Error::Other(format!(
+            "{label} transaction compute unit price exceeds the sponsored fee maximum: {e}"
+        ))
+    })?;
 
     Ok(primary)
 }
 
-/// Apply a [`MemoPolicy`] to one Memo instruction's data.
-fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
-    let MemoPolicy::Required(expected) = memo else {
-        return Ok(());
-    };
+/// A Memo's data as bounded UTF-8 text.
+fn memo_text<'d>(data: &'d [u8], label: &str) -> Result<&'d str> {
     if data.len() > OPEN_MAX_MEMO_BYTES {
         return Err(Error::Other(format!(
             "{label} transaction memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
             data.len()
         )));
     }
-    let text = std::str::from_utf8(data)
-        .map_err(|_| Error::Other(format!("{label} transaction memo is not valid UTF-8")))?;
+    std::str::from_utf8(data)
+        .map_err(|_| Error::Other(format!("{label} transaction memo is not valid UTF-8")))
+}
+
+/// Apply a [`MemoPolicy`] to one Memo instruction's data.
+fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
+    let expected = match memo {
+        MemoPolicy::Optional => return Ok(()),
+        MemoPolicy::Required(expected) | MemoPolicy::RequiredWithBinding { memo: expected, .. } => {
+            expected
+        }
+    };
+    let text = memo_text(data, label)?;
     match expected {
         Some(expected) => {
             if text != expected {
@@ -1449,6 +1557,30 @@ mod tests {
             options,
         )
         .await
+    }
+
+    /// A version-1 open built without an explicit budget stays within the
+    /// 400,000 units a sponsor accepts, even with both memos (three
+    /// instructions, whose runtime default would be 600,000).
+    #[tokio::test]
+    async fn a_default_version_1_open_budget_stays_within_the_open_cap() {
+        let open = build_open(&OpenTxOptions {
+            memo: Some("invoice-42".into()),
+            binding_memo: Some("binding".into()),
+            version: TxVersion::V1,
+            ..Default::default()
+        })
+        .await
+        .expect("version-1 open");
+        let tx = crate::core::tx::decode(&open.transaction).unwrap();
+        let solana_message::VersionedMessage::V1(message) = &tx.message else {
+            panic!("version-1 message expected");
+        };
+        assert_eq!(message.instructions.len(), 3);
+        assert_eq!(
+            message.config.compute_unit_limit,
+            Some(OPEN_MAX_COMPUTE_UNIT_LIMIT)
+        );
     }
 
     #[tokio::test]
