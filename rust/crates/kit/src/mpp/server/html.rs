@@ -83,12 +83,7 @@ pub fn challenge_to_html(challenge: &PaymentChallenge, _rpc_url: &str, _network:
             6
         },
     );
-    let amount_f: f64 = amount_raw.parse::<f64>().unwrap_or(0.0) / 10f64.powi(decimals_val as i32);
-    let display_amount = if amount_f == amount_f.floor() {
-        format!("{:.0}", amount_f)
-    } else {
-        format!("{:.2}", amount_f)
-    };
+    let display_amount = format_base_units(amount_raw, decimals_val as usize);
     let amount_display = match currency {
         "USDC" | "USDT" | "USDTEST" | "USDG" | "PYUSD" | "CASH" => {
             format!("${display_amount}")
@@ -147,6 +142,29 @@ pub fn challenge_to_html(challenge: &PaymentChallenge, _rpc_url: &str, _network:
         .replace("{{DATA_JSON}}", &data_json)
 }
 
+fn format_base_units(amount: &str, decimals: usize) -> String {
+    if amount.is_empty() || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
+        return "0".to_string();
+    }
+
+    let digits = amount.trim_start_matches('0');
+    if digits.is_empty() {
+        return "0".to_string();
+    }
+    if decimals == 0 {
+        return digits.to_string();
+    }
+
+    let padded = format!("{digits:0>width$}", width = decimals + 1);
+    let split = padded.len() - decimals;
+    let fraction = padded[split..].trim_end_matches('0');
+    if fraction.is_empty() {
+        padded[..split].to_string()
+    } else {
+        format!("{}.{}", &padded[..split], fraction)
+    }
+}
+
 /// HTML-escape a string to prevent XSS when interpolating into HTML content.
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -202,6 +220,30 @@ mod tests {
             escape_html("<script>alert('xss')</script>"),
             "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn test_format_base_units_preserves_sub_cent_amounts() {
+        assert_eq!(format_base_units("5000", 6), "0.005");
+        assert_eq!(format_base_units("1", 6), "0.000001");
+        assert_eq!(format_base_units("1000000", 6), "1");
+        assert_eq!(format_base_units("1250000", 6), "1.25");
+    }
+
+    #[test]
+    fn test_challenge_to_html_preserves_sub_cent_amount() {
+        let mut challenge = test_challenge(None);
+        challenge.request = Base64UrlJson::from_typed(&serde_json::json!({
+            "amount": "5000",
+            "currency": "USDC",
+            "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "methodDetails": { "decimals": 6 }
+        }))
+        .unwrap();
+
+        let html = challenge_to_html(&challenge, "http://localhost:8899", "localnet");
+        assert!(html.contains("$0.005"));
+        assert!(!html.contains("$0.01"));
     }
 
     #[test]
