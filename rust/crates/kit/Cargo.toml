@@ -227,6 +227,9 @@ solana-pubkey = { version = "3.0", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
 solana-transaction = { version = "~4.2", default-features = false, features = ["wincode", "serde"] }
+# Devnet Musebook integration test (ignored by default).
+solana-keypair = "3.0"
+solana-signer = "3.0"
 
 [[example]]
 name = "axum_quickstart"
