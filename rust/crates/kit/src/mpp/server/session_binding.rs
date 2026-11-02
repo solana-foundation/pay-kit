@@ -78,6 +78,8 @@ pub struct SessionConfigSnapshot {
     channel_version: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit_provider: Option<crate::core::credit_provider::CreditProvider>,
     token_program: Option<solana_pubkey::Pubkey>,
     min_voucher_delta: u64,
     voucher_signer: VoucherSigner,
@@ -112,6 +114,7 @@ impl SessionConfigSnapshot {
             ),
             channel_version: config.channel_version.filter(|version| *version != 1),
             channel_hooks: config.channel_hooks.clone(),
+            credit_provider: config.credit_provider,
             token_program: config.token_program.or_else(|| {
                 super::parse_pubkey_field(
                     crate::mpp::protocol::solana::default_token_program_for_currency(
@@ -176,6 +179,7 @@ impl SessionConfigSnapshot {
         config.channel_program = self.channel_program;
         config.channel_version = self.channel_version;
         config.channel_hooks = self.channel_hooks.clone();
+        config.credit_provider = self.credit_provider;
         config.token_program = self.token_program;
         config.min_voucher_delta = self.min_voucher_delta;
         config.voucher_signer = self.voucher_signer;

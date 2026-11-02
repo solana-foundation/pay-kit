@@ -33,7 +33,10 @@ pub mod generated;
 pub mod core;
 
 #[cfg(any(feature = "mpp", feature = "x402"))]
-pub use core::credit_provider::{validate_credit_providers, CreditProvider, CreditProviderError};
+pub use core::credit_provider::{
+    musebook, validate_credit_providers, validate_credit_providers_for_network, CreditProvider,
+    CreditProviderError,
+};
 
 /// Machine Payments Protocol (Solana `charge`/`session`/`subscription`).
 #[cfg(feature = "mpp")]

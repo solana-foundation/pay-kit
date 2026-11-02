@@ -383,6 +383,12 @@ pub struct SessionConfig {
     /// Immutable V2 lifecycle callbacks; never submitted as top-level instructions.
     pub channel_hooks: Option<crate::core::payment_channels_v2::ChannelHooks>,
 
+    /// Credit provider whose per-payer hooks back every channel (devnet-only
+    /// Musebook today). Mutually exclusive with `channel_hooks`; fails closed
+    /// unless the network, program, ABI and token program match the pinned
+    /// deployment and the session is unsponsored.
+    pub credit_provider: Option<crate::core::credit_provider::CreditProvider>,
+
     /// SPL token program override.
     pub token_program: Option<Pubkey>,
 
@@ -435,6 +441,7 @@ impl std::fmt::Debug for SessionConfig {
             .field("decimals", &self.decimals)
             .field("network", &self.network)
             .field("channel_program", &self.channel_program)
+            .field("credit_provider", &self.credit_provider)
             .field("token_program", &self.token_program)
             .field("min_voucher_delta", &self.min_voucher_delta)
             .field("voucher_signer", &self.voucher_signer)
@@ -457,6 +464,9 @@ impl std::fmt::Debug for SessionConfig {
 impl SessionConfig {
     /// Validate the advertised program and ABI together before serving or recovering.
     pub fn channel_deployment(&self) -> Result<crate::core::payment_channels_v2::Deployment> {
+        if self.credit_provider.is_some() {
+            self.credit_deployment()?;
+        }
         crate::mpp::program::channel_deployment::resolve_for_network(
             self.channel_program
                 .unwrap_or_else(payment_channels::default_program_id),
@@ -464,6 +474,62 @@ impl SessionConfig {
             self.channel_hooks.as_ref(),
             &self.network,
         )
+    }
+
+    /// Pinned credit-provider deployment, validated against this config.
+    /// Every mismatch is an error: a credit session never degrades to an
+    /// unhooked or differently hooked channel.
+    pub fn credit_deployment(&self) -> Result<crate::core::credit_provider::musebook::Deployment> {
+        use crate::core::credit_provider::{musebook, CreditProvider};
+        let invalid = |why: &str| Err(Error::InvalidConfig(format!("musebook credits: {why}")));
+        match self.credit_provider {
+            Some(CreditProvider::Musebook) => {}
+            Some(other) => return invalid(&format!("credit provider {other} is unavailable")),
+            None => return invalid("no credit provider configured"),
+        }
+        let Some(deployment) = musebook::deployment(&self.network) else {
+            return invalid(&format!("unavailable on network {:?}", self.network));
+        };
+        if self.channel_program != Some(deployment.channel_program()) {
+            return invalid("channel_program must be the pinned V2 channel program");
+        }
+        if self.channel_version != Some(2) {
+            return invalid("channel_version must be 2");
+        }
+        if self.channel_hooks.is_some() {
+            return invalid("channel_hooks must be unset; hooks are derived per payer");
+        }
+        let token = payment_channels::parse_pubkey(musebook::TOKEN_PROGRAM_ID)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if self.token_program.is_some_and(|program| program != token) {
+            return invalid("token_program must be SPL Token");
+        }
+        if self.fee_payer_signer.is_some() {
+            // The provider refunds to the owner, which must also be the rent payer.
+            return invalid("sponsored sessions are not supported");
+        }
+        Ok(deployment)
+    }
+
+    /// Hooks a channel opened by `payer` for `mint` must carry.
+    pub fn channel_hooks_for(
+        &self,
+        payer: &Pubkey,
+        mint: &Pubkey,
+    ) -> Result<crate::core::payment_channels_v2::ChannelHooks> {
+        if self.credit_provider.is_some() {
+            return Ok(self.credit_deployment()?.hooks(payer, mint));
+        }
+        Ok(self.channel_hooks.clone().unwrap_or_default())
+    }
+
+    /// Compute-unit ceiling for client-built open/top-up transactions.
+    pub fn max_compute_unit_limit(&self) -> u32 {
+        if self.credit_provider.is_some() {
+            crate::core::credit_provider::musebook::COMPUTE_UNIT_LIMIT
+        } else {
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT
+        }
     }
 
     /// A sponsor fronts the rent of every channel it opens, so it must name
@@ -496,6 +562,7 @@ impl Default for SessionConfig {
             channel_program: None,
             channel_version: None,
             channel_hooks: None,
+            credit_provider: None,
             token_program: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
@@ -865,6 +932,7 @@ impl<S: ChannelStore> SessionServer<S> {
                 channel_program: payment_channels::pubkey_string(&channel_program),
                 channel_version: self.config.channel_version,
                 channel_hooks: self.config.channel_hooks.clone(),
+                credit_provider: self.config.credit_provider,
                 channel_id: None,
                 recent_blockhash: Some(hint.blockhash),
                 recent_slot: Some(hint.slot),
@@ -1073,7 +1141,7 @@ impl<S: ChannelStore> SessionServer<S> {
         if self.config.channel_deployment()?.version == 2 {
             Ok(crate::core::payment_channels_v2::build_open_instruction(
                 &params,
-                &self.config.channel_hooks.clone().unwrap_or_default(),
+                &self.config.channel_hooks_for(&params.payer, &params.mint)?,
             )?)
         } else {
             Ok(payment_channels::build_open_instruction(&params))
@@ -3239,7 +3307,17 @@ impl<S: ChannelStore> SessionServer<S> {
             mint,
             program_id,
             channel_version: self.config.channel_version,
-            channel_hooks: self.config.channel_hooks.clone(),
+            channel_hooks: match (self.config.credit_provider, payer, mint) {
+                (None, _, _) => self.config.channel_hooks.clone(),
+                (Some(_), Some(payer), Some(mint)) => {
+                    Some(self.config.channel_hooks_for(&payer, &mint)?)
+                }
+                (Some(_), _, _) => {
+                    return Err(Error::Other(
+                        "credit channel seal needs the stored payer and mint".into(),
+                    ))
+                }
+            },
             settled: state.cumulative.max(state.settled_on_chain),
             voucher_signature,
             voucher_expires_at,
@@ -3524,7 +3602,7 @@ async fn prepare_open_transaction(
     crate::core::tx::check_envelope_without_legacy(&tx, accepted_versions)?;
     crate::core::tx::check_v1_budget_caps(
         &tx.message,
-        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        config.max_compute_unit_limit(),
         if fee_payer_signer.is_some() {
             crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
         } else {
@@ -3538,7 +3616,7 @@ async fn prepare_open_transaction(
     };
     if let Some(declared) = crate::core::tx::check_v0_budget_caps(
         &tx.message,
-        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        config.max_compute_unit_limit(),
         price_cap,
     )? {
         crate::core::tx::require_budget_prefix(&tx.message, &declared)?;
@@ -3560,7 +3638,7 @@ async fn prepare_open_transaction(
     let expected = if config.channel_deployment()?.version == 2 {
         crate::core::payment_channels_v2::build_open_instruction(
             params,
-            &config.channel_hooks.clone().unwrap_or_default(),
+            &config.channel_hooks_for(&params.payer, &params.mint)?,
         )?
     } else {
         payment_channels::build_open_instruction(params)
@@ -3864,7 +3942,9 @@ async fn fetch_and_match_open_channel(
         .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?
         .ok_or_else(|| Error::Rpc("confirmed channel account not found".to_string()))?;
     let decoded = config.channel_deployment()?.decode_channel(&account_data)?;
-    if decoded.guard != 0 || decoded.hooks != config.channel_hooks.clone().unwrap_or_default() {
+    if decoded.guard != 0
+        || decoded.hooks != config.channel_hooks_for(&params.payer, &params.mint)?
+    {
         return Err(Error::Other(
             "confirmed channel hooks do not match challenge".into(),
         ));
@@ -3939,7 +4019,7 @@ async fn prepare_topup_transaction(
             amount,
             &token_program,
             &program_id,
-            &config.channel_hooks.clone().unwrap_or_default(),
+            &config.channel_hooks_for(&payer, &mint)?,
         )?
     } else {
         payment_channels::build_top_up_instruction(
@@ -3958,7 +4038,7 @@ async fn prepare_topup_transaction(
     crate::core::tx::check_envelope_without_legacy(&tx, accepted_versions)?;
     crate::core::tx::check_v1_budget_caps(
         &tx.message,
-        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        config.max_compute_unit_limit(),
         if config.fee_payer_signer.is_some() {
             crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
         } else {
@@ -3992,7 +4072,7 @@ async fn prepare_topup_transaction(
     }
     if let Some(declared) = crate::core::tx::check_v0_budget_caps(
         &tx.message,
-        crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT,
+        config.max_compute_unit_limit(),
         if fee_payer_signer.is_some() {
             crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
         } else {
@@ -4112,7 +4192,11 @@ async fn verify_submit_and_fetch_topup(
         .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
         .ok_or_else(|| Error::Rpc("finalized topped-up channel account not found".to_string()))?;
     let decoded = deployment.decode_channel(&account_data)?;
-    if decoded.guard != 0 || decoded.hooks != config.channel_hooks.clone().unwrap_or_default() {
+    let expected_hooks = config.channel_hooks_for(
+        &parse_pubkey_field(&state.payer, "payer")?,
+        &expected_payment_channel_mint(config)?,
+    )?;
+    if decoded.guard != 0 || decoded.hooks != expected_hooks {
         return Err(Error::Other(
             "topped-up channel hooks do not match stored policy".into(),
         ));
@@ -4379,6 +4463,157 @@ mod tests {
             idle_timeout_seconds: 300,
             ..SessionConfig::default()
         }
+    }
+
+    fn musebook_config() -> SessionConfig {
+        use crate::core::credit_provider::{musebook, CreditProvider};
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.network = "devnet".into();
+        cfg.currency = mints::USDC_MAINNET.into();
+        cfg.channel_program = Some(musebook::DEVNET.channel_program());
+        cfg.channel_version = Some(2);
+        cfg.credit_provider = Some(CreditProvider::Musebook);
+        cfg
+    }
+
+    #[test]
+    fn musebook_sessions_derive_per_payer_hooks_and_fail_closed() {
+        use crate::core::credit_provider::{musebook, CreditProvider};
+        let cfg = musebook_config();
+        assert!(cfg.channel_deployment().is_ok());
+        assert_eq!(cfg.max_compute_unit_limit(), musebook::COMPUTE_UNIT_LIMIT);
+        let (payer, mint) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let hooks = cfg.channel_hooks_for(&payer, &mint).unwrap();
+        assert_eq!(hooks, musebook::DEVNET.hooks(&payer, &mint));
+        assert_ne!(
+            hooks,
+            cfg.channel_hooks_for(&Pubkey::new_unique(), &mint).unwrap()
+        );
+        assert!(musebook::DEVNET.is_credit_channel(&hooks, &payer, &mint));
+
+        // No credit provider: static hooks and the default CU ceiling.
+        let plain = config(VoucherSigner::Client);
+        assert_eq!(
+            plain.channel_hooks_for(&payer, &mint).unwrap(),
+            Default::default()
+        );
+        assert_eq!(
+            plain.max_compute_unit_limit(),
+            crate::mpp::server::charge::MAX_COMPUTE_UNIT_LIMIT
+        );
+
+        type Mutation = Box<dyn Fn(&mut SessionConfig)>;
+        let broken: Vec<(&str, Mutation)> = vec![
+            ("mainnet", Box::new(|c| c.network = "mainnet".into())),
+            ("localnet", Box::new(|c| c.network = "localnet".into())),
+            (
+                "coinflow",
+                Box::new(|c| c.credit_provider = Some(CreditProvider::Coinflow)),
+            ),
+            (
+                "wrong program",
+                Box::new(|c| c.channel_program = Some(Pubkey::new_unique())),
+            ),
+            ("default program", Box::new(|c| c.channel_program = None)),
+            ("v1 abi", Box::new(|c| c.channel_version = None)),
+            (
+                "static hooks",
+                Box::new(|c| c.channel_hooks = Some(Default::default())),
+            ),
+            (
+                "token-2022",
+                Box::new(|c| {
+                    c.token_program = Some(Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap())
+                }),
+            ),
+            (
+                "sponsored",
+                Box::new(|c| {
+                    c.fee_payer_signer = Some(shared_signer(8));
+                    c.minimum_deposit = Some(100);
+                }),
+            ),
+        ];
+        for (label, mutate) in broken {
+            let mut c = musebook_config();
+            mutate(&mut c);
+            assert!(c.channel_deployment().is_err(), "{label}");
+            assert!(c.channel_hooks_for(&payer, &mint).is_err(), "{label}");
+        }
+    }
+
+    #[test]
+    fn musebook_challenge_advertises_provider_and_open_uses_with_hooks() {
+        use crate::core::credit_provider::{musebook, CreditProvider};
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set(test_blockhash().to_string(), 314, CHALLENGED_SLOT);
+        let server = SessionServer::new(musebook_config(), MemoryChannelStore::new())
+            .with_blockhash_cache(cache);
+        let request = server.build_challenge_request().unwrap();
+        assert_eq!(
+            request.method_details.credit_provider,
+            Some(CreditProvider::Musebook)
+        );
+        assert!(request.method_details.channel_hooks.is_none());
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["methodDetails"]["creditProvider"], "musebook");
+
+        let mut open = valid_open(&server);
+        let mut derive = payment_channels::OpenChannelParams {
+            payer: open.payer.parse().unwrap(),
+            rent_payer: open.payer.parse().unwrap(),
+            payee: open.payee.parse().unwrap(),
+            mint: open.mint.parse().unwrap(),
+            authorized_signer: open.authorized_signer.parse().unwrap(),
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: server.config.grace_period_seconds,
+            recipients: vec![],
+            token_program: Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap(),
+            program_id: musebook::DEVNET.channel_program(),
+        };
+        open.channel_id = payment_channels::derive_channel_addresses(&derive)
+            .channel
+            .to_string();
+        let params = server.payment_channel_open_params(&open).unwrap();
+        derive.recipients = params.recipients.clone();
+        assert_eq!(params.program_id, derive.program_id);
+        let ix = server.payment_channel_open_instruction(&open).unwrap();
+        assert_eq!(
+            ix.data[0],
+            crate::core::payment_channels_v2::OPEN_WITH_HOOKS_DISCRIMINATOR
+        );
+        let expected = crate::core::payment_channels_v2::build_open_instruction(
+            &params,
+            &musebook::DEVNET.hooks(&params.payer, &params.mint),
+        )
+        .unwrap();
+        assert_eq!(ix, expected);
+        assert_eq!(
+            ix.program_id,
+            musebook::DEVNET.channel_program().to_bytes().into()
+        );
+    }
+
+    #[test]
+    fn musebook_binding_snapshot_round_trips_credit_provider() {
+        let cfg = musebook_config();
+        let snapshot = crate::mpp::server::session::SessionConfigSnapshot::capture(&cfg);
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["credit_provider"], "musebook");
+        let mut restored = config(VoucherSigner::Client);
+        snapshot.apply_to(&mut restored).unwrap();
+        assert_eq!(restored.credit_provider, cfg.credit_provider);
+        assert!(restored.channel_deployment().is_ok());
+        // Snapshots without the field (pre-existing bindings) restore as None.
+        let plain = crate::mpp::server::session::SessionConfigSnapshot::capture(&config(
+            VoucherSigner::Client,
+        ));
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("credit_provider")
+            .is_none());
     }
 
     // A sponsor funds each channel's rent; without a deposit floor a 1-unit
