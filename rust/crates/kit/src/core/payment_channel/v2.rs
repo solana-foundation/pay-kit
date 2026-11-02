@@ -16,6 +16,22 @@ pub const HOOK_DESCRIPTOR_SIZE: usize = 206;
 pub const MAX_HOOK_ACCOUNTS: usize = 4;
 pub const MAX_STATIC_DATA: usize = 32;
 
+/// Outer discriminators of the hook-carrying V2 instructions
+/// (`payment-channels` `OpenWithHooks`..`WithdrawPayerWithHooks`). The base
+/// V1 tags (1/3/7/8) reject trailing hook data and never run callbacks.
+pub const OPEN_WITH_HOOKS_DISCRIMINATOR: u8 = 10;
+pub const TOP_UP_WITH_HOOKS_DISCRIMINATOR: u8 = 11;
+pub const DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR: u8 = 12;
+pub const WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR: u8 = 13;
+
+/// Only hook-carrying configurations switch to the `*WithHooks` tags; the
+/// empty-hooks encoding is left exactly as before.
+fn retag(instruction: &mut Instruction, hooks: &ChannelHooks, tag: u8) {
+    if !hooks.is_empty() {
+        instruction.data[0] = tag;
+    }
+}
+
 /// Additional callback accounts never acquire signer privileges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -350,6 +366,7 @@ pub fn build_open_instruction(
 ) -> Result<Instruction> {
     let mut instruction = v1::build_open_instruction(params);
     instruction.data.extend(hooks.encode_open_suffix()?);
+    retag(&mut instruction, hooks, OPEN_WITH_HOOKS_DISCRIMINATOR);
     append_hooks(
         &mut instruction,
         &v1::derive_channel_addresses(params).channel,
@@ -371,6 +388,7 @@ pub fn build_top_up_instruction(
 ) -> Result<Instruction> {
     let mut instruction =
         v1::build_top_up_instruction(payer, channel, mint, amount, token_program, program_id);
+    retag(&mut instruction, hooks, TOP_UP_WITH_HOOKS_DISCRIMINATOR);
     append_hooks(&mut instruction, channel, hooks, 0..2)?;
     Ok(instruction)
 }
@@ -399,6 +417,7 @@ pub fn build_distribute_instruction(
         token_program,
         program_id,
     );
+    retag(&mut instruction, hooks, DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR);
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -428,6 +447,11 @@ pub fn build_withdraw_payer_instruction(
     }
     .instruction();
     instruction.program_id = v1::to_address(program_id);
+    retag(
+        &mut instruction,
+        hooks,
+        WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR,
+    );
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -599,7 +623,8 @@ mod tests {
         let base = v1::build_top_up_instruction(&payer, &channel, &mint, 99, &token, &program);
         let ix = build_top_up_instruction(&payer, &channel, &mint, 99, &token, &program, &hooks)
             .unwrap();
-        assert_eq!(ix.data, base.data);
+        assert_eq!(ix.data[0], TOP_UP_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(ix.data[1..], base.data[1..]);
         assert_eq!(ix.accounts.len(), base.accounts.len() + 3);
         assert!(ix.accounts[base.accounts.len()..]
             .iter()
@@ -623,7 +648,7 @@ mod tests {
         let ix =
             build_withdraw_payer_instruction(&payer, &channel, &mint, &token, &program, &config)
                 .unwrap();
-        assert_eq!(ix.data, [8]);
+        assert_eq!(ix.data, [WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR]);
         assert_eq!(ix.program_id, v1::to_address(&program));
         assert_eq!(ix.accounts.len(), 9);
         assert!(ix.accounts[0].is_signer);
@@ -669,6 +694,46 @@ mod tests {
     }
 
     #[test]
+    fn empty_hooks_keep_base_tags_and_hooked_builders_use_with_hooks_tags() {
+        let program = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
+        let token = Pubkey::new_from_array([6; 32]);
+        let params = v1::OpenChannelParams {
+            payer: Pubkey::new_from_array([1; 32]),
+            rent_payer: Pubkey::new_from_array([2; 32]),
+            payee: Pubkey::new_from_array([3; 32]),
+            mint: Pubkey::new_from_array([4; 32]),
+            authorized_signer: Pubkey::new_from_array([5; 32]),
+            salt: 6,
+            open_slot: 7,
+            deposit: 100,
+            grace_period: 60,
+            recipients: vec![],
+            token_program: token,
+            program_id: program,
+        };
+        let (p, m) = (params.payer, params.mint);
+        let c = Pubkey::new_from_array([7; 32]);
+        let build = |h: &ChannelHooks| {
+            [
+                build_open_instruction(&params, h).unwrap().data[0],
+                build_top_up_instruction(&p, &c, &m, 1, &token, &program, h)
+                    .unwrap()
+                    .data[0],
+                build_distribute_instruction(&c, &p, &p, &p, &p, &m, &[], &token, &program, h)
+                    .unwrap()
+                    .data[0],
+                build_withdraw_payer_instruction(&p, &c, &m, &token, &program, h)
+                    .unwrap()
+                    .data[0],
+            ]
+        };
+        assert_eq!(build(&ChannelHooks::default()), [1, 3, 7, 8]);
+        let mut all = hooks();
+        all.post_distribute = all.pre_fund.clone();
+        assert_eq!(build(&all), [10, 11, 12, 13]);
+    }
+
+    #[test]
     fn open_and_distribute_use_distinct_pairs_and_preserve_base_accounts() {
         let program = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
         let params = v1::OpenChannelParams {
@@ -691,7 +756,8 @@ mod tests {
         hooks.post_distribute = hooks.pre_fund.clone();
         let base_open = v1::build_open_instruction(&params);
         let open = build_open_instruction(&params, &hooks).unwrap();
-        assert_eq!(&open.data[..base_open.data.len()], &base_open.data);
+        assert_eq!(open.data[0], OPEN_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(&open.data[1..base_open.data.len()], &base_open.data[1..]);
         assert_eq!(
             &open.data[base_open.data.len()..],
             &hooks.encode_open_suffix().unwrap()
@@ -727,7 +793,8 @@ mod tests {
             &hooks,
         )
         .unwrap();
-        assert_eq!(distribute.data, base_distribute.data);
+        assert_eq!(distribute.data[0], DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(distribute.data[1..], base_distribute.data[1..]);
         assert_eq!(distribute.accounts[10].pubkey, v1::to_address(&program));
         assert_eq!(open.accounts[13].pubkey, v1::to_address(&program));
         assert_eq!(
