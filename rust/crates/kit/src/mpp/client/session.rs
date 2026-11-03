@@ -410,6 +410,10 @@ pub struct PaymentChannelOpenOptions {
     /// the channel's payee and distribution splits are exactly these, so a
     /// challenge cannot commit escrow to destinations nobody approved.
     pub approved_payout: Option<SessionPayout>,
+    /// Devnet-only override of the Musebook credit provider program; must
+    /// match the server's `SessionConfig::credit_program`. `None` uses the
+    /// pinned deployment.
+    pub credit_program: Option<Pubkey>,
 }
 
 /// Where a session channel pays out: the payee and the ordered distribution
@@ -651,7 +655,11 @@ pub fn derive_payment_channel_open(
         program_id,
     };
     let channel_id = derive_channel_addresses(&open_params).channel;
-    let channel_hooks = credit_channel_hooks(details, &open_params)?;
+    let channel_hooks = credit_channel_hooks(
+        details,
+        &open_params,
+        params.options.credit_program.as_ref(),
+    )?;
 
     Ok(PaymentChannelOpen {
         channel_id,
@@ -683,7 +691,15 @@ pub fn credit_authorization_instructions(
     if details.credit_provider.is_none() {
         return Err(Error::Other("challenge has no credit provider".into()));
     }
-    let deployment = musebook::deployment(&details.network)
+    // The provider program is the one this client committed into the open's
+    // hooks (pinned, or its own devnet-only override).
+    let program = open
+        .channel_hooks
+        .as_ref()
+        .and_then(|h| h.pre_fund.as_ref())
+        .map(|d| parse_pubkey(&d.program_id, "hook program"))
+        .transpose()?;
+    let deployment = musebook::resolve(&details.network, program.as_ref())
         .ok_or_else(|| Error::Other("credit provider unavailable on this network".into()))?;
     let issuer = parse_pubkey(
         details
@@ -751,6 +767,7 @@ pub async fn build_credit_authorization_transaction(
 fn credit_channel_hooks(
     details: &crate::mpp::protocol::intents::session::SessionMethodDetails,
     open: &OpenChannelParams,
+    credit_program: Option<&Pubkey>,
 ) -> Result<Option<crate::core::payment_channels_v2::ChannelHooks>> {
     use crate::core::credit_provider::{musebook, CreditProvider};
     let Some(provider) = details.credit_provider else {
@@ -760,7 +777,7 @@ fn credit_channel_hooks(
     if provider != CreditProvider::Musebook {
         return refuse("unavailable");
     }
-    let Some(deployment) = musebook::deployment(&details.network) else {
+    let Some(deployment) = musebook::resolve(&details.network, credit_program) else {
         return refuse("unavailable on this network");
     };
     if details.channel_hooks.is_some() {

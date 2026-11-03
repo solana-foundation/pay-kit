@@ -25,16 +25,16 @@ fn load(var: &str) -> Keypair {
     Keypair::try_from(bytes.as_slice()).expect("keypair")
 }
 
-/// `PAY_KIT_MUSEBOOK_DEVNET_PROGRAM` selects a throwaway devnet instance for
-/// the library itself (client and server); default is the pinned one.
+/// `MUSEBOOK_DEVNET_PROGRAM` selects a throwaway devnet instance (test-only
+/// env); it reaches pay-kit only through the explicit `credit_program` fields.
+fn credit_program() -> Option<Pubkey> {
+    std::env::var("MUSEBOOK_DEVNET_PROGRAM")
+        .ok()
+        .map(|id| v1::parse_pubkey(&id).expect("MUSEBOOK_DEVNET_PROGRAM pubkey"))
+}
+
 fn devnet_deployment() -> musebook::Deployment {
-    if let Ok(id) = std::env::var(musebook::DEVNET_PROGRAM_ENV) {
-        assert!(
-            musebook::devnet_with_program(&id).is_some(),
-            "invalid override"
-        );
-    }
-    musebook::deployment("devnet").expect("devnet deployment")
+    musebook::resolve("devnet", credit_program().as_ref()).expect("devnet deployment")
 }
 
 fn pk(k: &Keypair) -> Pubkey {
@@ -586,6 +586,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
             MemorySigner::from_bytes(&issuer.to_bytes()).unwrap(),
         )),
         credit_max_cap: Some(1_300),
+        credit_program: credit_program(),
         token_program: Some(token),
         voucher_signer: VoucherSigner::Client,
         grace_period_seconds: GRACE,
@@ -619,6 +620,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     let salt = v1::random_salt();
     let open_options = PaymentChannelOpenOptions {
         salt: Some(salt),
+        credit_program: credit_program(),
         ..Default::default()
     };
     let derived = derive_payment_channel_open(DerivePaymentChannelOpenParams {
@@ -826,6 +828,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
         authorization: &SessionOpenAuthorization::client_signed(200),
         options: PaymentChannelOpenOptions {
             salt: Some(salt2),
+            credit_program: credit_program(),
             ..Default::default()
         },
     })

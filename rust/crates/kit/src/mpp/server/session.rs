@@ -398,6 +398,11 @@ pub struct SessionConfig {
     /// the issuer co-signs. `None` allows exactly the opening deposit.
     pub credit_max_cap: Option<u64>,
 
+    /// Devnet-only override of the Musebook provider program (a test instance
+    /// of the same code). `None` uses the pinned deployment; set on any other
+    /// network it fails closed.
+    pub credit_program: Option<Pubkey>,
+
     /// SPL token program override.
     pub token_program: Option<Pubkey>,
 
@@ -459,6 +464,7 @@ impl std::fmt::Debug for SessionConfig {
                     .map(|signer| signer.pubkey()),
             )
             .field("credit_max_cap", &self.credit_max_cap)
+            .field("credit_program", &self.credit_program)
             .field("token_program", &self.token_program)
             .field("min_voucher_delta", &self.min_voucher_delta)
             .field("voucher_signer", &self.voucher_signer)
@@ -504,7 +510,8 @@ impl SessionConfig {
             Some(other) => return invalid(&format!("credit provider {other} is unavailable")),
             None => return invalid("no credit provider configured"),
         }
-        let Some(deployment) = musebook::deployment(&self.network) else {
+        let Some(deployment) = musebook::resolve(&self.network, self.credit_program.as_ref())
+        else {
             return invalid(&format!("unavailable on network {:?}", self.network));
         };
         if self.channel_program != Some(deployment.channel_program()) {
@@ -585,6 +592,7 @@ impl Default for SessionConfig {
             credit_provider: None,
             credit_issuer_signer: None,
             credit_max_cap: None,
+            credit_program: None,
             token_program: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,

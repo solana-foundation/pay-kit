@@ -61,23 +61,23 @@ pub const DEVNET: Deployment = Deployment {
 /// `solana:<cluster>` string. Unknown or undeployed networks yield `None`.
 pub fn deployment(network: &str) -> Option<Deployment> {
     match network.strip_prefix("solana:").unwrap_or(network) {
-        "devnet" => Some(devnet_override().unwrap_or(DEVNET)),
+        "devnet" => Some(DEVNET),
         _ => None,
     }
 }
 
-/// Env var naming a throwaway devnet instance of the provider. Read once per
-/// process; ignored on every other cluster; an invalid value is ignored too
-/// (falls back to the pinned `DEVNET`). Unset by default.
-pub const DEVNET_PROGRAM_ENV: &str = "PAY_KIT_MUSEBOOK_DEVNET_PROGRAM";
-
-fn devnet_override() -> Option<Deployment> {
-    static CELL: std::sync::OnceLock<Option<Deployment>> = std::sync::OnceLock::new();
-    *CELL.get_or_init(|| {
-        std::env::var(DEVNET_PROGRAM_ENV)
-            .ok()
-            .and_then(|id| devnet_with_program(&id))
-    })
+/// Resolve the deployment for `network`, optionally replaced by an explicit
+/// `program` override. The override is honored on devnet only (channel program
+/// stays pinned); on any other network it makes the provider unavailable.
+pub fn resolve(network: &str, program: Option<&Pubkey>) -> Option<Deployment> {
+    match program {
+        None => deployment(network),
+        Some(id) if *id == DEVNET.program() => deployment(network),
+        Some(id) => match network.strip_prefix("solana:").unwrap_or(network) {
+            "devnet" => devnet_with_program(&id.to_string()),
+            _ => None,
+        },
+    }
 }
 
 /// A devnet-only deployment of the same provider code at a different program ID
@@ -494,6 +494,12 @@ mod override_tests {
         assert!(devnet_with_program("not-a-key").is_none());
         assert_eq!(deployment("devnet"), Some(DEVNET));
         assert!(deployment("mainnet").is_none());
+        let other = d.program();
+        assert_eq!(resolve("devnet", Some(&other)), Some(d));
+        assert_eq!(resolve("solana:devnet", Some(&other)), Some(d));
+        assert!(resolve("mainnet", Some(&other)).is_none());
+        assert!(resolve("mainnet-beta", Some(&other)).is_none());
+        assert_eq!(resolve("devnet", None), Some(DEVNET));
     }
 }
 
