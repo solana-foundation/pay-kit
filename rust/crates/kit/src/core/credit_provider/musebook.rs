@@ -61,9 +61,23 @@ pub const DEVNET: Deployment = Deployment {
 /// `solana:<cluster>` string. Unknown or undeployed networks yield `None`.
 pub fn deployment(network: &str) -> Option<Deployment> {
     match network.strip_prefix("solana:").unwrap_or(network) {
-        "devnet" => Some(DEVNET),
+        "devnet" => Some(devnet_override().unwrap_or(DEVNET)),
         _ => None,
     }
+}
+
+/// Env var naming a throwaway devnet instance of the provider. Read once per
+/// process; ignored on every other cluster; an invalid value is ignored too
+/// (falls back to the pinned `DEVNET`). Unset by default.
+pub const DEVNET_PROGRAM_ENV: &str = "PAY_KIT_MUSEBOOK_DEVNET_PROGRAM";
+
+fn devnet_override() -> Option<Deployment> {
+    static CELL: std::sync::OnceLock<Option<Deployment>> = std::sync::OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var(DEVNET_PROGRAM_ENV)
+            .ok()
+            .and_then(|id| devnet_with_program(&id))
+    })
 }
 
 /// A devnet-only deployment of the same provider code at a different program ID

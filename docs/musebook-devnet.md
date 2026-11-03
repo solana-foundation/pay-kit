@@ -7,11 +7,11 @@ Every other network returns `CreditProviderError::Unavailable`.
 
 `musebook::devnet_with_program(id)` builds a devnet-only `Deployment` for another
 instance of the same provider code (the channel program stays pinned). The e2e
-test uses it when `MUSEBOOK_DEVNET_PROGRAM` is set:
+test uses it when `PAY_KIT_MUSEBOOK_DEVNET_PROGRAM` is set (read once by the library for both client and server, devnet only, unset by default):
 
     MUSEBOOK_DEVNET_PAYER=/workspace/secure/mbcp-fresh/deployer.json \
     MUSEBOOK_DEVNET_ISSUER=/workspace/secure/mbcp-fresh/deployer.json \
-    MUSEBOOK_DEVNET_PROGRAM=Df3GbKUy4mTUdsMVBtzRHnQatZfyAefFvjCtAvQZLWvH \
+    PAY_KIT_MUSEBOOK_DEVNET_PROGRAM=Df3GbKUy4mTUdsMVBtzRHnQatZfyAefFvjCtAvQZLWvH \
     cargo test -p solana-pay-kit --test musebook_devnet -- --ignored --nocapture
 
 ## Upgrade authority: decision pending

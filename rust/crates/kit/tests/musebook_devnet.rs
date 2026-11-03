@@ -25,12 +25,16 @@ fn load(var: &str) -> Keypair {
     Keypair::try_from(bytes.as_slice()).expect("keypair")
 }
 
-/// `MUSEBOOK_DEVNET_PROGRAM` selects a throwaway devnet instance; default is the pinned one.
+/// `PAY_KIT_MUSEBOOK_DEVNET_PROGRAM` selects a throwaway devnet instance for
+/// the library itself (client and server); default is the pinned one.
 fn devnet_deployment() -> musebook::Deployment {
-    match std::env::var("MUSEBOOK_DEVNET_PROGRAM") {
-        Ok(id) => musebook::devnet_with_program(&id).expect("MUSEBOOK_DEVNET_PROGRAM pubkey"),
-        Err(_) => musebook::deployment("devnet").expect("devnet deployment"),
+    if let Ok(id) = std::env::var(musebook::DEVNET_PROGRAM_ENV) {
+        assert!(
+            musebook::devnet_with_program(&id).is_some(),
+            "invalid override"
+        );
     }
+    musebook::deployment("devnet").expect("devnet deployment")
 }
 
 fn pk(k: &Keypair) -> Pubkey {
@@ -105,6 +109,42 @@ impl Drop for Sweeper {
             println!("sweep thread panicked");
         }
     }
+}
+
+/// Idempotently initialize the provider's governance config (admin = issuer =
+/// upgrade authority). Needed on a fresh instance; a no-op on `97F68…`.
+fn ensure_config(net: &mut Net, d: &musebook::Deployment, issuer: &Keypair) {
+    let config = d.config_address();
+    if net.rpc.get_account(&v1::to_address(&config)).is_ok() {
+        println!("config {config} already initialized");
+        return;
+    }
+    let loader = v1::parse_pubkey("BPFLoaderUpgradeab1e11111111111111111111111").unwrap();
+    let program = d.program();
+    let program_data = Pubkey::find_program_address(&[program.as_ref()], &loader).0;
+    let system = v1::parse_pubkey("11111111111111111111111111111111").unwrap();
+    let mut data = vec![4u8];
+    data.extend(pk(issuer).to_bytes());
+    use solana_instruction::AccountMeta as M;
+    let a = v1::to_address;
+    let ix = solana_instruction::Instruction {
+        program_id: a(&program),
+        accounts: vec![
+            M::new(a(&pk(issuer)), true),
+            M::new(a(&config), false),
+            M::new_readonly(a(&program), false),
+            M::new_readonly(a(&program_data), false),
+            M::new_readonly(a(&pk(issuer)), true),
+            M::new_readonly(a(&system), false),
+        ],
+        data,
+    };
+    net.send(
+        "initialize governance config (admin = issuer)",
+        &[ix],
+        issuer,
+        &[issuer],
+    );
 }
 
 struct Net {
@@ -205,6 +245,7 @@ fn musebook_credit_channel_lifecycle_on_devnet() {
 
     let funder = load("MUSEBOOK_DEVNET_PAYER");
     let issuer = load("MUSEBOOK_DEVNET_ISSUER");
+    ensure_config(&mut net, &d, &issuer);
     let owner = Keypair::new();
     let payee = Keypair::new();
     let mint_kp = Keypair::new();
@@ -449,6 +490,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
     let d = devnet_deployment();
     let funder = load("MUSEBOOK_DEVNET_PAYER");
     let issuer = load("MUSEBOOK_DEVNET_ISSUER");
+    blocking!(ensure_config(&mut net, &d, &issuer));
     let owner = Keypair::new();
     let payee = Keypair::new();
     let mint_kp = Keypair::new();
