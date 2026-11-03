@@ -25,6 +25,14 @@ fn load(var: &str) -> Keypair {
     Keypair::try_from(bytes.as_slice()).expect("keypair")
 }
 
+/// `MUSEBOOK_DEVNET_PROGRAM` selects a throwaway devnet instance; default is the pinned one.
+fn devnet_deployment() -> musebook::Deployment {
+    match std::env::var("MUSEBOOK_DEVNET_PROGRAM") {
+        Ok(id) => musebook::devnet_with_program(&id).expect("MUSEBOOK_DEVNET_PROGRAM pubkey"),
+        Err(_) => musebook::deployment("devnet").expect("devnet deployment"),
+    }
+}
+
 fn pk(k: &Keypair) -> Pubkey {
     v1::from_address(&k.pubkey())
 }
@@ -187,7 +195,7 @@ fn musebook_credit_channel_lifecycle_on_devnet() {
         "devnet only"
     );
     let mut net = Net { rpc, sigs: vec![] };
-    let d = musebook::deployment("devnet").expect("devnet deployment");
+    let d = devnet_deployment();
     assert!(musebook::deployment("mainnet").is_none());
     solana_pay_kit::validate_credit_providers_for_network(
         &[solana_pay_kit::CreditProvider::Musebook],
@@ -438,7 +446,7 @@ async fn musebook_session_spends_credits_and_withdraws_on_devnet() {
             tokio::task::block_in_place(|| $e)
         };
     }
-    let d = musebook::deployment("devnet").unwrap();
+    let d = devnet_deployment();
     let funder = load("MUSEBOOK_DEVNET_PAYER");
     let issuer = load("MUSEBOOK_DEVNET_ISSUER");
     let owner = Keypair::new();

@@ -66,6 +66,18 @@ pub fn deployment(network: &str) -> Option<Deployment> {
     }
 }
 
+/// A devnet-only deployment of the same provider code at a different program ID
+/// (e.g. a throwaway instance whose upgrade authority is the operator's own
+/// devnet key). Never available on any other cluster; the channel program
+/// stays pinned. Off unless a caller explicitly asks for it.
+pub fn devnet_with_program(program_id: &str) -> Option<Deployment> {
+    v1::parse_pubkey(program_id).ok()?;
+    Some(Deployment {
+        program_id: Box::leak(program_id.to_owned().into_boxed_str()),
+        ..DEVNET
+    })
+}
+
 impl Deployment {
     pub fn program(&self) -> Pubkey {
         v1::parse_pubkey(self.program_id).expect("pinned program id")
@@ -453,6 +465,22 @@ fn w(key: &Pubkey, signer: bool) -> AccountMeta {
 
 fn r(key: &Pubkey, signer: bool) -> AccountMeta {
     AccountMeta::new_readonly(v1::to_address(key), signer)
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    #[test]
+    fn devnet_override_keeps_channel_and_rejects_garbage() {
+        let d = devnet_with_program("Df3GbKUy4mTUdsMVBtzRHnQatZfyAefFvjCtAvQZLWvH").unwrap();
+        assert_eq!(d.cluster, "devnet");
+        assert_eq!(d.channel_program_id, DEVNET.channel_program_id);
+        assert_ne!(d.program_id, DEVNET.program_id);
+        assert!(devnet_with_program("not-a-key").is_none());
+        assert_eq!(deployment("devnet"), Some(DEVNET));
+        assert!(deployment("mainnet").is_none());
+    }
 }
 
 #[cfg(test)]
