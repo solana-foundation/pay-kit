@@ -128,3 +128,24 @@ ids = [
   "vector/session-wire-request-missing-channel-program-reject",
   "vector/session-wire-authentication-message-frozen",
 ]
+
+# V2 channel profile (payment-channels#102; mpp-specs-v2): the kotlin runner
+# implements only canonical-bytes session vectors, and its session wire types
+# are on the superseded draft.
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session server verify (input.sessionServerVerify)"
+pattern = "vector/session-v2-server-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner implements only canonical-bytes session vectors; no session client open build (input.sessionOpenBuild)"
+pattern = "vector/session-v2-build-*"
+
+[[unsupported]]
+reason = "the kotlin conformance runner only supports the session voucherPreimage canonical-bytes vector"
+ids = [
+  "vector/session-v2-wire-request-hooked-frozen",
+  "vector/session-v2-wire-request-version-string-reject",
+  "vector/session-v2-wire-request-hook-entrypoint-length-reject",
+  "vector/session-v2-wire-request-hook-signer-flag-reject",
+]

@@ -159,6 +159,7 @@ pub fn references(vector: &Vector) -> Vec<SourceRef> {
         f if f.starts_with("batch-") => "rust/crates/conformance/src/cases/x402_batch.rs",
         "charge-tx-versions.json" => "rust/crates/conformance/src/cases/charge_tx_versions.rs",
         "session-tx-versions.json" => "rust/crates/conformance/src/cases/session_tx_versions.rs",
+        f if f.starts_with("session-v2-") => "rust/crates/conformance/src/cases/session_v2.rs",
         f if f.starts_with("session-server-")
             || f == "session-build.json"
             || f == "session-wire-strict.json" =>
@@ -409,7 +410,14 @@ pub fn pinned_sha(root: &Path, doc: &str) -> Option<String> {
 /// Requirement id to text, from `harness/requirements/*.toml`.
 pub fn requirement_texts(root: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    for name in ["mpp", "x402", "mpp-solana", "mpp-txv1", "x402-txv1"] {
+    for name in [
+        "mpp",
+        "x402",
+        "mpp-solana",
+        "mpp-txv1",
+        "x402-txv1",
+        "mpp-v2",
+    ] {
         let Ok(raw) =
             std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
         else {

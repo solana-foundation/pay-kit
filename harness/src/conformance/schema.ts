@@ -697,7 +697,7 @@ export type VectorInput = {
 // Where a vector's rule is written down. `doc` is `<repo>/<path>` inside a
 // pinned spec repository: `mpp-specs/...` (external/mpp-specs), `x402/...`
 // (typescript/external/x402), or an unmerged draft (`mpp-specs-solana/`,
-// `mpp-specs-txv1/`, `x402-txv1/`, under external/). `quote` appears verbatim (whitespace and
+// `mpp-specs-txv1/`, `mpp-specs-v2/`, `x402-txv1/`, under external/). `quote` appears verbatim (whitespace and
 // markdown emphasis normalised) in that file; `pkc req-lint` enforces it.
 export type VectorSpecRef = {
   doc: string;
