@@ -10,7 +10,17 @@ use super::v1;
 use crate::core::{Error, Result};
 use crate::generated::payment_channels::generated::accounts::Channel;
 
+/// The canary deployment (`Solex.toml` channel `canary`). Both known programs
+/// run the dual-version runtime: V1 and hooked V2 accounts load at the same
+/// address, so the ABI version is explicit configuration, never inferred from
+/// the program id.
 pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ";
+/// Hooked instructions have their own discriminators; the V1 tags never
+/// operate on a V2 account and vice versa.
+pub const OPEN_WITH_HOOKS_DISCRIMINATOR: u8 = 10;
+pub const TOP_UP_WITH_HOOKS_DISCRIMINATOR: u8 = 11;
+pub const DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR: u8 = 12;
+pub const WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR: u8 = 13;
 pub const CHANNEL_ACCOUNT_SIZE: usize = 1121;
 pub const HOOK_DESCRIPTOR_SIZE: usize = 206;
 pub const MAX_HOOK_ACCOUNTS: usize = 4;
@@ -163,20 +173,21 @@ impl Deployment {
         self.decode_channel(data)
     }
 
+    /// Bind a known program to an explicit ABI version. An absent version is
+    /// V1; version 2 selects the hooked instruction family on the same program.
     pub fn resolve(program_id: Pubkey, version: Option<u8>) -> Result<Self> {
-        let actual = if program_id == v1::default_program_id() {
-            1
-        } else if program_id == v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)? {
-            2
-        } else {
+        if program_id != v1::default_program_id()
+            && program_id != v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?
+        {
             return Err(invalid("unknown channel program"));
-        };
-        if version.unwrap_or(1) != actual {
-            return Err(invalid("program and ABI version mismatch"));
+        }
+        let version = version.unwrap_or(1);
+        if !matches!(version, 1 | 2) {
+            return Err(invalid("unsupported channel ABI version"));
         }
         Ok(Self {
             program_id,
-            version: actual,
+            version,
         })
     }
 
@@ -349,6 +360,7 @@ pub fn build_open_instruction(
     hooks: &ChannelHooks,
 ) -> Result<Instruction> {
     let mut instruction = v1::build_open_instruction(params);
+    instruction.data[0] = OPEN_WITH_HOOKS_DISCRIMINATOR;
     instruction.data.extend(hooks.encode_open_suffix()?);
     append_hooks(
         &mut instruction,
@@ -371,6 +383,7 @@ pub fn build_top_up_instruction(
 ) -> Result<Instruction> {
     let mut instruction =
         v1::build_top_up_instruction(payer, channel, mint, amount, token_program, program_id);
+    instruction.data[0] = TOP_UP_WITH_HOOKS_DISCRIMINATOR;
     append_hooks(&mut instruction, channel, hooks, 0..2)?;
     Ok(instruction)
 }
@@ -399,6 +412,7 @@ pub fn build_distribute_instruction(
         token_program,
         program_id,
     );
+    instruction.data[0] = DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR;
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -428,6 +442,7 @@ pub fn build_withdraw_payer_instruction(
     }
     .instruction();
     instruction.program_id = v1::to_address(program_id);
+    instruction.data = vec![WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR];
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -582,10 +597,20 @@ mod tests {
         );
         let v2 = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
         assert_eq!(Deployment::resolve(v2, Some(2)).unwrap().version, 2);
-        assert!(Deployment::resolve(v2, None).is_err());
-        assert!(Deployment::resolve(v2, Some(1)).is_err());
+        // Both known programs run the dual-version runtime; the version is
+        // explicit configuration and defaults to V1.
+        assert_eq!(Deployment::resolve(v2, None).unwrap().version, 1);
+        assert_eq!(Deployment::resolve(v2, Some(1)).unwrap().version, 1);
+        assert_eq!(
+            Deployment::resolve(v1::default_program_id(), Some(2))
+                .unwrap()
+                .version,
+            2
+        );
         assert!(Deployment::resolve(Pubkey::new_from_array([5; 32]), None).is_err());
+        assert!(Deployment::resolve(Pubkey::new_from_array([5; 32]), Some(2)).is_err());
         assert!(Deployment::resolve(v1::default_program_id(), Some(3)).is_err());
+        assert!(Deployment::resolve(v1::default_program_id(), Some(0)).is_err());
     }
 
     #[test]
@@ -599,7 +624,8 @@ mod tests {
         let base = v1::build_top_up_instruction(&payer, &channel, &mint, 99, &token, &program);
         let ix = build_top_up_instruction(&payer, &channel, &mint, 99, &token, &program, &hooks)
             .unwrap();
-        assert_eq!(ix.data, base.data);
+        assert_eq!(ix.data[0], TOP_UP_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(ix.data[1..], base.data[1..]);
         assert_eq!(ix.accounts.len(), base.accounts.len() + 3);
         assert!(ix.accounts[base.accounts.len()..]
             .iter()
@@ -623,7 +649,7 @@ mod tests {
         let ix =
             build_withdraw_payer_instruction(&payer, &channel, &mint, &token, &program, &config)
                 .unwrap();
-        assert_eq!(ix.data, [8]);
+        assert_eq!(ix.data, [WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR]);
         assert_eq!(ix.program_id, v1::to_address(&program));
         assert_eq!(ix.accounts.len(), 9);
         assert!(ix.accounts[0].is_signer);
@@ -649,7 +675,7 @@ mod tests {
             &channel,
             &mint,
             &token,
-            &v1::default_program_id(),
+            &Pubkey::new_unique(),
             &config,
         )
         .is_err());
@@ -691,7 +717,8 @@ mod tests {
         hooks.post_distribute = hooks.pre_fund.clone();
         let base_open = v1::build_open_instruction(&params);
         let open = build_open_instruction(&params, &hooks).unwrap();
-        assert_eq!(&open.data[..base_open.data.len()], &base_open.data);
+        assert_eq!(open.data[0], OPEN_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(&open.data[1..base_open.data.len()], &base_open.data[1..]);
         assert_eq!(
             &open.data[base_open.data.len()..],
             &hooks.encode_open_suffix().unwrap()
@@ -727,7 +754,8 @@ mod tests {
             &hooks,
         )
         .unwrap();
-        assert_eq!(distribute.data, base_distribute.data);
+        assert_eq!(distribute.data[0], DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR);
+        assert_eq!(distribute.data[1..], base_distribute.data[1..]);
         assert_eq!(distribute.accounts[10].pubkey, v1::to_address(&program));
         assert_eq!(open.accounts[13].pubkey, v1::to_address(&program));
         assert_eq!(
@@ -746,7 +774,7 @@ mod tests {
             .all(|account| !account.is_signer));
 
         let mut wrong_program = params;
-        wrong_program.program_id = v1::default_program_id();
+        wrong_program.program_id = Pubkey::new_unique();
         assert!(build_open_instruction(&wrong_program, &hooks).is_err());
     }
 
