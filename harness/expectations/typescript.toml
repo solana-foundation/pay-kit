@@ -30,27 +30,3 @@ ids = [
   "flow/same_origin_payment_request",
   "flow/same_origin_post_payment_request",
 ]
-
-# V2 channel profile with lifecycle hooks (payment-channels#102; mpp-specs-v2,
-# rust/crates/conformance/src/cases/session_v2.rs). Only Rust implements the
-# hooked instruction family; see FINDINGS.md#session-v2-hooked-channels.
-
-[[known_failing]]
-ids = [
-  "vector/session-v2-server-open-hooked-accept",
-  "vector/session-v2-server-open-empty-hooks-accept",
-  "vector/session-v2-server-open-v1-discriminator-reject",
-  "vector/session-v2-server-open-plain-open-reject",
-  "vector/session-v2-server-open-hook-bundle-dropped-reject",
-  "vector/session-v2-server-open-hook-account-substituted-reject",
-  "vector/session-v2-server-open-hook-config-altered-reject",
-  "vector/session-v2-build-hooked-open",
-  "vector/session-v2-build-hooks-without-version-reject",
-  "vector/session-v2-build-unsupported-version-reject",
-  "vector/session-v2-wire-request-hooked-frozen",
-  "vector/session-v2-wire-request-version-string-reject",
-  "vector/session-v2-wire-request-hook-entrypoint-length-reject",
-  "vector/session-v2-wire-request-hook-signer-flag-reject",
-]
-reason = "the TypeScript SDK has no V2 channel profile: SessionMethodDetails drops channelVersion/channelHooks, the client builds a V1 open (14 accounts, discriminator 1) for a V2 challenge and the server pins the V1 open layout (server/session/on-chain.ts OPEN_DISCRIMINATOR = 1)"
-tracking = "FINDINGS.md#session-v2-hooked-channels"

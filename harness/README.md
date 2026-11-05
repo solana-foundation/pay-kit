@@ -261,7 +261,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 117 | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 117 |
-| vector session | 215 | 8 · 207u | 3 · 212u | — | — | 201 · 14k | — | 215 | 3 · 212u | 201 · 14k |
+| vector session | 215 | 8 · 207u | 3 · 212u | — | — | 201 · 14k | — | 215 | 3 · 212u | 215 |
 | vector subscription | 123 | — | — | — | — | 123 | — | 123 | — | 123 |
 | vector x402-batch-settlement | 175 | — | — | — | — | 175 | — | 175 | — | 175 |
 | vector x402-exact | 78 | 49 · 29k | — | 34 · 21u · 23k | 34 · 23u · 21k | 78 | 30 · 21u · 27k | 78 | 14 · 55u · 9k | 78 |
@@ -554,17 +554,17 @@ come from the same extraction as `pkc req-lint`.
 | `MPPTX-d53a9f42dd`* | draft-solana-charge-00.md § Transaction Versions | 6 | 0 · 4u · 2k | 0 · 4u | 0 · 2k | 0 · 2k | 6 | 2 | 6 | 0 · 6u | 6 |
 | `MPPTX-5410e1de47`* | draft-solana-session-00.md § Action: "open" | 7 | 0 · 7u | 0 · 7u | — | — | 7 | — | 7 | 0 · 7u | 7 |
 | `MPPTX-4563533e08`* | draft-solana-session-00.md § Action: "topUp" | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
-| `MPPV2-1cb0b76d43`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 0 · 2k |
-| `MPPV2-71270a9762`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 0 · 2k |
-| `MPPV2-77f41c09b9`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 0 · 2k |
-| `MPPV2-7c7e5b0e73`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3k | — | 3 | 0 · 3u | 0 · 3k |
-| `MPPV2-cdcaf6309f`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1k | — | 1 | 0 · 1u | 0 · 1k |
-| `MPPV2-2f5424f79b`* | draft-solana-session-00.md § Versioned Channel Profiles | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 0 · 2k |
+| `MPPV2-1cb0b76d43`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 2 |
+| `MPPV2-71270a9762`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 2 |
+| `MPPV2-77f41c09b9`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 2 |
+| `MPPV2-7c7e5b0e73`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3k | — | 3 | 0 · 3u | 3 |
+| `MPPV2-cdcaf6309f`* | draft-solana-session-00.md § V2 Lifecycle Hooks | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1k | — | 1 | 0 · 1u | 1 |
+| `MPPV2-2f5424f79b`* | draft-solana-session-00.md § Versioned Channel Profiles | 2 | 0 · 2u | 0 · 2u | — | — | 0 · 2k | — | 2 | 0 · 2u | 2 |
 | `MPPV2-5f4438c84d`* | draft-solana-session-00.md § Versioned Channel Profiles | 1 | 0 · 1u | 0 · 1u | — | — | 1 | — | 1 | 0 · 1u | 1 |
-| `MPPV2-6e96639589`* | draft-solana-session-00.md § Versioned Channel Profiles | 5 | 0 · 5u | 0 · 5u | — | — | 0 · 5k | — | 5 | 0 · 5u | 0 · 5k |
-| `MPPV2-7eb724a2ed`* | draft-solana-session-00.md § Versioned Channel Profiles | 4 | 0 · 4u | 0 · 4u | — | — | 1 · 3k | — | 4 | 0 · 4u | 1 · 3k |
-| `MPPV2-beb9ad1cbe`* | draft-solana-session-00.md § Versioned Channel Profiles | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3k | — | 3 | 0 · 3u | 0 · 3k |
-| `MPPV2-f05cec9a26`* | draft-solana-session-00.md § Versioned Channel Profiles | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1k | — | 1 | 0 · 1u | 0 · 1k |
+| `MPPV2-6e96639589`* | draft-solana-session-00.md § Versioned Channel Profiles | 5 | 0 · 5u | 0 · 5u | — | — | 0 · 5k | — | 5 | 0 · 5u | 5 |
+| `MPPV2-7eb724a2ed`* | draft-solana-session-00.md § Versioned Channel Profiles | 4 | 0 · 4u | 0 · 4u | — | — | 1 · 3k | — | 4 | 0 · 4u | 4 |
+| `MPPV2-beb9ad1cbe`* | draft-solana-session-00.md § Versioned Channel Profiles | 3 | 0 · 3u | 0 · 3u | — | — | 0 · 3k | — | 3 | 0 · 3u | 3 |
+| `MPPV2-f05cec9a26`* | draft-solana-session-00.md § Versioned Channel Profiles | 1 | 0 · 1u | 0 · 1u | — | — | 0 · 1k | — | 1 | 0 · 1u | 1 |
 | `X402-063b58b983`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 5 | — | — | — | — | 5 | — | 5 | — | 5 |
 | `X402-556df29ac2`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 2 | — | — | — | — | 2 | — | 2 | — | 2 |
 | `X402-c0dd3bd5b3`* | scheme_batch_settlement_svm.md § 3. Payment-Channel Method | 1 | — | — | — | — | 1 | — | 1 | — | 1 |

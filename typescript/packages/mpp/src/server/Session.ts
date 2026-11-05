@@ -21,6 +21,7 @@ import {
 } from '../client/Session.js';
 import { defaultTokenProgramForCurrency, resolveStablecoinMint, stablecoinSymbolForCurrency } from '../constants.js';
 import * as Methods from '../Methods.js';
+import { type ChannelHooks, type ChannelVersion, resolveChannelDeployment } from '../shared/channel-hooks.js';
 import type {
     CommitReceipt,
     MeteringDirective,
@@ -121,6 +122,8 @@ export function session(parameters: session.Parameters) {
     const config = resolveSessionConfig(parameters);
     const {
         amount,
+        channelHooks,
+        channelVersion,
         distributionSplits,
         feePayer,
         feePayerSigner,
@@ -155,7 +158,9 @@ export function session(parameters: session.Parameters) {
             async channelId => {
                 try {
                     await closeAndSettleChannel({
+                        channelHooks,
                         channelId,
+                        channelVersion,
                         currency,
                         decimals,
                         merchantSigner: signer,
@@ -220,6 +225,9 @@ export function session(parameters: session.Parameters) {
                 methodDetails: {
                     ...(resumeChannelId ? { channelId: resumeChannelId } : {}),
                     channelProgram: resolvedProgramId.toString(),
+                    // The V2 profile is advertised explicitly: absent means
+                    // V1, and a hook policy is never implied by the program.
+                    ...(channelVersion === 2 ? { channelVersion: 2, ...(channelHooks ? { channelHooks } : {}) } : {}),
                     decimals: resolvedDecimals,
                     ...(distributionSplits?.length ? { distributionSplits: [...distributionSplits] } : {}),
                     ...(feePayer ? { feePayer: true, feePayerKey: feePayerSigner?.address } : {}),
@@ -317,6 +325,10 @@ export function session(parameters: session.Parameters) {
  */
 interface ResolvedSessionConfig {
     readonly amount: bigint;
+    /** The advertised hook policy; V2 only. */
+    readonly channelHooks: ChannelHooks | undefined;
+    /** The advertised channel ABI version. */
+    readonly channelVersion: ChannelVersion;
     /** The configured currency (symbol or mint), as given. */
     readonly currency: string;
     readonly distributionSplits: readonly SessionSplit[] | undefined;
@@ -404,7 +416,16 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         throw new Error('operator (or operatorVoucherSigner) is required when voucherSigner is operator');
     }
     const store = resolveSessionStore(parameters);
-    const resolvedProgramId = (channelProgram ?? PAYMENT_CHANNELS_PROGRAM_ID) as Address;
+    // Program, ABI version, hook policy and network bind as one tuple
+    // (mpp-specs-v2 Versioned Channel Profiles): hooks require version 2 and
+    // V2 is served on devnet and localnet only.
+    const deployment = resolveChannelDeployment({
+        channelHooks: parameters.channelHooks,
+        channelProgram: channelProgram?.toString() ?? PAYMENT_CHANNELS_PROGRAM_ID,
+        channelVersion: parameters.channelVersion,
+        network,
+    });
+    const resolvedProgramId = deployment.programAddress;
     // Settlement derives the treasury ATA per cluster; reject unknown networks up front.
     treasuryOwnerForNetwork(network);
     const resolvedMint = resolveStablecoinMint(currency, network);
@@ -424,6 +445,8 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         settlementWindowSeconds ?? (gracePeriodSeconds !== undefined ? BigInt(gracePeriodSeconds) : undefined);
     return {
         amount,
+        channelHooks: deployment.channelHooks,
+        channelVersion: deployment.channelVersion,
         currency,
         distributionSplits,
         feePayer,
@@ -939,7 +962,9 @@ async function validateOpen(
 
     const expected: VerifyOpenTxExpected = {
         authorizedSigner: payload.authorizedSigner,
+        channelHooks: config.channelHooks,
         channelProgram: config.resolvedProgramId.toString(),
+        channelVersion: config.channelVersion,
         currency: config.resolvedMint,
         feePayer: rentPayer,
         minimumDeposit: config.minimumDeposit,
@@ -1426,8 +1451,10 @@ async function prepareTopUp(
     }
     await verifyTopUpTx({
         additionalAmount,
+        channelHooks: config.channelHooks,
         channelId: payload.channelId,
         channelProgram: config.resolvedProgramId.toString(),
+        channelVersion: config.channelVersion,
         feePayer: sponsor ? existing.rentPayer : existing.payer,
         mint: config.resolvedMint,
         payer: existing.payer,
@@ -1641,7 +1668,9 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     let onChainSignature: string | undefined;
     if (args.merchantSigner) {
         const closed = await closeAndSettleChannel({
+            channelHooks: config.channelHooks,
             channelId,
+            channelVersion: config.channelVersion,
             currency: config.currency,
             decimals: config.resolvedDecimals,
             merchantSigner: args.merchantSigner,
@@ -1883,7 +1912,9 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
 // ─────────────────────────────────────────────────────────────────────
 
 interface CloseAndSettleArgs {
+    readonly channelHooks: ChannelHooks | undefined;
     readonly channelId: string;
+    readonly channelVersion: ChannelVersion;
     readonly currency: string;
     readonly decimals: number | undefined;
     readonly merchantSigner: TransactionPartialSigner;
@@ -1934,7 +1965,9 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
                 args.merchantSigner as unknown as TransactionSigner,
                 instructions,
             ),
+        channelHooks: args.channelHooks,
         channelId: args.channelId,
+        channelVersion: args.channelVersion,
         currency: args.currency,
         mint: args.mint,
         network: args.network,
@@ -2100,8 +2133,21 @@ export declare namespace session {
          * `getLatestBlockhash` fallback when issuing new-channel challenges.
          */
         readonly blockhashCache?: BlockhashCache;
+        /**
+         * Immutable lifecycle-hook policy every channel this server opens
+         * commits (mpp-specs-v2 V2 Lifecycle Hooks). Requires
+         * `channelVersion: 2`. Advertised as `methodDetails.channelHooks`;
+         * the client's `openWithHooks` must encode it byte for byte.
+         */
+        readonly channelHooks?: ChannelHooks;
         /** Payment-channels program ID. */
         readonly channelProgram?: Address | string;
+        /**
+         * Channel ABI version (mpp-specs-v2 Versioned Channel Profiles).
+         * Defaults to 1, the audited V1 surface; 2 serves the hooked
+         * instruction family and is supported on devnet and localnet only.
+         */
+        readonly channelVersion?: ChannelVersion;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */
         readonly currency: string;
         /** Token decimals (default 6). */
