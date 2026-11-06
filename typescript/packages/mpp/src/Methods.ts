@@ -3,6 +3,28 @@ import { Method, z } from 'mppx';
 import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from './constants.js';
 
 const sessionVoucherSigner = z.enum(['client', 'operator']);
+
+/**
+ * V2 channel lifecycle hooks (mirrors `ChannelHooks` in
+ * `rust/crates/kit/src/core/payment_channel/v2.rs`): byte fields are JSON
+ * number arrays, exactly as the Rust serde representation carries them.
+ */
+const hookAccount = z.object({ address: z.string(), writable: z.boolean() });
+const hookDescriptor = z.object({
+    accounts: z.array(hookAccount),
+    entrypoint: z.array(z.number()),
+    programId: z.string(),
+    staticData: z.array(z.number()),
+});
+const channelHooks = z.object({
+    postDistribute: z.optional(hookDescriptor),
+    postFund: z.optional(hookDescriptor),
+    preDistribute: z.optional(hookDescriptor),
+    preFund: z.optional(hookDescriptor),
+});
+
+/** Recognized credit providers (reviewed lowercase names only). */
+const creditProvider = z.enum(['coinflow', 'musebook']);
 const sessionAuthentication = z.object({
     challengeId: z.string(),
     payer: z.string(),
@@ -351,8 +373,15 @@ export const session = Method.from({
             description: z.optional(z.string()),
             externalId: z.optional(z.string()),
             methodDetails: z.object({
+                channelHooks: z.optional(channelHooks),
                 channelId: z.optional(z.string()),
                 channelProgram: z.string(),
+                /** Channel account/instruction ABI. Absent means V1, not auto-detection. */
+                channelVersion: z.optional(z.number()),
+                /** Issuer that co-signs the credit `authorize`. Present exactly when `creditProvider` is. */
+                creditIssuer: z.optional(z.string()),
+                /** Credit provider whose per-payer hooks the client must derive. Exclusive with `channelHooks`. */
+                creditProvider: z.optional(creditProvider),
                 decimals: z.optional(z.number()),
                 distributionSplits: z.optional(z.array(z.object({ recipient: z.string(), shareBps: z.number() }))),
                 feePayer: z.optional(z.boolean()),

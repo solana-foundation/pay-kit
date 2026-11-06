@@ -11,6 +11,7 @@ import type { Challenge as MppxChallenge, Receipt as MppxReceipt } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
+import type { ChannelHooks, CreditProvider } from '../shared/credit-provider.js';
 import { encodeVoucherMessageLoose } from '../shared/voucher.js';
 import type { TransactionVersion } from '../utils/transaction-versions.js';
 
@@ -67,8 +68,27 @@ export interface SessionSplit {
 
 /** Solana-specific method details carried by a session challenge. */
 export interface SessionMethodDetails {
+    /**
+     * Immutable lifecycle callbacks approved when opening a V2 channel.
+     * Exclusive with `creditProvider`: a credit challenge must not also
+     * carry static hooks — the client derives the provider's per-payer
+     * hooks instead.
+     */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId?: string | undefined;
     readonly channelProgram: string;
+    /** Channel account/instruction ABI. Absent means V1, not auto-detection. */
+    readonly channelVersion?: number | undefined;
+    /**
+     * Issuer that co-signs the credit `authorize` (base58). Present exactly
+     * when `creditProvider` is.
+     */
+    readonly creditIssuer?: string | undefined;
+    /**
+     * Credit provider whose per-payer hooks the client must derive.
+     * Absent means no credit provider. Exclusive with `channelHooks`.
+     */
+    readonly creditProvider?: CreditProvider | undefined;
     readonly decimals?: number | undefined;
     readonly distributionSplits?: SessionSplit[] | undefined;
     readonly feePayer?: boolean | undefined;

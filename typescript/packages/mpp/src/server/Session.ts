@@ -21,6 +21,12 @@ import {
 } from '../client/Session.js';
 import { defaultTokenProgramForCurrency, resolveStablecoinMint, stablecoinSymbolForCurrency } from '../constants.js';
 import * as Methods from '../Methods.js';
+import {
+    type CreditDeployment,
+    type CreditProvider,
+    resolveDeployment,
+    SPL_TOKEN_PROGRAM_ID,
+} from '../shared/credit-provider.js';
 import type {
     CommitReceipt,
     MeteringDirective,
@@ -121,6 +127,8 @@ export function session(parameters: session.Parameters) {
     const config = resolveSessionConfig(parameters);
     const {
         amount,
+        creditDeployment,
+        creditIssuer,
         distributionSplits,
         feePayer,
         feePayerSigner,
@@ -220,6 +228,17 @@ export function session(parameters: session.Parameters) {
                 methodDetails: {
                     ...(resumeChannelId ? { channelId: resumeChannelId } : {}),
                     channelProgram: resolvedProgramId.toString(),
+                    // Credit sessions run on the pinned V2 hooks deployment:
+                    // the challenge names the ABI, the provider and its
+                    // issuer so the client can derive the per-payer hooks
+                    // (and fail closed on any mismatch).
+                    ...(creditDeployment
+                        ? {
+                              channelVersion: 2,
+                              creditIssuer,
+                              creditProvider: parameters.creditProvider,
+                          }
+                        : {}),
                     decimals: resolvedDecimals,
                     ...(distributionSplits?.length ? { distributionSplits: [...distributionSplits] } : {}),
                     ...(feePayer ? { feePayer: true, feePayerKey: feePayerSigner?.address } : {}),
@@ -317,6 +336,16 @@ export function session(parameters: session.Parameters) {
  */
 interface ResolvedSessionConfig {
     readonly amount: bigint;
+    /**
+     * The pinned credit-provider deployment, validated against this config
+     * when a `creditProvider` is configured. Every mismatch is an error: a
+     * credit session never degrades to an unhooked channel.
+     */
+    readonly creditDeployment: CreditDeployment | undefined;
+    /** The credit issuer's address, advertised as `creditIssuer`. */
+    readonly creditIssuer: string | undefined;
+    /** Highest authorization cap the issuer co-signs. Bounds server-side authorization verification. */
+    readonly creditMaxCap: bigint | undefined;
     /** The configured currency (symbol or mint), as given. */
     readonly currency: string;
     readonly distributionSplits: readonly SessionSplit[] | undefined;
@@ -415,6 +444,42 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         throw new Error('decimals must be an integer from 0 to 9');
     }
     const tokenProgram = parameters.tokenProgram ?? defaultTokenProgramForCurrency(currency, network);
+    // Credit-provider policy (mirrors `SessionConfig::credit_deployment` in
+    // the Rust server): when a provider is configured, the deployment is
+    // resolved and every pinned fact is validated here, at construction —
+    // a credit session never degrades to an unhooked or differently hooked
+    // channel. The Rust config checks `token_program` only when explicitly
+    // set; this port resolves a default token program for every session, so
+    // the check applies to the resolved value.
+    let creditDeployment: CreditDeployment | undefined;
+    let creditIssuer: string | undefined;
+    if (parameters.creditProvider !== undefined) {
+        const invalid = (why: string): never => {
+            throw new Error(`musebook credits: ${why}`);
+        };
+        if (parameters.creditProvider !== 'musebook') {
+            invalid(`credit provider ${parameters.creditProvider} is unavailable`);
+        }
+        const deployment = resolveDeployment(network, parameters.creditProgram);
+        if (!deployment) {
+            throw new Error(`musebook credits: unavailable on network "${network}"`);
+        }
+        creditDeployment = deployment;
+        if (resolvedProgramId.toString() !== deployment.channelProgramId) {
+            invalid('channelProgram must be the pinned V2 channel program');
+        }
+        if (tokenProgram !== SPL_TOKEN_PROGRAM_ID) {
+            invalid('tokenProgram must be SPL Token');
+        }
+        if (feePayer) {
+            // The provider refunds to the owner, which must also be the rent payer.
+            invalid('sponsored sessions are not supported');
+        }
+        if (!parameters.creditIssuerSigner) {
+            invalid('creditIssuerSigner is required to co-sign authorizations');
+        }
+        creditIssuer = parameters.creditIssuerSigner?.address.toString();
+    }
     const transactionVersions = advertisedTransactionVersions(parameters.transactionVersions);
     // draft-solana-session-00: a voucher's non-zero expiry must outlast the
     // channel's forced-close grace period, so the operator can still settle
@@ -424,6 +489,9 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         settlementWindowSeconds ?? (gracePeriodSeconds !== undefined ? BigInt(gracePeriodSeconds) : undefined);
     return {
         amount,
+        creditDeployment,
+        creditIssuer,
+        creditMaxCap: parameters.creditMaxCap,
         currency,
         distributionSplits,
         feePayer,
@@ -2102,6 +2170,32 @@ export declare namespace session {
         readonly blockhashCache?: BlockhashCache;
         /** Payment-channels program ID. */
         readonly channelProgram?: Address | string;
+        /**
+         * Credit issuer signer that co-signs each credit channel's
+         * `authorize`. Required with `creditProvider`; it must be the
+         * provider config's issuer or the open fails on-chain.
+         */
+        readonly creditIssuerSigner?: TransactionPartialSigner;
+        /**
+         * Highest authorization cap (deposit plus future top-ups, base
+         * units) the issuer co-signs. `undefined` allows exactly the
+         * opening deposit.
+         */
+        readonly creditMaxCap?: bigint;
+        /**
+         * Devnet-only override of the Musebook provider program (a test
+         * instance of the same code). `undefined` uses the pinned
+         * deployment; set on any other network it fails closed.
+         */
+        readonly creditProgram?: string;
+        /**
+         * Credit provider whose per-payer hooks back every channel
+         * (devnet-only Musebook today). Fails closed unless the network,
+         * program, ABI and token program match the pinned deployment and
+         * the session is unsponsored. Requires `channelProgram` to be the
+         * pinned V2 channel program and `creditIssuerSigner` to be set.
+         */
+        readonly creditProvider?: CreditProvider;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */
         readonly currency: string;
         /** Token decimals (default 6). */

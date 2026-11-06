@@ -1,4 +1,10 @@
 export * from '../constants.js';
+export {
+    type CreditDeployment,
+    type CreditProvider,
+    MUSEBOOK_DEVNET_PROGRAM_ID,
+    PAYMENT_CHANNELS_V2_PROGRAM_ID,
+} from '../shared/credit-provider.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
 export {

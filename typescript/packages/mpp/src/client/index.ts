@@ -17,9 +17,33 @@ export { buildChargeTransaction, charge } from './Charge.js';
 export {
     buildOpenPaymentChannelTransaction,
     createPaymentChannelSessionOpener,
+    creditAuthorizationInstructions,
     derivePaymentChannelOpen,
 } from './PaymentChannels.js';
 export type { PaymentChannelOpen, PaymentChannelOpenTransaction } from './PaymentChannels.js';
+export {
+    type ChannelHooks,
+    configAddress,
+    type CreditDeployment,
+    CreditProviderError,
+    type CreditProvider,
+    deploymentForNetwork,
+    devnetWithProgram,
+    distributionHash,
+    type HookAccount,
+    type HookDescriptor,
+    hooksForDeployment,
+    isCreditChannel,
+    ledgerAddress,
+    MAX_AUTHORIZATION_SLOTS,
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
+    MUSEBOOK_DEVNET_DEPLOYMENT,
+    MUSEBOOK_DEVNET_PROGRAM_ID,
+    PAYMENT_CHANNELS_V2_PROGRAM_ID,
+    resolveDeployment,
+    validateCreditProviders,
+    validateCreditProvidersForNetwork,
+} from '../shared/credit-provider.js';
 export {
     decodeMeteredSseStream,
     MeteredSseSession,

@@ -1,4 +1,5 @@
 import {
+    AccountRole,
     type Address,
     address,
     appendTransactionMessageInstructions,
@@ -13,6 +14,7 @@ import {
     getProgramDerivedAddress,
     getU64Encoder,
     getUtf8Encoder,
+    type Instruction,
     partiallySignTransactionMessageWithSigners,
     pipe,
     setTransactionMessageComputeUnitLimit,
@@ -39,6 +41,16 @@ import {
     getOpenInstruction,
     PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 } from '../generated/payment-channels/index.js';
+import {
+    type ChannelHooks,
+    configAddress,
+    distributionHash,
+    encodeAuthorization,
+    hooksForDeployment,
+    ledgerAddress,
+    resolveDeployment,
+    SPL_TOKEN_PROGRAM_ID,
+} from '../shared/credit-provider.js';
 import {
     MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES,
     negotiateTransactionVersion,
@@ -74,6 +86,11 @@ const OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000;
  * Payment-channel open fields shared by client-built and server-built open flows.
  */
 export interface PaymentChannelOpen {
+    /**
+     * Per-payer credit hooks derived for a `creditProvider` challenge.
+     * Present exactly for credit-backed opens; absent for plain channels.
+     */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId: string;
     readonly deposit: string;
     readonly gracePeriod: number;
@@ -104,6 +121,7 @@ export async function derivePaymentChannelOpen(
     const open = await preparePaymentChannelOpen(parameters);
     return {
         channelId: open.channelId,
+        ...(open.channelHooks ? { channelHooks: open.channelHooks } : {}),
         deposit: open.deposit.toString(),
         gracePeriod: open.gracePeriod,
         mint: open.mint,
@@ -125,6 +143,18 @@ export async function buildOpenPaymentChannelTransaction(
     parameters: buildOpenPaymentChannelTransaction.Parameters,
 ): Promise<PaymentChannelOpenTransaction> {
     const { request, signer } = parameters;
+    // Credit opens are V2 hooked opens. The generated TypeScript
+    // payment-channels client targets the V1 program and has no hooked
+    // open instruction, so a credit open cannot be built here yet —
+    // refuse rather than silently build an unhooked channel the provider
+    // would never credit. `derivePaymentChannelOpen` still derives the
+    // channel and the exact per-payer hooks for integrators on a V2
+    // client. Mirrors the Rust client's fail-closed credit checks.
+    if (request.methodDetails.creditProvider !== undefined) {
+        throw new Error(
+            'credit provider opens require the V2 hooked channel program, but the TypeScript payment-channels client is generated for the V1 program; refusing to build an unhooked open',
+        );
+    }
     // mpp-specs-txv1 Transaction Versions: "Clients MUST build one of the
     // advertised versions and SHOULD build the highest one their signer can
     // produce." Refused up front, before anything is fetched or signed, when
@@ -332,6 +362,12 @@ export function createPaymentChannelSessionOpener(
 export declare namespace derivePaymentChannelOpen {
     interface Parameters {
         readonly authorizedSigner: string;
+        /**
+         * Devnet-only override of the Musebook provider program (a test
+         * instance of the same code). Only consulted for `creditProvider`
+         * challenges; `undefined` uses the pinned deployment.
+         */
+        readonly creditProgram?: string | undefined;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
         /**
@@ -352,6 +388,12 @@ export declare namespace derivePaymentChannelOpen {
 export declare namespace buildOpenPaymentChannelTransaction {
     interface Parameters {
         readonly authorizedSigner: string;
+        /**
+         * Devnet-only override of the Musebook provider program. Only
+         * consulted for `creditProvider` challenges (which this builder
+         * currently refuses — see the V2 note on the function).
+         */
+        readonly creditProgram?: string | undefined;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
         /**
@@ -446,6 +488,8 @@ function resolveIdleTimeoutSelection(request: SessionRequest, selected?: number)
 }
 
 interface PreparedPaymentChannelOpen {
+    /** Per-payer credit hooks for a `creditProvider` challenge; undefined for plain channels. */
+    readonly channelHooks: ChannelHooks | undefined;
     readonly channelId: string;
     readonly deposit: bigint;
     readonly gracePeriod: number;
@@ -481,7 +525,11 @@ async function preparePaymentChannelOpen(
     }
 
     const channelProgram = request.methodDetails.channelProgram;
-    if (channelProgram !== PAYMENT_CHANNELS_PROGRAM_ADDRESS) {
+    // A credit challenge names the pinned V2 hooks program instead of the
+    // V1 program the generated client targets; its program check happens
+    // in `creditChannelHooks` against the resolved deployment.
+    const isCreditChallenge = request.methodDetails.creditProvider !== undefined;
+    if (!isCreditChallenge && channelProgram !== PAYMENT_CHANNELS_PROGRAM_ADDRESS) {
         throw new Error(`session challenge channelProgram ${channelProgram} is an unknown channel program`);
     }
     if (parameters.programAddress !== undefined && parameters.programAddress !== channelProgram) {
@@ -522,6 +570,16 @@ async function preparePaymentChannelOpen(
         })) ??
         [];
 
+    const channelHooks = isCreditChallenge
+        ? await creditChannelHooks(
+              request,
+              { channelProgram, tokenProgram: tokenProgram.toString() },
+              parameters.creditProgram,
+              payer.toString(),
+              mint,
+          )
+        : undefined;
+
     const [channelId] = await findPaymentChannelPda({
         authorizedSigner,
         mint: mintAddress,
@@ -533,6 +591,7 @@ async function preparePaymentChannelOpen(
     });
 
     return {
+        channelHooks,
         channelId,
         deposit,
         gracePeriod,
@@ -571,6 +630,168 @@ function validateSessionChallenge(request: SessionRequest): void {
     if (details.gracePeriodSeconds === 0) {
         throw new Error('session challenge gracePeriodSeconds must be greater than zero');
     }
+}
+
+/**
+ * Derive the credit hooks for a credit challenge, or refuse it. Mirrors
+ * `credit_channel_hooks` in `rust/crates/kit/src/mpp/client/session.rs`
+ * check for check: an unknown provider, an undeployed network, static
+ * hooks smuggled alongside the provider, a non-V2 or differently pinned
+ * channel program, a non-SPL-Token token program, or a sponsored open are
+ * each refused — a credit challenge is never degraded to a plain or
+ * differently hooked channel.
+ */
+async function creditChannelHooks(
+    request: SessionRequest,
+    open: { readonly channelProgram: string; readonly tokenProgram: string },
+    creditProgram: string | undefined,
+    payer: string,
+    mint: string,
+): Promise<ChannelHooks> {
+    const details = request.methodDetails;
+    const provider = details.creditProvider!;
+    const refuse = (why: string): never => {
+        throw new Error(`credit provider ${provider}: ${why}`);
+    };
+    if (provider !== 'musebook') refuse('unavailable');
+    const deployment = resolveDeployment(details.network, creditProgram);
+    if (!deployment) {
+        throw new Error(`credit provider ${provider}: unavailable on this network`);
+    }
+    if (details.channelHooks !== undefined) {
+        refuse('challenge must not also carry channelHooks');
+    }
+    if (details.channelVersion !== 2 || open.channelProgram !== deployment.channelProgramId) {
+        refuse('challenge does not name the pinned V2 channel program');
+    }
+    if (open.tokenProgram !== SPL_TOKEN_PROGRAM_ID) {
+        refuse('token program must be SPL Token');
+    }
+    if (details.feePayer === true) {
+        // The provider refunds to the owner, which must be the rent payer.
+        refuse('sponsored opens are not supported');
+    }
+    return await hooksForDeployment(deployment, payer, mint);
+}
+
+export declare namespace creditAuthorizationInstructions {
+    interface Parameters {
+        /** The channel's authorized signer, as passed to the open derivation. */
+        readonly authorizedSigner: string;
+        /** The derived credit open (carries the per-payer hooks). */
+        readonly open: PaymentChannelOpen;
+        /**
+         * The open's distribution list, when it was supplied to the open
+         * derivation rather than carried by the challenge. Defaults to the
+         * challenge's `distributionSplits`, else the sole-recipient payee.
+         */
+        readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
+        /** The credit challenge the open was derived from. */
+        readonly request: SessionRequest;
+        /** Authorization terms: cap, provider nonce, and expiry slot. */
+        readonly terms: {
+            readonly cap: AmountLike;
+            readonly expiresAtSlot: AmountLike;
+            readonly nonce: AmountLike;
+        };
+    }
+}
+
+/**
+ * Build the two client-signed instructions that authorize a credit channel
+ * before it opens: SPL Token `Approve` of exactly `cap` to the provider
+ * ledger, then the provider `authorize` binding the channel's incarnation.
+ * The server's issuer co-signs the second instruction. Mirrors
+ * `credit_authorization_instructions` in the Rust client, including its
+ * checks (credit challenge, challenged issuer present, cap covers the
+ * deposit).
+ */
+export async function creditAuthorizationInstructions(
+    parameters: creditAuthorizationInstructions.Parameters,
+): Promise<readonly Instruction[]> {
+    const { open, request, terms } = parameters;
+    const details = request.methodDetails;
+    if (details.creditProvider === undefined) {
+        throw new Error('session challenge is not a credit challenge');
+    }
+    const hooks = open.channelHooks;
+    if (!hooks?.preFund) {
+        throw new Error('credit open is missing its derived hooks');
+    }
+    const deployment = resolveDeployment(details.network, hooks.preFund.programId);
+    if (!deployment) {
+        throw new Error(`credit provider ${details.creditProvider} is unavailable on this network`);
+    }
+    const issuer = details.creditIssuer;
+    if (!issuer) {
+        throw new Error('credit challenge is missing creditIssuer');
+    }
+    const cap = parseU64(terms.cap, 'cap');
+    const deposit = parseU64(open.deposit, 'deposit');
+    if (cap < deposit) {
+        throw new Error('credit authorization cap is below the channel deposit');
+    }
+    const payer = address(open.payer);
+    const mint = address(open.mint);
+    const ledger = await ledgerAddress(deployment, payer.toString(), mint.toString());
+    const config = await configAddress(deployment);
+    const [ownerTokenAccount] = await findAssociatedTokenPda({
+        mint,
+        owner: payer,
+        tokenProgram: address(SPL_TOKEN_PROGRAM_ID),
+    });
+    const [ledgerTokenAccount] = await findAssociatedTokenPda({
+        mint,
+        owner: address(ledger),
+        tokenProgram: address(SPL_TOKEN_PROGRAM_ID),
+    });
+    const authorization = encodeAuthorization({
+        authorizedSigner: parameters.authorizedSigner,
+        cap,
+        distributionHash: await distributionHash(
+            parameters.recipients ??
+                details.distributionSplits?.map(split => ({ bps: split.shareBps, recipient: split.recipient })) ?? [
+                    { bps: 10_000, recipient: open.payee },
+                ],
+        ),
+        expiresAtSlot: parseU64(terms.expiresAtSlot, 'expiresAtSlot'),
+        nonce: parseU64(terms.nonce, 'nonce'),
+        openSlot: parseU64(open.openSlot, 'openSlot'),
+        payee: open.payee,
+        salt: parseU64(open.salt, 'salt'),
+    });
+    // SPL Token `Approve` (tag 4): the ledger may pull at most `cap`.
+    const approveData = new Uint8Array(9);
+    approveData[0] = 4;
+    new DataView(approveData.buffer).setBigUint64(1, cap, true);
+    const approve: Instruction = {
+        accounts: [
+            { address: ownerTokenAccount, role: AccountRole.WRITABLE },
+            { address: address(ledger), role: AccountRole.READONLY },
+            { address: payer, role: AccountRole.READONLY_SIGNER },
+        ],
+        data: approveData,
+        programAddress: address(SPL_TOKEN_PROGRAM_ID),
+    };
+    // Provider `authorize` (tag 2): owner + issuer sign; the server adds
+    // the issuer signature before broadcast.
+    const authorizeData = new Uint8Array(1 + authorization.length);
+    authorizeData[0] = 2;
+    authorizeData.set(authorization, 1);
+    const authorize: Instruction = {
+        accounts: [
+            { address: payer, role: AccountRole.READONLY_SIGNER },
+            { address: address(issuer), role: AccountRole.READONLY_SIGNER },
+            { address: address(ledger), role: AccountRole.WRITABLE },
+            { address: ledgerTokenAccount, role: AccountRole.WRITABLE },
+            { address: ownerTokenAccount, role: AccountRole.WRITABLE },
+            { address: address(SPL_TOKEN_PROGRAM_ID), role: AccountRole.READONLY },
+            { address: address(config), role: AccountRole.READONLY },
+        ],
+        data: authorizeData,
+        programAddress: address(deployment.programId),
+    };
+    return [approve, authorize];
 }
 
 /** The client's cluster RPC: the explicit `rpcUrl`, else the challenged network's default. */
