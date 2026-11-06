@@ -216,6 +216,10 @@ export function session(parameters: session.Parameters) {
                     ? undefined
                     : await challengeOpenTransactionContext(parameters.blockhashCache, rpc);
 
+            const storedChannel = resumeChannelId ? await store.getChannel(resumeChannelId) : undefined;
+            const challengeVersion = storedChannel ? (storedChannel.channelVersion ?? 1) : channelVersion;
+            const challengeHooks = storedChannel ? storedChannel.channelHooks : channelHooks;
+
             const challengeRequest: SessionRequest = {
                 amount: request.amount ?? amount.toString(),
                 currency: resolvedMint,
@@ -230,7 +234,9 @@ export function session(parameters: session.Parameters) {
                     channelProgram: resolvedProgramId.toString(),
                     // The V2 profile is advertised explicitly: absent means
                     // V1, and a hook policy is never implied by the program.
-                    ...(channelVersion === 2 ? { channelVersion: 2, ...(channelHooks ? { channelHooks } : {}) } : {}),
+                    ...(challengeVersion === 2
+                        ? { channelVersion: 2, ...(challengeHooks ? { channelHooks: challengeHooks } : {}) }
+                        : {}),
                     decimals: resolvedDecimals,
                     ...(distributionSplits?.length ? { distributionSplits: [...distributionSplits] } : {}),
                     ...(feePayer ? { feePayer: true, feePayerKey: feePayerSigner?.address } : {}),
