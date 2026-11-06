@@ -4966,6 +4966,35 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn musebook_binding_snapshot_restores_credit_program_and_cap() {
+        let mut cfg = musebook_config();
+        let override_program = Pubkey::new_unique();
+        cfg.credit_program = Some(override_program);
+        cfg.credit_max_cap = Some(5_000);
+        let expected = cfg.credit_deployment().unwrap().program();
+        assert_eq!(expected, override_program);
+        let snapshot = crate::mpp::server::session::SessionConfigSnapshot::capture(&cfg);
+        // Round-trip through the persisted JSON form, as recovery does.
+        let snapshot: crate::mpp::server::session::SessionConfigSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+        let mut restored = config(VoucherSigner::Client);
+        restored.credit_issuer_signer = Some(shared_signer(11));
+        assert_eq!(restored.credit_program, None);
+        snapshot.apply_to(&mut restored).unwrap();
+        assert_eq!(restored.credit_program, Some(override_program));
+        assert_eq!(restored.credit_max_cap, Some(5_000));
+        assert_eq!(restored.credit_deployment().unwrap().program(), expected);
+        // Defaults stay off the wire so pre-existing bindings still decode.
+        let mut defaults = musebook_config();
+        defaults.credit_program = None;
+        defaults.credit_max_cap = None;
+        let plain = crate::mpp::server::session::SessionConfigSnapshot::capture(&defaults);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("credit_program").is_none());
+        assert!(json.get("credit_max_cap").is_none());
+    }
+
     // A sponsor funds each channel's rent; without a deposit floor a 1-unit
     // deposit buys that rent, so a sponsored server must name the floor.
     #[test]

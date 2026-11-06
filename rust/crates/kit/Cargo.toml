@@ -260,6 +260,10 @@ name = "protocol_runner"
 required-features = ["mpp"]
 
 [[test]]
+name = "musebook_devnet"
+required-features = ["mpp"]
+
+[[test]]
 name = "kotlin_golden_vector"
 required-features = ["x402"]
 

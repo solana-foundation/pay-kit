@@ -97,8 +97,9 @@ pub struct PayKitConfig {
     /// Currency symbol or mint address (default `"USDC"`).
     pub currency: String,
     /// Named credit providers accepted alongside currency (default empty).
-    /// Coinflow is recognized but unavailable; Musebook is available on devnet
-    /// only. An unavailable selection fails construction.
+    /// No gate handler can accept credit payments yet, so any selection fails
+    /// construction (Coinflow is unavailable everywhere; Musebook credits are
+    /// available on devnet only via the MPP session server).
     /// This policy is separate from advanced payment-channel hook configuration.
     pub credit_providers: Vec<CreditProvider>,
     /// Token decimals for `currency` (default `6`).
@@ -187,6 +188,17 @@ impl PayKit {
     pub fn new(config: PayKitConfig) -> Result<Self, PayKitError> {
         validate_credit_providers_for_network(&config.credit_providers, &config.network)
             .map_err(PayKitError::CreditProvider)?;
+        // The gate's MPP charge and x402 handlers cannot offer or accept credit
+        // payments. Fail closed rather than advertise a provider no handler
+        // wires up; Musebook credits are supported only through the MPP
+        // session server (`SessionConfig::credit_provider`) on devnet.
+        if let Some(provider) = config.credit_providers.first() {
+            return Err(PayKitError::CreditProvider(
+                CreditProviderError::Unavailable {
+                    provider: *provider,
+                },
+            ));
+        }
 
         // A consumed push signature is only remembered by the store; a
         // process-local default would let another replica accept it again.
@@ -2172,7 +2184,7 @@ mod tests {
     }
 
     #[test]
-    fn musebook_selection_fails_closed_off_devnet_and_passes_policy_on_devnet() {
+    fn musebook_gate_selection_fails_closed_on_every_network() {
         for network in ["mainnet", "localnet"] {
             let result = PayKit::new(PayKitConfig {
                 realm: Some("test-realm".to_string()),
@@ -2193,16 +2205,24 @@ mod tests {
                 "{network}"
             );
         }
-        // On devnet the provider policy passes; construction may still fail
-        // later on unrelated required config, but never on the provider.
+        // Devnet passes the network policy, but the gate has no handler that
+        // can accept Musebook credits, so it must still fail closed.
         let result = PayKit::new(PayKitConfig {
             realm: Some("test-realm".to_string()),
             store: Some(Arc::new(crate::mpp::store::MemoryStore::new())),
             network: "devnet".to_string(),
+            recipient: "11111111111111111111111111111111".to_string(),
             credit_providers: vec![CreditProvider::Musebook],
             ..Default::default()
         });
-        assert!(!matches!(result, Err(PayKitError::CreditProvider(_))));
+        assert!(matches!(
+            result,
+            Err(PayKitError::CreditProvider(
+                CreditProviderError::Unavailable {
+                    provider: CreditProvider::Musebook,
+                }
+            ))
+        ));
     }
 
     #[test]

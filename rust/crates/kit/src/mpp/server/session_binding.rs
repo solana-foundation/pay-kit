@@ -82,6 +82,10 @@ pub struct SessionConfigSnapshot {
     credit_provider: Option<crate::core::credit_provider::CreditProvider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credit_issuer: Option<solana_pubkey::Pubkey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit_program: Option<solana_pubkey::Pubkey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit_max_cap: Option<u64>,
     token_program: Option<solana_pubkey::Pubkey>,
     min_voucher_delta: u64,
     voucher_signer: VoucherSigner,
@@ -121,6 +125,8 @@ impl SessionConfigSnapshot {
                 .credit_issuer_signer
                 .as_ref()
                 .map(|signer| signer.pubkey()),
+            credit_program: config.credit_program,
+            credit_max_cap: config.credit_max_cap,
             token_program: config.token_program.or_else(|| {
                 super::parse_pubkey_field(
                     crate::mpp::protocol::solana::default_token_program_for_currency(
@@ -196,6 +202,8 @@ impl SessionConfigSnapshot {
             ));
         }
         config.credit_provider = self.credit_provider;
+        config.credit_program = self.credit_program;
+        config.credit_max_cap = self.credit_max_cap;
         config.token_program = self.token_program;
         config.min_voucher_delta = self.min_voucher_delta;
         config.voucher_signer = self.voucher_signer;
