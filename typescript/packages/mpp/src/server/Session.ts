@@ -21,7 +21,12 @@ import {
 } from '../client/Session.js';
 import { defaultTokenProgramForCurrency, resolveStablecoinMint, stablecoinSymbolForCurrency } from '../constants.js';
 import * as Methods from '../Methods.js';
-import { type ChannelHooks, type ChannelVersion, resolveChannelDeployment } from '../shared/channel-hooks.js';
+import {
+    type ChannelHooks,
+    type ChannelVersion,
+    resolveChannelDeployment,
+    sameChannelHooks,
+} from '../shared/channel-hooks.js';
 import type {
     CommitReceipt,
     MeteringDirective,
@@ -158,9 +163,7 @@ export function session(parameters: session.Parameters) {
             async channelId => {
                 try {
                     await closeAndSettleChannel({
-                        channelHooks,
                         channelId,
-                        channelVersion,
                         currency,
                         decimals,
                         merchantSigner: signer,
@@ -1023,7 +1026,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     const newState: ChannelState = {
         authentication: payload.authentication,
         authorizedSigner: payload.authorizedSigner,
+        channelHooks: structuredClone(config.channelHooks),
         channelId: verified.channelId,
+        channelVersion: config.channelVersion,
         closeRequestedAt: undefined,
         committedDeliveries: [],
         cumulative: 0n,
@@ -1061,6 +1066,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 verified.rentPayer !== current.rentPayer ||
                 context.challengeId !== current.openingChallengeId ||
                 config.voucherSigner !== current.voucherSigner ||
+                config.channelVersion !== (current.channelVersion ?? 1) ||
+                !sameChannelHooks(config.channelHooks, current.channelHooks) ||
                 !optionalSessionAuthenticationMatches(payload.authentication, current.authentication)
             ) {
                 throw new Error(`open replay does not match existing channel ${verified.channelId}`);
@@ -1451,10 +1458,10 @@ async function prepareTopUp(
     }
     await verifyTopUpTx({
         additionalAmount,
-        channelHooks: config.channelHooks,
+        channelHooks: existing.channelHooks,
         channelId: payload.channelId,
         channelProgram: config.resolvedProgramId.toString(),
-        channelVersion: config.channelVersion,
+        channelVersion: existing.channelVersion ?? 1,
         feePayer: sponsor ? existing.rentPayer : existing.payer,
         mint: config.resolvedMint,
         payer: existing.payer,
@@ -1668,9 +1675,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     let onChainSignature: string | undefined;
     if (args.merchantSigner) {
         const closed = await closeAndSettleChannel({
-            channelHooks: config.channelHooks,
             channelId,
-            channelVersion: config.channelVersion,
             currency: config.currency,
             decimals: config.resolvedDecimals,
             merchantSigner: args.merchantSigner,
@@ -1912,9 +1917,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
 // ─────────────────────────────────────────────────────────────────────
 
 interface CloseAndSettleArgs {
-    readonly channelHooks: ChannelHooks | undefined;
     readonly channelId: string;
-    readonly channelVersion: ChannelVersion;
     readonly currency: string;
     readonly decimals: number | undefined;
     readonly merchantSigner: TransactionPartialSigner;
@@ -1965,9 +1968,9 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
                 args.merchantSigner as unknown as TransactionSigner,
                 instructions,
             ),
-        channelHooks: args.channelHooks,
+        channelHooks: state.channelHooks,
         channelId: args.channelId,
-        channelVersion: args.channelVersion,
+        channelVersion: state.channelVersion ?? 1,
         currency: args.currency,
         mint: args.mint,
         network: args.network,
