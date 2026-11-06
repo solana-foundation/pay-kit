@@ -80,9 +80,7 @@ impl ChannelHooks {
     pub fn validate(&self) -> Result<()> {
         for hook in self.slots().into_iter().flatten() {
             let program = v1::parse_pubkey(&hook.program_id)?;
-            if program == Pubkey::default()
-                || program == v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?
-            {
+            if program == Pubkey::default() {
                 return Err(invalid("enabled hook has zero or self target program"));
             }
             if hook.accounts.len() > MAX_HOOK_ACCOUNTS || hook.static_data.len() > MAX_STATIC_DATA {
@@ -94,6 +92,17 @@ impl ChannelHooks {
                 if !seen.insert(address) || address == program {
                     return Err(invalid("duplicate or target-aliasing hook account"));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate self targets against the deployment selected by the caller.
+    pub fn validate_for_program(&self, program_id: &Pubkey) -> Result<()> {
+        self.validate()?;
+        for hook in self.slots().into_iter().flatten() {
+            if v1::parse_pubkey(&hook.program_id)? == *program_id {
+                return Err(invalid("enabled hook has zero or self target program"));
             }
         }
         Ok(())
@@ -195,7 +204,7 @@ impl Deployment {
         // Revalidate because the public fields are useful to callers but mutable.
         Self::resolve(self.program_id, Some(self.version))?;
         if self.version == 2 {
-            return decode_channel(data);
+            return decode_channel_for_program(data, &self.program_id);
         }
         Ok(ChannelState {
             channel: decode_base(data, 1)?,
@@ -224,6 +233,10 @@ fn decode_base(data: &[u8], version: u8) -> Result<Channel> {
 }
 
 pub fn decode_channel(data: &[u8]) -> Result<ChannelState> {
+    decode_channel_for_program(data, &v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?)
+}
+
+fn decode_channel_for_program(data: &[u8], program_id: &Pubkey) -> Result<ChannelState> {
     if data.len() != CHANNEL_ACCOUNT_SIZE {
         return Err(invalid("invalid V2 channel length"));
     }
@@ -276,7 +289,7 @@ pub fn decode_channel(data: &[u8]) -> Result<ChannelState> {
         pre_distribute,
         post_distribute,
     };
-    hooks.validate()?;
+    hooks.validate_for_program(program_id)?;
     if hooks.config_hash()? != data[265..297] {
         return Err(invalid("hook configuration hash mismatch"));
     }
@@ -327,6 +340,7 @@ fn append_hooks(
 ) -> Result<()> {
     let program = v1::from_address(&instruction.program_id);
     Deployment::resolve(program, Some(2))?;
+    hooks.validate_for_program(&program)?;
     let hash = hooks.config_hash()?;
     for phase in phases {
         if let Some(hook) = hooks.slots()[phase] {
@@ -523,6 +537,22 @@ mod tests {
                 static_data: vec![4, 5],
             }),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn self_targets_follow_selected_deployment() {
+        let canonical = v1::default_program_id();
+        let canary = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
+        for (program, other) in [(canonical, canary), (canary, canonical)] {
+            let mut hooks = hooks();
+            hooks.pre_fund.as_mut().unwrap().program_id = program.to_string();
+            assert!(hooks.validate_for_program(&program).is_err());
+            let deployment = Deployment::resolve(program, Some(2)).unwrap();
+            assert!(deployment.decode_channel(&state(&hooks)).is_err());
+            hooks.pre_fund.as_mut().unwrap().program_id = other.to_string();
+            assert!(hooks.validate_for_program(&program).is_ok());
+            assert!(deployment.decode_channel(&state(&hooks)).is_ok());
         }
     }
 

@@ -39,7 +39,7 @@ pub(crate) fn resolve(
         ));
     }
     if let Some(hooks) = hooks {
-        hooks.validate()?;
+        hooks.validate_for_program(&deployment.program_id)?;
     }
     Ok(deployment)
 }
