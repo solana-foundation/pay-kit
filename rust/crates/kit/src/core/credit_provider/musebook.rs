@@ -40,11 +40,17 @@ const AUTHORIZE: u8 = 2;
 const CANCEL_UNFUNDED: u8 = 3;
 const LOADER: &str = "BPFLoaderUpgradeab1e11111111111111111111111";
 
+/// Reviewed Musebook provider program ID on devnet (Squads 2-of-3 governed).
+pub const DEVNET_PROGRAM_ID: &str = "97F68uhs5fmvddJxH1LrKytbBXrhx6ZBZwuZAdUdP7QA";
+
 /// A reviewed, pinned deployment of the provider and the channel program it trusts.
+///
+/// `program_id` is owned (`Pubkey`) so a successful custom override never needs a
+/// leaked `&'static str`. `cluster` and `channel_program_id` stay pinned statics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deployment {
     pub cluster: &'static str,
-    pub program_id: &'static str,
+    pub program_id: Pubkey,
     /// Payment-channels program whose callbacks the provider accepts.
     pub channel_program_id: &'static str,
 }
@@ -53,7 +59,7 @@ pub struct Deployment {
 /// V2-hooks channel deployment `CHNLxBt…`.
 pub const DEVNET: Deployment = Deployment {
     cluster: "devnet",
-    program_id: "97F68uhs5fmvddJxH1LrKytbBXrhx6ZBZwuZAdUdP7QA",
+    program_id: Pubkey::from_str_const(DEVNET_PROGRAM_ID),
     channel_program_id: v2::PAYMENT_CHANNELS_PROGRAM_ID,
 };
 
@@ -72,9 +78,12 @@ pub fn deployment(network: &str) -> Option<Deployment> {
 pub fn resolve(network: &str, program: Option<&Pubkey>) -> Option<Deployment> {
     match program {
         None => deployment(network),
-        Some(id) if *id == DEVNET.program() => deployment(network),
+        Some(id) if *id == DEVNET.program_id => deployment(network),
         Some(id) => match network.strip_prefix("solana:").unwrap_or(network) {
-            "devnet" => devnet_with_program(&id.to_string()),
+            "devnet" => Some(Deployment {
+                program_id: *id,
+                ..DEVNET
+            }),
             _ => None,
         },
     }
@@ -85,16 +94,16 @@ pub fn resolve(network: &str, program: Option<&Pubkey>) -> Option<Deployment> {
 /// devnet key). Never available on any other cluster; the channel program
 /// stays pinned. Off unless a caller explicitly asks for it.
 pub fn devnet_with_program(program_id: &str) -> Option<Deployment> {
-    v1::parse_pubkey(program_id).ok()?;
+    let program_id = v1::parse_pubkey(program_id).ok()?;
     Some(Deployment {
-        program_id: Box::leak(program_id.to_owned().into_boxed_str()),
+        program_id,
         ..DEVNET
     })
 }
 
 impl Deployment {
     pub fn program(&self) -> Pubkey {
-        v1::parse_pubkey(self.program_id).expect("pinned program id")
+        self.program_id
     }
 
     pub fn channel_program(&self) -> Pubkey {
@@ -122,7 +131,7 @@ impl Deployment {
             writable,
         };
         let descriptor = v2::HookDescriptor {
-            program_id: self.program_id.to_string(),
+            program_id: v1::pubkey_string(&self.program_id),
             entrypoint: ENTRYPOINT,
             accounts: vec![
                 account(ledger, true),
@@ -485,12 +494,15 @@ fn r(key: &Pubkey, signer: bool) -> AccountMeta {
 mod override_tests {
     use super::*;
 
+    const CUSTOM: &str = "Df3GbKUy4mTUdsMVBtzRHnQatZfyAefFvjCtAvQZLWvH";
+
     #[test]
     fn devnet_override_keeps_channel_and_rejects_garbage() {
-        let d = devnet_with_program("Df3GbKUy4mTUdsMVBtzRHnQatZfyAefFvjCtAvQZLWvH").unwrap();
+        let d = devnet_with_program(CUSTOM).unwrap();
         assert_eq!(d.cluster, "devnet");
         assert_eq!(d.channel_program_id, DEVNET.channel_program_id);
         assert_ne!(d.program_id, DEVNET.program_id);
+        assert_eq!(d.program(), v1::parse_pubkey(CUSTOM).unwrap());
         assert!(devnet_with_program("not-a-key").is_none());
         assert_eq!(deployment("devnet"), Some(DEVNET));
         assert!(deployment("mainnet").is_none());
@@ -500,6 +512,46 @@ mod override_tests {
         assert!(resolve("mainnet", Some(&other)).is_none());
         assert!(resolve("mainnet-beta", Some(&other)).is_none());
         assert_eq!(resolve("devnet", None), Some(DEVNET));
+        assert_eq!(
+            resolve("devnet", Some(&DEVNET.program_id)),
+            Some(DEVNET),
+            "default program id must resolve to the pinned deployment"
+        );
+    }
+
+    #[test]
+    fn custom_override_repeated_lookups_are_stable_and_owned() {
+        let custom = v1::parse_pubkey(CUSTOM).unwrap();
+        let first = resolve("devnet", Some(&custom)).expect("custom override");
+        assert_eq!(first.program_id, custom);
+        assert_eq!(first.channel_program_id, DEVNET.channel_program_id);
+        assert_eq!(first.cluster, "devnet");
+        // Repeated resolve must return equal owned values (no &'static leak of
+        // the override string). Copy equality is the regression signal.
+        for _ in 0..64 {
+            let again = resolve("devnet", Some(&custom)).expect("custom override");
+            assert_eq!(again, first);
+            assert_eq!(again.program(), custom);
+            let from_str = devnet_with_program(CUSTOM).expect("custom override");
+            assert_eq!(from_str, first);
+        }
+        // Fail closed away from devnet even when the pubkey itself is valid.
+        for network in [
+            "mainnet",
+            "mainnet-beta",
+            "solana:mainnet",
+            "testnet",
+            "localnet",
+            "Devnet",
+            "",
+        ] {
+            assert!(
+                resolve(network, Some(&custom)).is_none(),
+                "override must fail closed on {network}"
+            );
+        }
+        assert!(devnet_with_program("").is_none());
+        assert!(devnet_with_program("????").is_none());
     }
 }
 
@@ -536,7 +588,7 @@ mod tests {
         assert!(hooks.post_fund.is_none() && hooks.pre_distribute.is_none());
         let d = hooks.pre_fund.as_ref().unwrap();
         assert_eq!(Some(d), hooks.post_distribute.as_ref());
-        assert_eq!(d.program_id, DEVNET.program_id);
+        assert_eq!(d.program_id, v1::pubkey_string(&DEVNET.program_id));
         assert_eq!(d.entrypoint, *b"musebook");
         assert!(d.static_data.is_empty());
         let ledger = DEVNET.ledger_address(&owner, &mint);
