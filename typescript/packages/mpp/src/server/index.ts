@@ -1,4 +1,12 @@
 export * from '../constants.js';
+export {
+    type ChannelHooks,
+    type ChannelVersion,
+    decodeChannelHooks,
+    type HookAccount,
+    type HookDescriptor,
+    resolveChannelDeployment,
+} from '../shared/channel-hooks.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
 export {

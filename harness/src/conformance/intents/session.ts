@@ -219,6 +219,15 @@ async function sdkServer(
       ? { transactionVersions: server.transactionVersions as SessionParameters["transactionVersions"] }
       : {}),
     voucherSigner,
+    // V2 (hooked) channels: the ABI version is explicit configuration and the
+    // hook policy is the SDK's ChannelHooks shape (mirrors the Rust testee).
+    ...(typeof server.channelProgram === "string" ? { channelProgram: server.channelProgram } : {}),
+    ...(server.channelVersion !== undefined
+      ? { channelVersion: server.channelVersion as SessionParameters["channelVersion"] }
+      : {}),
+    ...(server.channelHooks !== undefined
+      ? { channelHooks: server.channelHooks as SessionParameters["channelHooks"] }
+      : {}),
   };
   return createSessionServer(parameters);
 }
@@ -395,6 +404,11 @@ function buildCodeFor(message: string): RejectCode | undefined {
     "spl token",
     "graceperiod",
     "decimals",
+    // V2 channel profile: hooks without version 2, an unknown ABI version,
+    // or a V2 deployment on an unsupported network.
+    "channelhooks",
+    "channel deployment",
+    "abi version",
     "invalid",
   ].some(needle => m.includes(needle))
     ? "invalid-challenge"

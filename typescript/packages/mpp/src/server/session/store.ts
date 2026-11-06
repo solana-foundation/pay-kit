@@ -12,6 +12,7 @@
 // the integration layer pick its own consistency story (CAS, RMW, etc.).
 
 import type { SessionAuthentication, SessionVoucherSigner } from '../../client/Session.js';
+import type { ChannelHooks, ChannelVersion } from '../../shared/channel-hooks.js';
 
 /**
  * One delivery that the server has reserved against a channel but not yet
@@ -58,7 +59,7 @@ export interface ProcessedUse {
  * every reader), and MUST round-trip unknown fields verbatim when they
  * serialize a record. Mirrors Rust `CHANNEL_STATE_SCHEMA_VERSION`.
  */
-export const CHANNEL_STATE_SCHEMA_VERSION = 1;
+export const CHANNEL_STATE_SCHEMA_VERSION = 2;
 
 /**
  * Persisted state of a single payment channel from the server's POV.
@@ -70,8 +71,12 @@ export interface ChannelState {
     readonly authentication?: SessionAuthentication | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
+    /** Immutable hook policy recorded at open. Absent on legacy V1 records. */
+    readonly channelHooks?: ChannelHooks | undefined;
     /** On-chain payment-channel address (base58). */
     readonly channelId: string;
+    /** ABI recorded at open; absent legacy records use V1. */
+    readonly channelVersion?: ChannelVersion | undefined;
     /** Unix seconds when cooperative close was requested. Vouchers blocked once set. */
     readonly closeRequestedAt?: bigint | undefined;
     /** Recently committed deliveries (idempotent commit replay window). */

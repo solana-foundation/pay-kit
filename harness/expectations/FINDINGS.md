@@ -331,6 +331,36 @@ version 0 only and reads no `transactionVersions`.
 Server-only SDK without transaction-version support: it decodes legacy and
 version 0 only and reads no `transactionVersions`.
 
+## session-v2-hooked-channels
+
+**Cases:** `vector/session-v2-*` except `vector/session-v2-server-v1-rejects-hooked-open`
+(rust/crates/conformance/src/cases/session_v2.rs; mpp-specs-v2, payment-channels#102)
+**SDKs:** python (TypeScript fixed in pay-kit#415; Go, Swift and Kotlin declare the inputs unsupported)
+
+The V2 channel profile gives hooked channels their own instruction family:
+`openWithHooks` (10) carries the compact hook configuration after the V1 open
+payload and the callback bundle after the 14 V1 accounts; the server
+advertises `channelVersion: 2` and `channelHooks`. The Rust kit and, since
+pay-kit#415, the TypeScript SDK (`packages/mpp/src/shared/channel-hooks.ts`)
+implement it. The Python SDK:
+
+- drops `channelVersion` and `channelHooks` from the session wire types, so the
+  frozen V2 request diverges and the malformed-descriptor rejects are accepted;
+- builds a V1 `open` (discriminator 1, 14 accounts) for a V2 challenge instead
+  of refusing or building the hooked open, including for a challenge whose
+  hooks come without a version or whose version is unknown;
+- pins the V1 open layout in the server, so a hooked open is refused as an
+  unexpected instruction and a plain V1 open is accepted where the V2 server
+  must refuse it.
+
+Fix: regenerate the channel client from the payment-channels#102 IDL, add the
+two method-detail fields, port the V2 builders and account decoder, and make
+the server rebuild `openWithHooks` from its hook policy (the Rust kit's
+`core/payment_channel/v2.rs` and `mpp/server/session.rs` are the reference;
+the TypeScript port in `shared/channel-hooks.ts` shows the same shape in a
+second language). `vector/session-v2-server-v1-rejects-hooked-open` passes
+already: a V1 server refuses discriminator 10 as an unexpected instruction.
+
 ## Resolved on 2026-10-20
 
 Every finding recorded during the harness rework was fixed in the SDKs, with

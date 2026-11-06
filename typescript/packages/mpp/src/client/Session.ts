@@ -11,6 +11,7 @@ import type { Challenge as MppxChallenge, Receipt as MppxReceipt } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
+import type { ChannelHooks } from '../shared/channel-hooks.js';
 import { encodeVoucherMessageLoose } from '../shared/voucher.js';
 import type { TransactionVersion } from '../utils/transaction-versions.js';
 
@@ -67,8 +68,22 @@ export interface SessionSplit {
 
 /** Solana-specific method details carried by a session challenge. */
 export interface SessionMethodDetails {
+    /**
+     * Immutable lifecycle-hook policy the channel commits at open
+     * (mpp-specs-v2 V2 Lifecycle Hooks). Requires `channelVersion: 2`; the
+     * client encodes it into `openWithHooks` byte for byte and the server
+     * refuses any other configuration.
+     */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId?: string | undefined;
     readonly channelProgram: string;
+    /**
+     * Channel ABI version (mpp-specs-v2 Versioned Channel Profiles): absent
+     * or 1 is the V1 instruction set, 2 the hooked family (`openWithHooks`
+     * 10, `topUpWithHooks` 11, `distributeWithHooks` 12,
+     * `withdrawPayerWithHooks` 13) on the same program.
+     */
+    readonly channelVersion?: number | undefined;
     readonly decimals?: number | undefined;
     readonly distributionSplits?: SessionSplit[] | undefined;
     readonly feePayer?: boolean | undefined;

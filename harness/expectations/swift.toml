@@ -24,6 +24,10 @@ ids = [
   "vector/session-wire-request-new-channel-frozen",
   "vector/session-wire-request-resume-frozen",
   "vector/session-wire-request-superseded-draft-reject",
+  "vector/session-v2-wire-request-hooked-frozen",
+  "vector/session-v2-wire-request-version-string-reject",
+  "vector/session-v2-wire-request-hook-entrypoint-length-reject",
+  "vector/session-v2-wire-request-hook-signer-flag-reject",
 ]
 
 [[unsupported]]
@@ -80,6 +84,14 @@ ids = [
   "vector/charge-verify-too-many-splits-reject",
   "vector/charge-verify-two-splits-accept",
   "vector/charge-verify-unknown-program-reject",
+  "vector/session-v2-server-open-hooked-accept",
+  "vector/session-v2-server-open-empty-hooks-accept",
+  "vector/session-v2-server-open-v1-discriminator-reject",
+  "vector/session-v2-server-open-plain-open-reject",
+  "vector/session-v2-server-open-hook-bundle-dropped-reject",
+  "vector/session-v2-server-open-hook-account-substituted-reject",
+  "vector/session-v2-server-open-hook-config-altered-reject",
+  "vector/session-v2-server-v1-rejects-hooked-open",
 ]
 
 [[unsupported]]
@@ -320,4 +332,15 @@ ids = [
   "vector/session-wire-request-voucher-signer-unknown-reject",
   "vector/session-wire-request-missing-channel-program-reject",
   "vector/session-wire-authentication-message-frozen",
+]
+
+# V2 channel profile (payment-channels#102; mpp-specs-v2): no session client
+# open builder in the Swift runner.
+
+[[unsupported]]
+reason = "unsupported-mode: no session client open builder path (input.sessionOpenBuild)"
+ids = [
+  "vector/session-v2-build-hooked-open",
+  "vector/session-v2-build-hooks-without-version-reject",
+  "vector/session-v2-build-unsupported-version-reject",
 ]

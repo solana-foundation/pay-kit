@@ -1,5 +1,12 @@
 export * from '../constants.js';
 export {
+    type ChannelHooks,
+    type ChannelVersion,
+    type HookAccount,
+    type HookDescriptor,
+    resolveChannelDeployment,
+} from '../shared/channel-hooks.js';
+export {
     isSolanaChargeChallenge,
     isSolanaSessionChallenge,
     selectSolanaChargeChallenge,
