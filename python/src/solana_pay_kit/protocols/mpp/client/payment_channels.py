@@ -21,9 +21,17 @@ from typing import Protocol, cast
 
 from solana_keychain import MemorySigner, TransactionSigner
 from solders.hash import Hash  # type: ignore[import-untyped]
+from solders.instruction import Instruction  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.credit_provider import (
+    SPL_TOKEN_PROGRAM_ID,
+    ChannelHooks,
+    authorization_instructions,
+    hooks_for_deployment,
+    resolve_deployment,
+)
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.paymentchannels import PROGRAM_ID
 from solana_pay_kit._paycore.solana import (
@@ -60,6 +68,7 @@ __all__ = [
     "PaymentChannelSessionOpenOptions",
     "build_open_payment_channel_transaction",
     "create_payment_channel_session_opener",
+    "credit_authorization_instructions",
     "derive_payment_channel_open",
     "generate_authorized_signer",
     "unique_salt",
@@ -141,6 +150,9 @@ class PaymentChannelOpen:
     token_program: Pubkey
     #: On-chain program that owns the channel account.
     program_id: Pubkey
+    #: Per-payer credit hooks derived for a ``credit_provider`` challenge.
+    #: Present exactly for credit-backed opens; ``None`` for plain channels.
+    channel_hooks: ChannelHooks | None = None
 
     def open_channel_params(self) -> OpenChannelParams:
         """Return the instruction-builder params for this open.
@@ -236,6 +248,10 @@ class PaymentChannelOpenOptions:
     salt: int | None = None
     #: SPL token program; defaults to the program resolved from the currency.
     token_program: Pubkey | None = None
+    #: Devnet-only override of the Musebook provider program (a test
+    #: instance of the same code). Only consulted for ``credit_provider``
+    #: challenges; ``None`` uses the pinned deployment.
+    credit_program: str | None = None
     #: Highest transaction message version the signer can sign (a hardware
     #: wallet may sign version 0 only); ``None`` is unrestricted. The open is
     #: built at the highest version the challenge's
@@ -340,6 +356,11 @@ def derive_payment_channel_open(
         if details.recent_slot is None:
             raise ValueError("session challenge is missing recentSlot; a new-channel challenge must provide it")
         open_slot = details.recent_slot
+    channel_hooks = (
+        credit_channel_hooks(request, program_id, token_program, options.credit_program, payer, mint)
+        if details.credit_provider is not None
+        else None
+    )
     channel_id, _ = find_channel_pda(payer, payee, mint, authorized_signer, salt, open_slot, program_id)
 
     return PaymentChannelOpen(
@@ -355,6 +376,93 @@ def derive_payment_channel_open(
         recipients=recipients,
         token_program=token_program,
         program_id=program_id,
+        channel_hooks=channel_hooks,
+    )
+
+
+def credit_channel_hooks(
+    request: SessionRequest,
+    channel_program: Pubkey,
+    token_program: Pubkey,
+    credit_program: str | None,
+    payer: Pubkey,
+    mint: Pubkey,
+) -> ChannelHooks:
+    """Derive the credit hooks for a credit challenge, or refuse it.
+
+    Mirrors ``credit_channel_hooks`` in
+    ``rust/crates/kit/src/mpp/client/session.rs`` check for check: an
+    unknown provider, an undeployed network, static hooks smuggled
+    alongside the provider, a non-V2 or differently pinned channel
+    program, a non-SPL-Token token program, or a sponsored open are each
+    refused — a credit challenge is never degraded to a plain or
+    differently hooked channel.
+    """
+    details = request.method_details
+    provider = details.credit_provider
+
+    def refuse(why: str) -> ValueError:
+        return ValueError(f"credit provider {provider}: {why}")
+
+    if provider != "musebook":
+        raise refuse("unavailable")
+    deployment = resolve_deployment(details.network, credit_program)
+    if deployment is None:
+        raise refuse("unavailable on this network")
+    if details.channel_hooks is not None:
+        raise refuse("challenge must not also carry channelHooks")
+    if details.channel_version != 2 or str(channel_program) != deployment.channel_program_id:
+        raise refuse("challenge does not name the pinned V2 channel program")
+    if str(token_program) != SPL_TOKEN_PROGRAM_ID:
+        raise refuse("token program must be SPL Token")
+    if details.fee_payer is True:
+        # The provider refunds to the owner, which must be the rent payer.
+        raise refuse("sponsored opens are not supported")
+    return hooks_for_deployment(deployment, payer, mint)
+
+
+def credit_authorization_instructions(
+    request: SessionRequest,
+    open_: PaymentChannelOpen,
+    *,
+    cap: int,
+    nonce: int,
+    expires_at_slot: int,
+) -> list[Instruction]:
+    """Build the two client-signed instructions that authorize a credit
+    channel before it opens: SPL Token ``Approve`` of exactly ``cap`` to
+    the provider ledger, then the provider ``authorize`` binding the
+    channel's incarnation. The server's issuer co-signs the second
+    instruction. Mirrors ``credit_authorization_instructions`` in the
+    Rust client, including its checks (credit challenge, challenged
+    issuer present, cap covers the deposit).
+    """
+    details = request.method_details
+    if details.credit_provider is None:
+        raise ValueError("session challenge is not a credit challenge")
+    hooks = open_.channel_hooks
+    if hooks is None or hooks.pre_fund is None:
+        raise ValueError("credit open is missing its derived hooks")
+    deployment = resolve_deployment(details.network, hooks.pre_fund.program_id)
+    if deployment is None:
+        raise ValueError(f"credit provider {details.credit_provider} is unavailable on this network")
+    if not details.credit_issuer:
+        raise ValueError("credit challenge is missing creditIssuer")
+    if cap < open_.deposit:
+        raise ValueError("credit authorization cap is below the channel deposit")
+    return authorization_instructions(
+        deployment,
+        owner=open_.payer,
+        mint=open_.mint,
+        issuer=_parse_pubkey(details.credit_issuer, "creditIssuer"),
+        payee=open_.payee,
+        authorized_signer=open_.authorized_signer,
+        recipients=open_.recipients,
+        salt=open_.salt,
+        open_slot=open_.open_slot,
+        cap=cap,
+        nonce=nonce,
+        expires_at_slot=expires_at_slot,
     )
 
 
@@ -376,7 +484,10 @@ def validate_session_challenge(request: SessionRequest) -> None:
         raise ValueError(f"session challenge tokenProgram {details.token_program} is neither SPL Token nor Token-2022")
     if details.grace_period_seconds is not None and details.grace_period_seconds <= 0:
         raise ValueError("session challenge gracePeriodSeconds must be greater than zero")
-    if _parse_pubkey(details.channel_program, "channelProgram") != PROGRAM_ID:
+    # A credit challenge names the pinned V2 hooks program instead of the
+    # V1 program this client builds for; its program check happens in
+    # ``credit_channel_hooks`` against the resolved deployment.
+    if details.credit_provider is None and _parse_pubkey(details.channel_program, "channelProgram") != PROGRAM_ID:
         raise ValueError(f"session challenge names an unknown channel program {details.channel_program}")
 
 
@@ -442,6 +553,18 @@ async def build_open_payment_channel_transaction(
     ``feePayerKey`` and leaves that signature slot empty for the server.
     Otherwise the payer is also the fee payer.
     """
+    # Credit opens are V2 hooked opens. The generated Python
+    # payment-channels client targets the V1 program and has no hooked
+    # open instruction, so a credit open cannot be built here yet —
+    # refuse rather than silently build an unhooked channel the provider
+    # would never credit. ``derive_payment_channel_open`` still derives
+    # the channel and the exact per-payer hooks for integrators on a V2
+    # client. Mirrors the Rust client's fail-closed credit checks.
+    if request.method_details.credit_provider is not None:
+        raise ValueError(
+            "credit provider opens require the V2 hooked channel program, but the Python "
+            "payment-channels client is generated for the V1 program; refusing to build an unhooked open"
+        )
     version = _negotiate_open_version(request, options)
     payer = _signer_pubkey(signer)
     details = request.method_details

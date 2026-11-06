@@ -29,6 +29,12 @@ from typing import Any, TypeVar
 from solana_keychain import SolanaSigner, TransactionSigner
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.credit_provider import (
+    SPL_TOKEN_PROGRAM_ID,
+    CreditDeployment,
+    CreditProvider,
+)
+from solana_pay_kit._paycore.credit_provider import resolve_deployment as _resolve_credit_deployment_for
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.paymentchannels import (
     OPEN_SLOT_WINDOW,
@@ -196,6 +202,26 @@ class SessionConfig:
     # payer and rent payer. ``None`` for a client-paid server.
     fee_payer_signer: TransactionSigner | None = None
 
+    # Credit provider whose per-payer hooks back every channel (devnet-only
+    # Musebook today). Fails closed unless the network, program, ABI and
+    # token program match the pinned deployment and the session is
+    # unsponsored; see ``resolve_credit_deployment``.
+    credit_provider: CreditProvider | None = None
+
+    # Issuer signer that co-signs each credit channel's ``authorize``.
+    # Required with ``credit_provider``; it must be the provider config's
+    # issuer or the open fails on-chain.
+    credit_issuer_signer: TransactionSigner | None = None
+
+    # Highest authorization cap (deposit plus future top-ups, base units)
+    # the issuer co-signs. ``None`` allows exactly the opening deposit.
+    credit_max_cap: int | None = None
+
+    # Devnet-only override of the Musebook provider program (a test
+    # instance of the same code). ``None`` uses the pinned deployment; set
+    # on any other network it fails closed.
+    credit_program: str | None = None
+
     # Transaction versions the server accepts for open and top-up
     # transactions (``methodDetails.transactionVersions``): ``None`` accepts
     # version 0 only and is not advertised; ``[0, 1]`` also accepts version 1.
@@ -332,6 +358,39 @@ def _commit_receipt(
     )
 
 
+def resolve_credit_deployment(config: SessionConfig) -> CreditDeployment | None:
+    """Resolve and validate the credit deployment for a config, or ``None``
+    when no credit provider is configured.
+
+    Mirrors ``SessionConfig::credit_deployment`` in the Rust server: when a
+    provider is configured, the deployment is resolved and every pinned
+    fact is validated at construction — a credit session never degrades to
+    an unhooked or differently hooked channel. The token program is
+    checked only when explicitly set, exactly as in Rust.
+    """
+    if config.credit_provider is None:
+        return None
+
+    def invalid(why: str) -> ValueError:
+        return ValueError(f"musebook credits: {why}")
+
+    if config.credit_provider != "musebook":
+        raise invalid(f"credit provider {config.credit_provider} is unavailable")
+    deployment = _resolve_credit_deployment_for(config.network, config.credit_program)
+    if deployment is None:
+        raise invalid(f'unavailable on network "{config.network}"')
+    if (config.channel_program or str(PROGRAM_ID)) != deployment.channel_program_id:
+        raise invalid("channelProgram must be the pinned V2 channel program")
+    if config.token_program is not None and config.token_program != SPL_TOKEN_PROGRAM_ID:
+        raise invalid("tokenProgram must be SPL Token")
+    if config.fee_payer or config.fee_payer_signer is not None:
+        # The provider refunds to the owner, which must also be the rent payer.
+        raise invalid("sponsored sessions are not supported")
+    if config.credit_issuer_signer is None:
+        raise invalid("creditIssuerSigner is required to co-sign authorizations")
+    return deployment
+
+
 class SessionServer:
     """Server-side session manager. Pluggable over the channel store to support
     in-memory testing and production persistence backends.
@@ -340,6 +399,10 @@ class SessionServer:
     def __init__(self, config: SessionConfig, store: ChannelStore, *, rpc: Any | None = None) -> None:
         # config is the immutable server configuration captured at construction.
         self._config = config
+        # credit_deployment is the validated pinned deployment when a
+        # credit provider is configured (construction fails closed on any
+        # mismatch); challenges then advertise the provider and its issuer.
+        self._credit_deployment = resolve_credit_deployment(config)
         # store persists per-channel state; every mutation goes through its
         # atomic update_channel so voucher watermarks stay double-spend safe.
         self._store = store
@@ -390,6 +453,11 @@ class SessionServer:
         return tuple(sorted(set(accepted_tx_versions(self._config.transaction_versions))))
 
     @property
+    def credit_deployment(self) -> CreditDeployment | None:
+        """The validated credit deployment, when a provider is configured."""
+        return self._credit_deployment
+
+    @property
     def config(self) -> SessionConfig:
         """The immutable server configuration captured at construction.
 
@@ -434,6 +502,17 @@ class SessionServer:
                 SessionSplit(recipient=split.recipient, share_bps=split.bps) for split in self._config.splits
             ],
             transaction_versions=advertised_versions(self.accepted_versions),
+            # Credit sessions run on the pinned V2 hooks deployment: the
+            # challenge names the ABI, the provider and its issuer so the
+            # client can derive the per-payer hooks (and fail closed on
+            # any mismatch).
+            channel_version=2 if self._credit_deployment is not None else None,
+            credit_issuer=(
+                str(self._config.credit_issuer_signer.pubkey)
+                if self._credit_deployment is not None and self._config.credit_issuer_signer is not None
+                else None
+            ),
+            credit_provider=self._config.credit_provider if self._credit_deployment is not None else None,
         )
         return SessionRequest(
             amount=str(self._config.amount),

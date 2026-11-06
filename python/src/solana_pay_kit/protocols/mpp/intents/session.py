@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from solana_keychain import SolanaSigner
 
+from solana_pay_kit._paycore.credit_provider import ChannelHooks, CreditProvider
 from solana_pay_kit._paycore.txv1 import parse_transaction_versions
 from solana_pay_kit.protocols.mpp.intents.charge import parse_units
 
@@ -239,6 +240,20 @@ class SessionMethodDetails:
     # transactions (mpp-specs-txv1). ``None`` (absent) means ``[0]``; an
     # explicit list, even empty, is kept and re-encoded as integers.
     transaction_versions: list[int] | None = None
+    # Immutable lifecycle callbacks approved when opening a V2 channel.
+    # Exclusive with ``credit_provider``: a credit challenge must not also
+    # carry static hooks — the client derives the provider's per-payer
+    # hooks instead.
+    channel_hooks: ChannelHooks | None = None
+    # Channel account/instruction ABI. ``None`` (absent) means V1, not
+    # auto-detection.
+    channel_version: int | None = None
+    # Issuer that co-signs the credit ``authorize`` (base58). Present
+    # exactly when ``credit_provider`` is.
+    credit_issuer: str | None = None
+    # Credit provider whose per-payer hooks the client must derive.
+    # ``None`` means no credit provider. Exclusive with ``channel_hooks``.
+    credit_provider: CreditProvider | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -268,6 +283,14 @@ class SessionMethodDetails:
             data["distributionSplits"] = [split.to_dict() for split in self.distribution_splits]
         if self.transaction_versions is not None:
             data["transactionVersions"] = list(self.transaction_versions)
+        if self.channel_hooks is not None:
+            data["channelHooks"] = self.channel_hooks.to_dict()
+        if self.channel_version is not None:
+            data["channelVersion"] = self.channel_version
+        if self.credit_issuer is not None:
+            data["creditIssuer"] = self.credit_issuer
+        if self.credit_provider is not None:
+            data["creditProvider"] = self.credit_provider
         return data
 
     @classmethod
@@ -275,6 +298,10 @@ class SessionMethodDetails:
         voucher_signer = data.get("voucherSigner")
         if voucher_signer is not None and voucher_signer not in ("client", "operator"):
             raise ValueError(f"unknown voucherSigner {voucher_signer!r}")
+        credit_provider = data.get("creditProvider")
+        if credit_provider is not None and credit_provider not in ("coinflow", "musebook"):
+            raise ValueError(f"unknown creditProvider {credit_provider!r}")
+        channel_hooks = data.get("channelHooks")
         options = data.get("idleTimeoutOptionsSeconds")
         parsed_options = [int(value) for value in options] if options is not None else None
         if parsed_options is not None:
@@ -304,6 +331,10 @@ class SessionMethodDetails:
             transaction_versions=parse_transaction_versions(
                 data.get("transactionVersions"), field_name="methodDetails.transactionVersions"
             ),
+            channel_hooks=ChannelHooks.from_dict(channel_hooks) if channel_hooks is not None else None,
+            channel_version=int(data["channelVersion"]) if data.get("channelVersion") is not None else None,
+            credit_issuer=data.get("creditIssuer"),
+            credit_provider=credit_provider,
         )
 
 

@@ -132,6 +132,13 @@ class SessionOptions:
     minimum_deposit: int | None = None
     grace_period_seconds: int = 900
     fee_payer: bool = False
+    # Credit provider whose per-payer hooks back every channel (devnet-only
+    # Musebook today), with its issuer signer, cap bound, and devnet-only
+    # program override. Passed through to SessionConfig; validated there.
+    credit_provider: str | None = None
+    credit_issuer_signer: TransactionSigner | None = None
+    credit_max_cap: int | None = None
+    credit_program: str | None = None
     voucher_signer: str = "client"
     idle_timeout_options_seconds: list[int] | None = None
     idle_timeout_seconds: int = 300
@@ -739,6 +746,10 @@ def new_session(options: SessionOptions) -> Session:
         fee_payer=options.fee_payer,
         fee_payer_key=(str(options.signer.pubkey) if options.fee_payer and options.signer is not None else None),
         fee_payer_signer=(options.signer if options.fee_payer else None),
+        credit_provider=options.credit_provider,  # type: ignore[arg-type]
+        credit_issuer_signer=options.credit_issuer_signer,
+        credit_max_cap=options.credit_max_cap,
+        credit_program=options.credit_program,
         transaction_versions=options.transaction_versions,
         min_voucher_delta=options.min_voucher_delta,
         voucher_signer=options.voucher_signer,  # type: ignore[arg-type]
