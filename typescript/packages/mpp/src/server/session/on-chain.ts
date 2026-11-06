@@ -1461,7 +1461,7 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
                 .send()) as { readonly value: { readonly data: readonly [string, string] } | null };
             const raw = info.value?.data[0];
             if (!raw) throw new Error('submitOpenTx: confirmed channel account is missing');
-            const hooks = await decodeChannelHooks(getBase64Codec().encode(raw));
+            const hooks = await decodeChannelHooks(getBase64Codec().encode(raw), args.expected.channelProgram);
             if (!sameChannelHooks(hooks.hooks, args.expected.channelHooks)) {
                 throw new Error(
                     'submitOpenTx: confirmed channel hook configuration does not match the advertised policy',

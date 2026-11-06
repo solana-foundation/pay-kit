@@ -367,7 +367,10 @@ export interface DecodedChannelHooks {
  * of the stored descriptors. The V1 prefix (bytes 0..256) is left to the
  * generated `Channel` decoder. Mirrors `payment_channels_v2::decode_channel`.
  */
-export async function decodeChannelHooks(data: ReadonlyUint8Array): Promise<DecodedChannelHooks> {
+export async function decodeChannelHooks(
+    data: ReadonlyUint8Array,
+    programAddress: string = PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+): Promise<DecodedChannelHooks> {
     if (data.length !== CHANNEL_V2_ACCOUNT_SIZE) throw invalid('invalid V2 channel length');
     if (data[0] !== 1 || data[1] !== 2) throw invalid('invalid channel discriminator or version');
     if (data[256] !== 0) throw invalid('channel callback guard is active');
@@ -413,7 +416,7 @@ export async function decodeChannelHooks(data: ReadonlyUint8Array): Promise<Deco
         ...(preDistribute ? { preDistribute } : {}),
         ...(postDistribute ? { postDistribute } : {}),
     };
-    validateChannelHooks(hooks, PAYMENT_CHANNELS_PROGRAM_ADDRESS);
+    validateChannelHooks(hooks, programAddress);
     const expected = await hookConfigHash(hooks);
     if (!expected.every((byte, index) => byte === configHash[index])) {
         throw invalid('hook configuration hash mismatch');

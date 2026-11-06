@@ -89,6 +89,27 @@ describe('channel hooks ABI', () => {
         await expect(decodeChannelHooks(data.slice(0, 256))).rejects.toThrow(/length/);
     });
 
+    test('decoding validates targets against the selected owner', async () => {
+        for (const [owner, other] of [
+            [CHANNEL_PROGRAM, CANARY_PAYMENT_CHANNELS_PROGRAM],
+            [CANARY_PAYMENT_CHANNELS_PROGRAM, CHANNEL_PROGRAM],
+        ]) {
+            for (const target of [owner!, other!]) {
+                const hooks = { postDistribute: { ...fixture().preFund!, programId: target } };
+                const data = new Uint8Array(1121);
+                data[0] = 1;
+                data[1] = 2;
+                data.set(await hookConfigHash(hooks), 265);
+                data.set(encodeFixedHookDescriptors(hooks), 297);
+                if (target === owner) {
+                    await expect(decodeChannelHooks(data, owner)).rejects.toThrow(/self target/);
+                } else {
+                    expect((await decodeChannelHooks(data, owner)).hooks).toEqual(hooks);
+                }
+            }
+        }
+    });
+
     test('hooked instructions get their own tag, the suffix and the pair bundle', async () => {
         const hooks: ChannelHooks = { ...fixture(), postDistribute: fixture().preFund };
         const channel = key(2);
