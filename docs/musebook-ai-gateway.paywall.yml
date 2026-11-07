@@ -1,0 +1,49 @@
+# Musebook AI Gateway — paywall spec (Pay `gate api`)
+#
+# Second merchant for the Musebook credit provider (pay-kit #414). The
+# gateway at https://infer.musebook.trade (catalog:
+# https://musebook.trade/ai-gateway) sells metered inference per call —
+# Flash $0.005 / Standard $0.01 / Premium $0.05 / Embeddings $0.002, in
+# USDC over x402. This spec adds ONE subscription endpoint: a 30-day
+# gateway access tier charged through the provider's channel-backed MPP
+# session flow, on DEVNET only.
+#
+# The gateway publishes no subscription tier today. The $9.99 / 30d
+# price below is derived from the published per-call prices
+# (~999 Standard calls at $0.01) as the devnet integration price; it is
+# not a live product price, and the live per-call x402 path is separate
+# and unchanged by this spec.
+#
+# plan_id is intentionally absent. The gateway refuses to serve a
+# subscription endpoint until its on-chain Plan PDA exists; publish it
+# with the sandbox flow, which writes plan_id (and plan_id_numeric,
+# plan_bump, plan_created_at) back into this file on first launch:
+#
+#   pay --sandbox gate api docs/musebook-ai-gateway.paywall.yml
+#
+# Nothing here publishes a plan or enables the provider: the `musebook`
+# name still validates Unavailable on every network except the reviewed
+# devnet deployment, and stays disabled until the integration is
+# accepted upstream.
+
+operator:
+  currencies:
+    usd: [USDC, USDT]
+  # Named provider selection only. A name selects reviewed
+  # configuration; never substitute customer-supplied hook JSON.
+  credit_providers: [musebook]
+  network: 'devnet'
+  # recipient / puller default to the gateway operator's key at launch.
+  # Set them explicitly before serving real traffic; they are
+  # intentionally unset in this reviewed example.
+
+endpoints:
+  - method: POST
+    path: 'v1/chat/completions'
+    resource: 'ai-gateway'
+    description: 'Musebook AI Gateway — 30-day access tier, charged via Musebook credits (devnet preview).'
+    subscription:
+      period: '30d'
+      price_usd: 9.99
+      currency: USDC
+      # plan_id: written back by `pay --sandbox gate api` on first launch.
