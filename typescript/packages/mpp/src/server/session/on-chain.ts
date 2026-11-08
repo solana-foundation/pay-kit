@@ -15,6 +15,7 @@
 
 import {
     type AccountMeta,
+    AccountRole,
     type Address,
     address,
     createNoopSigner,
@@ -62,6 +63,21 @@ import { getTopUpInstructionDataDecoder } from '../../generated/payment-channels
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
 import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
+import { getOpenArgsDecoder } from '../../generated/payment-channels/types/openArgs.js';
+import {
+    AUTHORIZE_INSTRUCTION_TAG,
+    type ChannelHooks,
+    configAddress,
+    type CreditDeployment,
+    decodeAuthorization,
+    distributionHash,
+    encodeAuthorization,
+    ledgerAddress,
+    MAX_AUTHORIZATION_SLOTS,
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
+    SPL_TOKEN_PROGRAM_ID,
+} from '../../shared/credit-provider.js';
+import { buildOpenWithHooks, OPEN_WITH_HOOKS_DISCRIMINATOR } from '../../shared/payment-channels-v2.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
 import {
@@ -497,9 +513,32 @@ export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
     /** Optional override for the payment-channels program id. */
     readonly channelProgram?: string | undefined;
+    /**
+     * The pinned credit deployment, when the session is credit-backed. Set
+     * together with `creditHooks`: the verifier then expects an
+     * OpenWithHooks instruction (discriminator 10) on the deployment's
+     * channel program instead of a plain V1 open. Mirrors the Rust
+     * SessionServer building the expected open through
+     * `SessionConfig::channel_hooks_for` whenever `credit_provider` is set.
+     */
+    readonly creditDeployment?: CreditDeployment | undefined;
+    /**
+     * The per-payer credit hooks derived from `creditDeployment` for the
+     * payload's payer and mint. A credit open must carry exactly these
+     * hooks: the OpenWithHooks data suffix and the appended callback
+     * accounts are compared against the instruction they imply.
+     */
+    readonly creditHooks?: ChannelHooks | undefined;
     readonly currency: string;
     /** Transaction fee payer required by the challenge policy. */
     readonly feePayer: string;
+    /**
+     * Compute-unit ceiling for a version-1 header budget. Defaults to the
+     * MPP charge cap (200,000); credit sessions pass the provider's
+     * 400,000 limit, mirroring `SessionConfig::max_compute_unit_limit` in
+     * the Rust server.
+     */
+    readonly maxComputeUnitLimit?: number | undefined;
     readonly minimumDeposit?: bigint | undefined;
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
@@ -626,6 +665,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     // different account past the slot checks.
     checkChannelTransactionPolicy(message, wireSize, {
         accepted: expected.transactionVersions,
+        maxComputeUnitLimit: expected.maxComputeUnitLimit,
         sponsored: expected.feePayer !== openPayload.payer,
     });
 
@@ -647,10 +687,29 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error('verifyOpenTx: could not resolve mint from currency/network');
     }
 
+    // A credit session's open is an OpenWithHooks on the pinned V2
+    // deployment, never a plain open: the discriminator, the program and
+    // (below) the exact expected instruction all switch to the hooked
+    // shape the deployment derivation implies. Mirrors the Rust server,
+    // which builds its expected open through `channel_hooks_for` whenever
+    // a credit provider is configured.
+    const creditHooks = expected.creditHooks;
+    if (creditHooks !== undefined) {
+        if (!expected.creditDeployment) {
+            throw new Error('verifyOpenTx: creditHooks require the pinned credit deployment');
+        }
+        if (programIdStr !== expected.creditDeployment.channelProgramId) {
+            throw new Error('verifyOpenTx: credit open does not target the pinned V2 channel program');
+        }
+    }
+    const expectedDiscriminator = creditHooks ? OPEN_WITH_HOOKS_DISCRIMINATOR : OPEN_DISCRIMINATOR;
+
     let openIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
     const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
+    const orderedPrograms: { data?: Uint8Array | undefined; program: string }[] = [];
     for (const ix of message.instructions) {
         const programIxAddr = message.staticAccounts[ix.programAddressIndex];
+        orderedPrograms.push({ data: ix.data, program: programIxAddr });
         if (programIxAddr !== programIdStr) {
             if (programIxAddr !== COMPUTE_BUDGET_PROGRAM_ADDRESS) {
                 throw new Error(`verifyOpenTx: unexpected instruction program ${String(programIxAddr)}`);
@@ -663,13 +722,18 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         // empty data, or a second open) would ride along under the sponsor's
         // co-signature. Mirrors the Rust SessionServer instruction allowlist.
         // Some decoders omit `data` entirely for empty instruction data.
-        if (!ix.data || ix.data.length < 1 || ix.data[0] !== OPEN_DISCRIMINATOR || openIx) {
+        if (!ix.data || ix.data.length < 1 || ix.data[0] !== expectedDiscriminator || openIx) {
             throw new Error('verifyOpenTx: open transaction contains an unexpected instruction');
         }
         openIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
     }
     if (!openIx) {
         throw new Error('verifyOpenTx: no payment-channels open instruction found');
+    }
+    if (creditHooks) {
+        // The Rust open verifier runs the full budget policy, whose v0 leg
+        // also pins the ComputeBudget instructions to the message prefix.
+        assertComputeBudgetPrefix(orderedPrograms, 'verifyOpenTx');
     }
 
     // open instruction account layout (matches vendored open.ts) after the
@@ -732,7 +796,9 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected ${expected.rentPayer}`);
     }
 
-    const decodedOpen = getOpenInstructionDataDecoder().decode(openIx.data);
+    const decodedOpen = creditHooks
+        ? { openArgs: decodeHookedOpenArgs(openIx.data) }
+        : getOpenInstructionDataDecoder().decode(openIx.data);
     const { deposit, gracePeriod, openSlot, recipients, salt } = decodedOpen.openArgs;
 
     if (deposit === 0n) {
@@ -816,7 +882,10 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     // The exact open instruction the verified fields imply: every account
     // (programs, sysvars and PDAs included) and the argument bytes. A field
     // check above can pass while an account it does not name was swapped.
-    const expectedOpen = await buildExpectedOpenInstruction({
+    // For a credit open the expected instruction is the hooked transform of
+    // that same base open: retagged discriminator, the derived hooks as the
+    // data suffix, and the callback accounts the config hash implies.
+    const baseExpectedOpen = await buildExpectedOpenInstruction({
         authorizedSigner: authorizedSignerAddr,
         channel: channelAddr,
         deposit,
@@ -831,6 +900,14 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         salt,
         tokenProgram: expected.tokenProgram ?? tokenProgramAddr,
     });
+    const expectedOpen = creditHooks
+        ? ((await buildOpenWithHooks(
+              baseExpectedOpen,
+              creditHooks,
+              channelAddr,
+              programIdStr,
+          )) as unknown as ServerInstruction)
+        : baseExpectedOpen;
     const openAccounts = indices.map(index => message.staticAccounts[index]);
     if (
         openAccounts.length !== expectedOpen.accounts.length ||
@@ -848,6 +925,239 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     await verifyClientTransactionSignatures(decoded, message, serverFeePayer, 'verifyOpenTx');
 
     return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
+}
+
+/**
+ * Decode the open args of an OpenWithHooks instruction: the V1 `openArgs`
+ * struct sits between the retagged discriminator (10) and the hook suffix,
+ * so slice it out by its own recipients-count prefix before decoding. The
+ * suffix itself is verified byte-for-byte against the expected instruction
+ * the caller builds from the session's derived hooks.
+ */
+function decodeHookedOpenArgs(data: Uint8Array) {
+    // disc(1) + salt(8) + deposit(8) + gracePeriod(4) + openSlot(8) = 29,
+    // then a u32 recipients count and 34-byte entries.
+    if (data.length < 33) {
+        throw new Error('verifyOpenTx: hooked open instruction data is too short');
+    }
+    const count = new DataView(data.buffer, data.byteOffset).getUint32(29, true);
+    const argsEnd = 1 + 32 + count * 34;
+    if (data.length < argsEnd) {
+        throw new Error('verifyOpenTx: hooked open instruction data is truncated');
+    }
+    try {
+        return getOpenArgsDecoder().decode(data.subarray(1, argsEnd));
+    } catch {
+        throw new Error('verifyOpenTx: hooked open instruction arguments do not decode');
+    }
+}
+
+/** Arguments to {@link verifyCreditAuthorizationTx}. */
+export interface VerifyCreditAuthorizationTxArgs {
+    /** The owner-signed `[Approve(cap), authorize]` transaction (base64). */
+    readonly authorizationTx: string;
+    /** The session's pinned credit deployment. */
+    readonly creditDeployment: CreditDeployment;
+    /** The credit issuer the challenge advertised (`creditIssuer`). */
+    readonly creditIssuer: string;
+    /**
+     * Highest authorization cap the issuer co-signs. `undefined` allows
+     * exactly the opening deposit. Mirrors `SessionConfig::credit_max_cap`.
+     */
+    readonly creditMaxCap?: bigint | undefined;
+    /** The open incarnation the authorization must bind, from the open payload. */
+    readonly open: {
+        readonly authorizedSigner: string;
+        readonly deposit: bigint;
+        readonly mint: string;
+        readonly openSlot: bigint;
+        readonly payee: string;
+        readonly payer: string;
+        readonly recipients: readonly { readonly bps: number; readonly recipient: string }[];
+        readonly salt: bigint;
+    };
+    /**
+     * The challenged `methodDetails.recentBlockhash` (base58): the compiled
+     * authorization message must use exactly this blockhash.
+     */
+    readonly recentBlockhash: string;
+    /**
+     * Transaction message versions the server accepts (its advertised
+     * `methodDetails.transactionVersions`). Defaults to `[0]`; a legacy
+     * message is never accepted.
+     */
+    readonly transactionVersions?: readonly TransactionVersion[] | undefined;
+}
+
+/**
+ * Validate the owner-signed `[Approve(cap), authorize]` transaction the
+ * issuer is about to co-sign for a credit open, byte for byte against the
+ * session policy. Mirrors `verify_credit_authorization` (plus the envelope
+ * checks of `process_credit_authorization`) in the Rust SessionServer:
+ *
+ * - the envelope is admitted first (accepted version, never legacy, static
+ *   accounts, the version's budget caps at the provider's 400,000 CU
+ *   ceiling, ComputeBudget instructions leading the message);
+ * - the message uses the challenged blockhash and the channel payer is the
+ *   fee payer;
+ * - the body is exactly `[Approve, authorize]` (ComputeBudget aside);
+ * - the decoded authorization binds this channel incarnation: payee,
+ *   authorized signer, the distribution hash of the open's recipients,
+ *   salt and open slot (the nonce rides inside the body and is bound by
+ *   the exact instruction comparison below);
+ * - the cap sits in `[deposit, creditMaxCap ?? deposit]` and the expiry in
+ *   `(openSlot, openSlot + 9,000]` slots;
+ * - both instructions equal the deployment's own
+ *   `authorization_instructions` for the decoded terms — program, account
+ *   list and data — and every static account's privileges match them.
+ */
+export async function verifyCreditAuthorizationTx(args: VerifyCreditAuthorizationTxArgs): Promise<void> {
+    const label = 'verifyCreditAuthorizationTx';
+    const refuse = (why: string): never => {
+        throw new Error(`credit authorization: ${why}`);
+    };
+    const { creditDeployment: deployment, open } = args;
+    const { message, wireSize } = decodeChannelTransaction(args.authorizationTx);
+    checkChannelTransactionPolicy(message, wireSize, {
+        accepted: args.transactionVersions,
+        maxComputeUnitLimit: MUSEBOOK_COMPUTE_UNIT_LIMIT,
+        sponsored: false,
+    });
+    if (message.lifetimeToken !== args.recentBlockhash) {
+        throw new Error('credit authorization does not use the challenged recentBlockhash');
+    }
+    if (message.staticAccounts[0] !== open.payer) {
+        throw new Error('credit authorization fee payer must be the channel payer');
+    }
+
+    const resolve = (ix: (typeof message.instructions)[number]) => ({
+        accounts: (ix.accountIndices ?? []).map(index => message.staticAccounts[index]),
+        data: ix.data ?? new Uint8Array(),
+        program: message.staticAccounts[ix.programAddressIndex],
+    });
+    const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
+    const body: (typeof message.instructions)[number][] = [];
+    const orderedPrograms: { data?: Uint8Array | undefined; program: string }[] = [];
+    for (const ix of message.instructions) {
+        const program = message.staticAccounts[ix.programAddressIndex];
+        orderedPrograms.push({ data: ix.data, program });
+        if (program === COMPUTE_BUDGET_PROGRAM_ADDRESS) {
+            computeBudgetIxs.push(ix);
+        } else {
+            body.push(ix);
+        }
+    }
+    validateComputeBudgetInstructions(computeBudgetIxs, { label, sponsored: false });
+    assertComputeBudgetPrefix(orderedPrograms, label);
+    const [approveIx, authorizeIx] = body;
+    if (body.length !== 2 || !approveIx || !authorizeIx) {
+        refuse('transaction must be exactly [Approve, authorize]');
+    }
+    const authorize = resolve(authorizeIx);
+    const authorization = decodeAuthorization(authorize.data);
+    if (!authorization) {
+        throw new Error('credit authorization: second instruction is not a provider authorize');
+    }
+    const maxCap = args.creditMaxCap ?? open.deposit;
+    if (
+        authorization.payee !== open.payee ||
+        authorization.authorizedSigner !== open.authorizedSigner ||
+        !(await distributionHash(open.recipients)).every((byte, i) => byte === authorization.distributionHash[i]) ||
+        authorization.salt !== open.salt ||
+        authorization.openSlot !== open.openSlot
+    ) {
+        refuse('terms do not bind this channel incarnation');
+    }
+    if (authorization.cap < open.deposit || authorization.cap > maxCap) {
+        refuse('cap is outside [deposit, credit_max_cap]');
+    }
+    if (
+        authorization.expiresAtSlot < authorization.openSlot ||
+        authorization.expiresAtSlot - authorization.openSlot > MAX_AUTHORIZATION_SLOTS
+    ) {
+        refuse('expiry is outside the issuer window');
+    }
+
+    // The exact instructions the issuer policy implies for the decoded
+    // terms: the client's pair must equal them in program, accounts and
+    // data — a field check alone can pass while an unnamed account moved.
+    const mint = address(open.mint);
+    const payer = address(open.payer);
+    const ledger = await ledgerAddress(deployment, open.payer, open.mint);
+    const config = await configAddress(deployment);
+    const [ownerTokenAccount] = await findAssociatedTokenPda({
+        mint,
+        owner: payer,
+        tokenProgram: address(SPL_TOKEN_PROGRAM_ID),
+    });
+    const [ledgerTokenAccount] = await findAssociatedTokenPda({
+        mint,
+        owner: address(ledger),
+        tokenProgram: address(SPL_TOKEN_PROGRAM_ID),
+    });
+    const approveData = new Uint8Array(9);
+    approveData[0] = 4; // SPL Token Approve
+    new DataView(approveData.buffer).setBigUint64(1, authorization.cap, true);
+    const authorizeData = new Uint8Array(1 + 136);
+    authorizeData[0] = AUTHORIZE_INSTRUCTION_TAG;
+    authorizeData.set(encodeAuthorization(authorization), 1);
+    const expected: {
+        readonly accounts: readonly string[];
+        readonly data: Uint8Array;
+        readonly metas: readonly AccountMeta[];
+        readonly program: string;
+    }[] = [
+        {
+            accounts: [ownerTokenAccount, ledger, open.payer],
+            data: approveData,
+            metas: [
+                { address: ownerTokenAccount, role: AccountRole.WRITABLE },
+                { address: address(ledger), role: AccountRole.READONLY },
+                { address: payer, role: AccountRole.READONLY_SIGNER },
+            ],
+            program: SPL_TOKEN_PROGRAM_ID,
+        },
+        {
+            accounts: [
+                open.payer,
+                args.creditIssuer,
+                ledger,
+                ledgerTokenAccount,
+                ownerTokenAccount,
+                SPL_TOKEN_PROGRAM_ID,
+                config,
+            ],
+            data: authorizeData,
+            metas: [
+                { address: payer, role: AccountRole.READONLY_SIGNER },
+                { address: address(args.creditIssuer), role: AccountRole.READONLY_SIGNER },
+                { address: address(ledger), role: AccountRole.WRITABLE },
+                { address: ledgerTokenAccount, role: AccountRole.WRITABLE },
+                { address: ownerTokenAccount, role: AccountRole.WRITABLE },
+                { address: address(SPL_TOKEN_PROGRAM_ID), role: AccountRole.READONLY },
+                { address: address(config), role: AccountRole.READONLY },
+            ],
+            program: deployment.programId,
+        },
+    ];
+    const actualPair = [resolve(approveIx), resolve(authorizeIx)];
+    for (const [index, actual] of actualPair.entries()) {
+        const want = expected[index];
+        if (
+            actual.program !== want.program ||
+            actual.accounts.length !== want.accounts.length ||
+            actual.accounts.some((account, i) => account !== want.accounts[i]) ||
+            !bytesEqual(actual.data, want.data)
+        ) {
+            refuse('instruction does not match the issuer policy');
+        }
+    }
+    verifyChannelPrivileges(
+        message,
+        expected.flatMap(instruction => instruction.metas),
+        open.payer,
+        label,
+    );
 }
 
 /**
@@ -980,14 +1290,47 @@ function decodeChannelTransaction(wire: string): {
 function checkChannelTransactionPolicy(
     message: CompiledMessageView,
     wireSize: number,
-    options: { readonly accepted: readonly TransactionVersion[] | undefined; readonly sponsored: boolean },
+    options: {
+        readonly accepted: readonly TransactionVersion[] | undefined;
+        /** Version-1 header compute-unit ceiling; defaults to the MPP charge cap. */
+        readonly maxComputeUnitLimit?: number | undefined;
+        readonly sponsored: boolean;
+    },
 ): void {
     checkTransactionEnvelope(message, wireSize, options.accepted ?? DEFAULT_TRANSACTION_VERSIONS);
     checkV1BudgetCaps(
         message,
-        V1_MAX_COMPUTE_UNIT_LIMIT,
+        options.maxComputeUnitLimit ?? V1_MAX_COMPUTE_UNIT_LIMIT,
         options.sponsored ? MAX_SPONSORED_COMPUTE_UNIT_PRICE_MICROLAMPORTS : MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
     );
+}
+
+/**
+ * The Rust budget policy's prefix rule (`require_budget_prefix`): a
+ * version-0 message's ComputeBudget instructions must lead the transaction,
+ * with `SetComputeUnitLimit` before `SetComputeUnitPrice`. Enforced on the
+ * credit paths, whose Rust verifiers run the full budget policy.
+ */
+function assertComputeBudgetPrefix(
+    ordered: readonly { readonly data?: Uint8Array | undefined; readonly program: string }[],
+    label: string,
+): void {
+    let seenNonBudget = false;
+    let seenPrice = false;
+    for (const ix of ordered) {
+        if (ix.program !== COMPUTE_BUDGET_PROGRAM_ADDRESS) {
+            seenNonBudget = true;
+            continue;
+        }
+        if (seenNonBudget) {
+            throw new Error(`${label}: ComputeBudget instructions must lead the transaction`);
+        }
+        const tag = ix.data?.[0];
+        if (tag === 3) seenPrice = true;
+        if (tag === 2 && seenPrice) {
+            throw new Error(`${label}: SetComputeUnitLimit must precede SetComputeUnitPrice`);
+        }
+    }
 }
 
 /**

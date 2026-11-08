@@ -24,6 +24,8 @@ import * as Methods from '../Methods.js';
 import {
     type CreditDeployment,
     type CreditProvider,
+    hooksForDeployment,
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
     resolveDeployment,
     SPL_TOKEN_PROGRAM_ID,
 } from '../shared/credit-provider.js';
@@ -41,7 +43,7 @@ import type {
 } from '../shared/session-types.js';
 import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { advertisedTransactionVersions, type TransactionVersion } from '../utils/transaction-versions.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { assertTransactionSignaturesVerify, coSignBase64Transaction } from '../utils/transactions.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     deriveChannelAddress,
@@ -54,6 +56,7 @@ import {
     submitTopUpTx,
     transactionSignatureFromWire,
     treasuryOwnerForNetwork,
+    verifyCreditAuthorizationTx,
     verifyOpenTx,
     type VerifyOpenTxExpected,
     verifyTopUpTx,
@@ -344,6 +347,8 @@ interface ResolvedSessionConfig {
     readonly creditDeployment: CreditDeployment | undefined;
     /** The credit issuer's address, advertised as `creditIssuer`. */
     readonly creditIssuer: string | undefined;
+    /** The credit issuer signer that co-signs each channel's `authorize`. */
+    readonly creditIssuerSigner: TransactionPartialSigner | undefined;
     /** Highest authorization cap the issuer co-signs. Bounds server-side authorization verification. */
     readonly creditMaxCap: bigint | undefined;
     /** The configured currency (symbol or mint), as given. */
@@ -491,6 +496,7 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         amount,
         creditDeployment,
         creditIssuer,
+        creditIssuerSigner: parameters.creditIssuerSigner,
         creditMaxCap: parameters.creditMaxCap,
         currency,
         distributionSplits,
@@ -780,6 +786,23 @@ export interface SessionServer {
      */
     processClose(payload: CloseAction): Promise<ChannelState>;
     /**
+     * Issuer step of a credit session, run before the client submits its
+     * `open`: validate the owner-signed `[Approve(cap), authorize]`
+     * transaction against the session's credit policy (pinned deployment,
+     * cap within `[deposit, creditMaxCap]`, incarnation binding, the
+     * 9,000-slot expiry window), co-sign it as the credit issuer, and
+     * return the co-signed base64 wire transaction for the host to
+     * broadcast. Fails closed when the session has no credit provider.
+     * Mirrors `SessionServer::process_credit_authorization` in the Rust
+     * server (which additionally broadcasts and returns the signature;
+     * here the host submits, as with the open flow's verify/submit split).
+     */
+    processCreditAuthorization(
+        payload: OpenPayload,
+        authorizationTx: string,
+        challenge: SessionOpenChallenge,
+    ): Promise<string>;
+    /**
      * Meter one operator-signed request at the challenged `amount`, exactly
      * once per Idempotency-Key.
      */
@@ -842,6 +865,8 @@ function buildSessionServer(
             return charge;
         },
         processClose: payload => recordClose(config, payload),
+        processCreditAuthorization: (payload, authorizationTx, challenge) =>
+            processCreditAuthorization(config, payload, authorizationTx, challenge),
         processUse: async (payload, challengeId, idempotencyKey, amount) => {
             const signer = config.operatorVoucherSigner;
             if (!signer) throw new Error('operatorVoucherSigner is required for use');
@@ -894,19 +919,25 @@ interface ValidatedOpen {
     readonly open: VerifiedSessionOpen;
 }
 
+/** The open parameters a payload declares, resolved against the configuration. */
+interface ResolvedOpenParams {
+    readonly deposit: bigint;
+    readonly idleTimeoutSeconds: number;
+    readonly openSlot: bigint;
+    readonly rentPayer: string;
+    /** The configured distribution splits the payload was checked against. */
+    readonly splits: readonly SessionSplit[];
+}
+
 /**
- * Every pre-broadcast check on an `open`, in the Rust server's order: the
- * challenge expiry, the declared open parameters against the configuration
- * (`payment_channel_open_params`), the `openSlot` window against the
- * challenged `recentSlot`, the voucher-signer mode and bearer proof, then the
- * transaction (`verifyOpenTx`).
+ * The declared open parameters against the configuration — the mirror of
+ * `payment_channel_open_params` in the Rust server, shared by the open
+ * path ({@link validateOpen}) and the credit-authorization path
+ * ({@link processCreditAuthorization}): the authorized signer, payee,
+ * mint, grace period, deposit floor, distribution splits, rent payer, and
+ * the channel PDA the parameters derive.
  */
-async function validateOpen(
-    config: ResolvedSessionConfig,
-    payload: OpenPayload,
-    context: SessionOpenChallenge,
-): Promise<ValidatedOpen> {
-    assertChallengeOpenNotExpired(context.expires);
+async function resolveOpenParams(config: ResolvedSessionConfig, payload: OpenPayload): Promise<ResolvedOpenParams> {
     const deposit = parseU64String(payload.depositAmount, 'depositAmount');
     const idleTimeoutSeconds = resolveIdleTimeoutSeconds({
         defaultSeconds: config.idleTimeoutSeconds,
@@ -971,6 +1002,28 @@ async function validateOpen(
     if (derivedChannel !== payload.channelId) {
         throw new Error('payment-channel open channelId does not match derived channel PDA');
     }
+    return { deposit, idleTimeoutSeconds, openSlot, rentPayer, splits: configuredSplits };
+}
+
+/**
+ * Every pre-broadcast check on an `open`, in the Rust server's order: the
+ * challenge expiry, the declared open parameters against the configuration
+ * (`payment_channel_open_params`), the `openSlot` window against the
+ * challenged `recentSlot`, the voucher-signer mode and bearer proof, then
+ * the transaction (`verifyOpenTx`).
+ */
+async function validateOpen(
+    config: ResolvedSessionConfig,
+    payload: OpenPayload,
+    context: SessionOpenChallenge,
+): Promise<ValidatedOpen> {
+    assertChallengeOpenNotExpired(context.expires);
+    const {
+        idleTimeoutSeconds,
+        openSlot,
+        rentPayer,
+        splits: configuredSplits,
+    } = await resolveOpenParams(config, payload);
 
     // Bind the open to the specific challenge that authorized it: the client
     // takes `openSlot` from the challenged `recentSlot` (an earlier slot is
@@ -1005,11 +1058,21 @@ async function validateOpen(
         throw new Error('authentication is only valid when voucherSigner is operator');
     }
 
+    // A credit session's open is verified against the deployment's derived
+    // per-payer hooks: the verifier expects the OpenWithHooks instruction
+    // they imply, never a plain open. Mirrors `channel_hooks_for` in the
+    // Rust server.
+    const creditHooks = config.creditDeployment
+        ? await hooksForDeployment(config.creditDeployment, payload.payer, config.resolvedMint)
+        : undefined;
     const expected: VerifyOpenTxExpected = {
         authorizedSigner: payload.authorizedSigner,
         channelProgram: config.resolvedProgramId.toString(),
+        ...(config.creditDeployment ? { creditDeployment: config.creditDeployment } : {}),
+        ...(creditHooks ? { creditHooks } : {}),
         currency: config.resolvedMint,
         feePayer: rentPayer,
+        ...(config.creditDeployment ? { maxComputeUnitLimit: MUSEBOOK_COMPUTE_UNIT_LIMIT } : {}),
         minimumDeposit: config.minimumDeposit,
         mint: config.resolvedMint,
         network: config.network,
@@ -1033,6 +1096,54 @@ async function validateOpen(
             rentPayer,
         },
     };
+}
+
+/**
+ * Issuer step of a credit session: validate the owner-signed
+ * `[Approve(cap), authorize]` transaction against the credit policy,
+ * co-sign it as the issuer, and return the co-signed wire transaction.
+ * The checks run in the Rust `process_credit_authorization` order: the
+ * challenge expiry, the open parameters, then the transaction itself.
+ */
+async function processCreditAuthorization(
+    config: ResolvedSessionConfig,
+    payload: OpenPayload,
+    authorizationTx: string,
+    context: SessionOpenChallenge,
+): Promise<string> {
+    assertChallengeOpenNotExpired(context.expires);
+    const deployment = config.creditDeployment;
+    const issuer = config.creditIssuer;
+    const issuerSigner = config.creditIssuerSigner;
+    if (!deployment || !issuer || !issuerSigner) {
+        throw new Error('session has no credit provider');
+    }
+    const params = await resolveOpenParams(config, payload);
+    await verifyCreditAuthorizationTx({
+        authorizationTx,
+        creditDeployment: deployment,
+        creditIssuer: issuer,
+        creditMaxCap: config.creditMaxCap,
+        open: {
+            authorizedSigner: payload.authorizedSigner,
+            deposit: params.deposit,
+            mint: config.resolvedMint,
+            openSlot: params.openSlot,
+            payee: payload.payee,
+            payer: payload.payer,
+            recipients: params.splits.map(split => ({ bps: split.shareBps, recipient: split.recipient })),
+            salt: parseU64String(payload.salt, 'salt'),
+        },
+        recentBlockhash: context.recentBlockhash,
+        transactionVersions: config.transactionVersions,
+    });
+    // Every content check passed; the issuer signs its own slot only.
+    const cosigned = await coSignBase64Transaction(issuerSigner, authorizationTx);
+    // After co-signing, every required signature (owner and issuer) must
+    // verify over the message — the Rust server's last check before it
+    // broadcasts the authorization.
+    await assertTransactionSignaturesVerify(cosigned);
+    return cosigned;
 }
 
 interface HandleOpenArgs {

@@ -1,9 +1,13 @@
 # Musebook credit provider on devnet
 
-Off by default. `PayKitConfig.credit_providers = [CreditProvider::Musebook]` passes
-validation only on `devnet`, where `musebook::DEVNET` pins provider
-`97F68uhs5fmvddJxH1LrKytbBXrhx6ZBZwuZAdUdP7QA` and channel `CHNLxBt…`.
-Every other network returns `CreditProviderError::Unavailable`.
+Off by default. Musebook credits are supported through the MPP session
+server using `SessionConfig::credit_provider`, on devnet only.
+`musebook::DEVNET` pins provider `97F68uhs5fmvddJxH1LrKytbBXrhx6ZBZwuZAdUdP7QA`
+and channel `CHNLxBt…`. Every other network returns
+`CreditProviderError::Unavailable`.
+
+The gate does not support credits: `PayKit::new` rejects every nonempty
+`PayKitConfig.credit_providers` list, including on devnet.
 
 `musebook::devnet_with_program(id)` builds a devnet-only `Deployment` for another
 instance of the same provider code (the channel program stays pinned). The e2e
