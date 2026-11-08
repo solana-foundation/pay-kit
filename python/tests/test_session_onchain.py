@@ -739,3 +739,95 @@ async def test_top_up_verifier_refuses_a_third_party_fee_payer_on_a_client_paid_
     with pytest.raises(PaymentError, match="fee payer does not match"):
         await verifier(signed)
     assert rpc.sent == []
+
+
+# ── Credit (hooked) opens: Greptile #419/#420 ─────────────────────────────
+# A credit session's opens are the hooked V2 form. The verifier must
+# accept exactly that form and refuse the plain open and foreign hooks —
+# the Python mirror of the TS server fix (9c3b9c7).
+
+from solana_pay_kit._paycore.credit_provider import (  # noqa: E402
+    MUSEBOOK_DEVNET_DEPLOYMENT,
+    PAYMENT_CHANNELS_V2_PROGRAM_ID,
+    hooks_for_deployment,
+)
+from solana_pay_kit._paycore.paymentchannels_v2 import build_open_with_hooks  # noqa: E402
+
+_V2_PROGRAM = Pubkey.from_string(PAYMENT_CHANNELS_V2_PROGRAM_ID)
+
+
+def _credit_fixture(*, hook_mint: Pubkey | None = None, hooked: bool = True) -> _Fixture:
+    payer = Keypair.from_seed(bytes([1] * 32))
+    payee = Keypair.from_seed(bytes([2] * 32)).pubkey()
+    authorized = Keypair.from_seed(bytes([3] * 32)).pubkey()
+    mint = Pubkey.from_string(USDC_MAINNET_MINT)
+    salt, deposit, grace, slot = 7, 1_000, 900, 42
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, salt, slot, _V2_PROGRAM)
+    instruction = build_open_instruction(
+        OpenChannelParams(
+            payer=payer.pubkey(),
+            rent_payer=payer.pubkey(),
+            payee=payee,
+            mint=mint,
+            authorized_signer=authorized,
+            salt=salt,
+            deposit=deposit,
+            grace_period=grace,
+            open_slot=slot,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            program_id=_V2_PROGRAM,
+        )
+    )
+    if hooked:
+        hooks = hooks_for_deployment(MUSEBOOK_DEVNET_DEPLOYMENT, payer.pubkey(), hook_mint or mint)
+        instruction = build_open_with_hooks(instruction, hooks, channel, _V2_PROGRAM)
+    message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
+    transaction = VersionedTransaction(message, [payer])
+    payload = OpenPayload(
+        channel_id=str(channel),
+        payer=str(payer.pubkey()),
+        payee=str(payee),
+        mint=str(mint),
+        authorized_signer=str(authorized),
+        salt=salt,
+        deposit_amount=str(deposit),
+        grace_period_seconds=grace,
+        open_slot=slot,
+        transaction=base64.b64encode(bytes(transaction)).decode(),
+    )
+    expected = VerifyOpenTxExpected(
+        authorized_signer=str(authorized),
+        currency="USDC",
+        recipient=str(payee),
+        network="devnet",
+        minimum_deposit=100,
+        mint=str(mint),
+        fee_payer=str(payer.pubkey()),
+        rent_payer=str(payer.pubkey()),
+        token_program=TOKEN_PROGRAM,
+        grace_period_seconds=grace,
+        program_id=_V2_PROGRAM,
+        recent_blockhash=str(Hash.default()),
+        credit_deployment=MUSEBOOK_DEVNET_DEPLOYMENT,
+    )
+    return _Fixture(payload, expected, payer)
+
+
+async def test_verify_open_tx_accepts_the_hooked_credit_open() -> None:
+    fixture = _credit_fixture()
+    result = await verify_open_tx(fixture.expected, fixture.payload, None)
+    assert result.channel_id == fixture.payload.channel_id
+    assert result.deposit == 1_000
+
+
+async def test_verify_open_tx_refuses_a_plain_open_for_a_credit_session() -> None:
+    fixture = _credit_fixture(hooked=False)
+    with pytest.raises(PaymentError, match="exactly one open instruction"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_refuses_hooks_derived_for_another_mint() -> None:
+    other_mint = Keypair.from_seed(bytes([9] * 32)).pubkey()
+    fixture = _credit_fixture(hook_mint=other_mint)
+    with pytest.raises(PaymentError, match="does not exactly match"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
