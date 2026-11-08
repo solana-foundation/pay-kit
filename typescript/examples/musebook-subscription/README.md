@@ -42,18 +42,24 @@ depends on `@solana/mpp` by relative path.
 4. **Derive** — the client derives the channel and the provider's exact
    per-payer hooks from the challenge (SDK parity surface), refusing
    every degraded variant.
-5. **Authorize** — builds `[Approve(cap), authorize]` with the SDK and
-   submits it: payer signs, issuer co-signs, 400k CU limit.
-6. **Open** — assembles the base open instruction and transforms it to
+5. **Deposit** — sends the provider `deposit` instruction for one
+   monthly amount into the payer's provider ledger. A fresh payer has
+   no ledger account, and `authorize` binds the ledger's consumed
+   nonce, so this step must land first: it creates the ledger
+   (init_if_needed) and funds the credits the month's cap draws on.
+6. **Authorize** — reads the authorization nonce back from the ledger
+   (consumed nonce + 1), builds `[Approve(cap), authorize]` with the
+   SDK and submits it: payer signs, issuer co-signs, 400k CU limit.
+7. **Open** — assembles the base open instruction and transforms it to
    **OpenWithHooks** with `v2-hooks.ts`, a local port of the Rust V2
    builders (`rust/crates/kit/src/core/payment_channel/v2.rs`). This
    port exists because the SDK's generated TypeScript client targets
    the V1 channel program; when a generated V2 client lands, this file
    should be deleted in favor of it.
-7. **Charge** — the session key vouchers the full monthly amount; the
+8. **Charge** — the session key vouchers the full monthly amount; the
    merchant side verifies the voucher against the channel terms with
    the SDK's `verifyVoucherForChannel`.
-8. **Close / settle / refund** — settlement must wait out the channel's
+9. **Close / settle / refund** — settlement must wait out the channel's
    grace period (900s in the example), so the example stops after
    printing the operator sequence: request close → wait → settle_and_seal
    → `DistributeWithHooks` → `WithdrawPayerWithHooks` (transforms for

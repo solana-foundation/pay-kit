@@ -14,8 +14,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from solders.account_meta import AccountMeta  # type: ignore[import-untyped]
-from solders.instruction import Instruction  # type: ignore[import-untyped]
+from solders.instruction import AccountMeta, Instruction  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.paymentchannels import (
