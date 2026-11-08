@@ -11,12 +11,24 @@
  * challenge `methodDetails`).
  */
 import {
+    address,
+    appendTransactionMessageInstructions,
+    type Blockhash,
+    createTransactionMessage,
     generateKeyPairSigner,
     getAddressEncoder,
+    getBase64Codec,
+    getBase64EncodedWireTransaction,
     getProgramDerivedAddress,
+    getTransactionDecoder,
     getU64Encoder,
     getUtf8Encoder,
+    partiallySignTransactionMessageWithSigners,
+    pipe,
+    setTransactionMessageFeePayerSigner,
+    setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { describe, expect, test, vi } from 'vitest';
 
 import { isSolanaSessionChallenge } from '../client/ChallengeSelection.js';
@@ -26,9 +38,13 @@ import {
     derivePaymentChannelOpen,
 } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
-import { session as serverSession } from '../server/Session.js';
+import { ASSOCIATED_TOKEN_PROGRAM } from '../constants.js';
+import { findEventAuthorityPda, getOpenInstruction } from '../generated/payment-channels/index.js';
+import { createSessionServer, session as serverSession } from '../server/Session.js';
+import { createMemorySessionStore } from '../server/session/store.js';
 import {
     CreditProviderError,
+    decodeAuthorization,
     deploymentForNetwork,
     devnetWithProgram,
     distributionHash,
@@ -44,6 +60,7 @@ import {
     validateCreditProviders,
     validateCreditProvidersForNetwork,
 } from '../shared/credit-provider.js';
+import { buildOpenWithHooks } from '../shared/payment-channels-v2.js';
 
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 const USDC_DEVNET_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
@@ -406,5 +423,244 @@ describe('server credit sessions', () => {
         const { issuerSigner, params } = await creditServerParams();
         const feePayerParams = { ...params, feePayer: true, feePayerSigner: issuerSigner };
         expect(() => serverSession(feePayerParams as never)).toThrow(/sponsored sessions are not supported/);
+    });
+});
+
+// ── Greptile PR #417 fixes ──────────────────────────────────────────────
+// The default authorization hash, the hooked-open server verifier, and
+// the issuer co-signing step (`processCreditAuthorization`).
+
+const RENT_SYSVAR = 'SysvarRent111111111111111111111111111111111';
+const CHALLENGE_CTX = { challengeId: 'credit-open-1', recentBlockhash: RECENT_BLOCKHASH, recentSlot: 314n };
+
+async function creditFixture(overrides: Record<string, unknown> = {}) {
+    const { authorizedSigner, issuer, payee, payer } = await keys();
+    const request = creditRequest({ recipient: payee.address }, { creditIssuer: issuer.address });
+    const open = await derivePaymentChannelOpen({
+        authorizedSigner: authorizedSigner.address,
+        payer: payer.address,
+        request,
+        salt: 42n,
+    });
+    const server = createSessionServer({
+        amount: 100n,
+        channelProgram: PAYMENT_CHANNELS_V2_PROGRAM_ID,
+        creditIssuerSigner: issuer,
+        creditMaxCap: 1_000_000n,
+        creditProvider: 'musebook',
+        currency: 'USDC',
+        decimals: 6,
+        gracePeriodSeconds: 900,
+        minimumDeposit: 100n,
+        network: 'devnet',
+        operator: (await generateKeyPairSigner()).address,
+        recipient: payee.address,
+        rpc: blockhashRpc(),
+        signer: await generateKeyPairSigner(),
+        store: createMemorySessionStore(),
+        ...overrides,
+    } as never);
+    const payload = {
+        authorizedSigner: authorizedSigner.address,
+        channelId: open.channelId,
+        depositAmount: String(open.deposit),
+        gracePeriodSeconds: open.gracePeriod,
+        mint: open.mint,
+        openSlot: String(open.openSlot),
+        payee: open.payee,
+        payer: open.payer,
+        salt: String(open.salt),
+    };
+    return { authorizedSigner, issuer, open, payee, payer, payload, request, server };
+}
+
+async function signWire(
+    signer: never,
+    instructions: readonly unknown[],
+    blockhash: string = RECENT_BLOCKHASH,
+): Promise<string> {
+    const message = pipe(
+        createTransactionMessage({ version: 0 }),
+        m => setTransactionMessageFeePayerSigner(signer, m),
+        m =>
+            setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: blockhash as Blockhash, lastValidBlockHeight: 100n },
+                m,
+            ),
+        m => appendTransactionMessageInstructions(instructions as never, m),
+    );
+    const signed = await partiallySignTransactionMessageWithSigners(message);
+    return getBase64EncodedWireTransaction(signed);
+}
+
+async function authorizationTx(
+    fx: Awaited<ReturnType<typeof creditFixture>>,
+    terms: { cap: bigint; expiresAtSlot: bigint; nonce: bigint } = { cap: 5_000n, expiresAtSlot: 9_314n, nonce: 0n },
+    openOverride?: unknown,
+    requestOverride?: unknown,
+): Promise<string> {
+    const instructions = await creditAuthorizationInstructions({
+        authorizedSigner: fx.authorizedSigner.address,
+        open: (openOverride ?? fx.open) as never,
+        request: (requestOverride ?? fx.request) as never,
+        terms,
+    });
+    return signWire(fx.payer as never, instructions);
+}
+
+describe('Greptile #417: default authorization hash', () => {
+    test('with no splits anywhere, the authorization hashes the empty distribution list', async () => {
+        const fx = await creditFixture();
+        const instructions = await creditAuthorizationInstructions({
+            authorizedSigner: fx.authorizedSigner.address,
+            open: fx.open,
+            request: fx.request,
+            terms: { cap: 5_000n, expiresAtSlot: 9_314n, nonce: 0n },
+        });
+        const decoded = decodeAuthorization(instructions[1]!.data as Uint8Array);
+        expect(decoded).toBeDefined();
+        expect([...decoded!.distributionHash]).toEqual([...(await distributionHash([]))]);
+        const solePayee = await distributionHash([{ bps: 10_000, recipient: fx.open.payee }]);
+        expect([...decoded!.distributionHash]).not.toEqual([...solePayee]);
+    });
+});
+
+describe('Greptile #417: issuer co-signing (processCreditAuthorization)', () => {
+    test('validates the owner authorization and returns it with the issuer signature added', async () => {
+        const fx = await creditFixture();
+        const tx = await authorizationTx(fx);
+        const cosigned = await fx.server.processCreditAuthorization(fx.payload as never, tx, CHALLENGE_CTX as never);
+        const decoded = getTransactionDecoder().decode(getBase64Codec().encode(cosigned));
+        expect(decoded.signatures[fx.payer.address]).not.toBeNull();
+        expect(decoded.signatures[fx.issuer.address]).not.toBeNull();
+    });
+
+    test('refuses a cap above creditMaxCap', async () => {
+        const fx = await creditFixture({ creditMaxCap: 4_999n });
+        const tx = await authorizationTx(fx);
+        await expect(
+            fx.server.processCreditAuthorization(fx.payload as never, tx, CHALLENGE_CTX as never),
+        ).rejects.toThrow(/cap is outside/);
+    });
+
+    test('refuses terms bound to a different channel incarnation', async () => {
+        const fx = await creditFixture();
+        const stranger = await generateKeyPairSigner();
+        const otherRequest = creditRequest({ recipient: stranger.address }, { creditIssuer: fx.issuer.address });
+        const otherOpen = await derivePaymentChannelOpen({
+            authorizedSigner: fx.authorizedSigner.address,
+            payer: fx.payer.address,
+            request: otherRequest,
+            salt: 42n,
+        });
+        const tx = await authorizationTx(fx, undefined, otherOpen, otherRequest);
+        await expect(
+            fx.server.processCreditAuthorization(fx.payload as never, tx, CHALLENGE_CTX as never),
+        ).rejects.toThrow(/terms do not bind/);
+    });
+
+    test('refuses an authorization signed over a foreign blockhash', async () => {
+        const fx = await creditFixture();
+        const instructions = await creditAuthorizationInstructions({
+            authorizedSigner: fx.authorizedSigner.address,
+            open: fx.open,
+            request: fx.request,
+            terms: { cap: 5_000n, expiresAtSlot: 9_314n, nonce: 0n },
+        });
+        const tx = await signWire(fx.payer as never, instructions, USDC_DEVNET_MINT);
+        await expect(
+            fx.server.processCreditAuthorization(fx.payload as never, tx, CHALLENGE_CTX as never),
+        ).rejects.toThrow(/recentBlockhash/);
+    });
+
+    test('fails closed on a server with no credit provider', async () => {
+        const fx = await creditFixture();
+        const plain = createSessionServer({
+            amount: 100n,
+            currency: 'USDC',
+            decimals: 6,
+            minimumDeposit: 100n,
+            network: 'devnet',
+            recipient: fx.payee.address,
+            rpc: blockhashRpc(),
+            signer: await generateKeyPairSigner(),
+            store: createMemorySessionStore(),
+        } as never);
+        const tx = await authorizationTx(fx);
+        await expect(plain.processCreditAuthorization(fx.payload as never, tx, CHALLENGE_CTX as never)).rejects.toThrow(
+            /session has no credit provider/,
+        );
+    });
+});
+
+describe('Greptile #417: hooked opens through the server verifier', () => {
+    async function baseOpenInstruction(fx: Awaited<ReturnType<typeof creditFixture>>) {
+        const mint = address(fx.open.mint);
+        const channel = address(fx.open.channelId);
+        const tokenProgram = address(SPL_TOKEN_PROGRAM_ID);
+        const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: address(fx.open.payer), tokenProgram });
+        const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: channel, tokenProgram });
+        const [eventAuthority] = await findEventAuthorityPda({
+            programAddress: address(PAYMENT_CHANNELS_V2_PROGRAM_ID),
+        });
+        return getOpenInstruction(
+            {
+                associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
+                authorizedSigner: address(fx.authorizedSigner.address),
+                channel,
+                channelTokenAccount,
+                eventAuthority,
+                mint,
+                openArgs: {
+                    deposit: BigInt(fx.open.deposit),
+                    gracePeriod: fx.open.gracePeriod,
+                    openSlot: BigInt(fx.open.openSlot),
+                    // The fixture challenge carries no distributionSplits, so
+                    // the derived open's recipient list is the empty list.
+                    recipients: [],
+                    salt: BigInt(fx.open.salt),
+                },
+                payee: address(fx.open.payee),
+                payer: fx.payer,
+                payerTokenAccount,
+                rent: address(RENT_SYSVAR),
+                rentPayer: fx.payer,
+                selfProgram: address(PAYMENT_CHANNELS_V2_PROGRAM_ID),
+                tokenProgram,
+            },
+            { programAddress: address(PAYMENT_CHANNELS_V2_PROGRAM_ID) },
+        );
+    }
+
+    test('a hooked open carrying the derived hooks verifies', async () => {
+        const fx = await creditFixture();
+        const base = await baseOpenInstruction(fx);
+        const hooked = await buildOpenWithHooks(base, fx.open.channelHooks!, fx.open.channelId);
+        const tx = await signWire(fx.payer as never, [hooked]);
+        const verified = await fx.server.verifyOpenPreBroadcast(
+            { ...fx.payload, transaction: tx } as never,
+            CHALLENGE_CTX as never,
+        );
+        expect(verified).toMatchObject({ channelId: fx.open.channelId, deposit: 5_000n });
+    });
+
+    test('a plain open is refused for a credit session', async () => {
+        const fx = await creditFixture();
+        const base = await baseOpenInstruction(fx);
+        const tx = await signWire(fx.payer as never, [base]);
+        await expect(
+            fx.server.verifyOpenPreBroadcast({ ...fx.payload, transaction: tx } as never, CHALLENGE_CTX as never),
+        ).rejects.toThrow(/unexpected instruction/);
+    });
+
+    test('hooks derived for another mint are refused', async () => {
+        const fx = await creditFixture();
+        const base = await baseOpenInstruction(fx);
+        const foreignHooks = await hooksForDeployment(MUSEBOOK_DEVNET_DEPLOYMENT, fx.payer.address, TOKEN_2022_PROGRAM);
+        const hooked = await buildOpenWithHooks(base, foreignHooks, fx.open.channelId);
+        const tx = await signWire(fx.payer as never, [hooked]);
+        await expect(
+            fx.server.verifyOpenPreBroadcast({ ...fx.payload, transaction: tx } as never, CHALLENGE_CTX as never),
+        ).rejects.toThrow();
     });
 });

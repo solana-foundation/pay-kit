@@ -52,12 +52,15 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 import {
     ActiveSession,
+    configAddress,
     creditAuthorizationInstructions,
     DEFAULT_SESSION_EXPIRES_AT,
     derivePaymentChannelOpen,
+    ledgerAddress,
     MAX_AUTHORIZATION_SLOTS,
     MUSEBOOK_COMPUTE_UNIT_LIMIT,
     PAYMENT_CHANNELS_V2_PROGRAM_ID,
+    resolveDeployment,
     type SessionRequest,
     TOKEN_PROGRAM,
 } from '@solana/mpp/client';
@@ -144,9 +147,7 @@ async function main(): Promise<void> {
         }
         const price = await clawdUsdPrice();
         // Decimals come from the mint account itself, never assumed.
-        const info = await rpc
-            .getAccountInfo(address(mint), { encoding: 'jsonParsed' })
-            .send();
+        const info = await rpc.getAccountInfo(address(mint), { encoding: 'jsonParsed' }).send();
         const decimals = (info.value?.data as { parsed?: { info?: { decimals?: number } } })?.parsed?.info?.decimals;
         if (typeof decimals !== 'number') throw new Error('could not read mint decimals');
         monthlyAmount = clawdBaseUnitsForPlan(price, decimals);
@@ -188,7 +189,9 @@ async function main(): Promise<void> {
     ) {
         throw new Error('challenge is not the expected musebook credit challenge');
     }
-    console.log(`challenge: creditProvider=musebook issuer=${issuer.address} channelProgram=${PAYMENT_CHANNELS_V2_PROGRAM_ID}`);
+    console.log(
+        `challenge: creditProvider=musebook issuer=${issuer.address} channelProgram=${PAYMENT_CHANNELS_V2_PROGRAM_ID}`,
+    );
 
     // --- Derive the credit open -----------------------------------------
     const open = await derivePaymentChannelOpen({
@@ -200,9 +203,74 @@ async function main(): Promise<void> {
     if (!open.channelHooks) throw new Error('derived open is missing its credit hooks');
     console.log(`channel: ${open.channelId} deposit=${open.deposit}`);
 
+    // --- Deposit into the provider ledger --------------------------------
+    // A fresh payer has no ledger account, and `authorize` binds the
+    // ledger's consumed nonce — the program refuses an authorization
+    // against a ledger that does not exist. Deposit first: it creates
+    // the ledger (init_if_needed) and funds the credits this month's cap
+    // draws on. Mirrors the Rust devnet test's `deposit_instruction`
+    // exactly (accounts and the tag-0 data layout).
+    const deployment = resolveDeployment('devnet', process.env.MUSEBOOK_DEVNET_PROGRAM);
+    if (!deployment) throw new Error('no musebook credit deployment resolves for devnet');
+    const mintAddress = address(mint);
+    const tokenProgram = address(TOKEN_PROGRAM);
+    const ledger = await ledgerAddress(deployment, payer.address, mint);
+    const config = await configAddress(deployment);
+    const [payerTokenAccount] = await findAssociatedTokenPda({ mint: mintAddress, owner: payer.address, tokenProgram });
+    const [ledgerTokenAccount] = await findAssociatedTokenPda({
+        mint: mintAddress,
+        owner: address(ledger),
+        tokenProgram,
+    });
+    const depositData = new Uint8Array(9);
+    depositData[0] = 0; // provider `deposit` tag
+    new DataView(depositData.buffer).setBigUint64(1, monthlyAmount, true);
+    const depositInstruction: Instruction = {
+        accounts: [
+            { address: payer.address, role: AccountRole.READONLY_SIGNER },
+            { address: address(ledger), role: AccountRole.WRITABLE },
+            { address: ledgerTokenAccount, role: AccountRole.WRITABLE },
+            { address: payerTokenAccount, role: AccountRole.WRITABLE },
+            { address: tokenProgram, role: AccountRole.READONLY },
+            { address: address(config), role: AccountRole.READONLY },
+        ],
+        data: depositData,
+        programAddress: address(deployment.programId),
+    };
+    const latest = await rpc.getLatestBlockhash().send();
+    const depositMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        message => setTransactionMessageFeePayerSigner(payer, message),
+        message =>
+            setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: latest.value.blockhash, lastValidBlockHeight: latest.value.lastValidBlockHeight },
+                message,
+            ),
+        message =>
+            appendTransactionMessageInstructions(
+                [computeUnitLimit(MUSEBOOK_COMPUTE_UNIT_LIMIT), depositInstruction],
+                message,
+            ),
+    );
+    const depositSignature = await sendAndConfirm(rpc, depositMessage);
+    console.log(`deposited: ${depositSignature} (${monthlyAmount} base units into the provider ledger)`);
+
+    // The authorization nonce is the ledger's consumed nonce + 1, read
+    // back from the account the deposit just created/funded (the Rust
+    // `ledger_next_nonce`): the u64 at byte 252 of the 332-byte ledger.
+    const ledgerInfo = await rpc.getAccountInfo(address(ledger), { encoding: 'base64' }).send();
+    if (!ledgerInfo.value) throw new Error('provider ledger account is missing after the deposit');
+    const ledgerBytes = Buffer.from(ledgerInfo.value.data[0], 'base64');
+    if (ledgerBytes.length !== 332) {
+        throw new Error(`provider ledger account has unexpected length ${ledgerBytes.length} (expected 332)`);
+    }
+    const authorizationNonce = ledgerBytes.readBigUInt64LE(252) + 1n;
+
     // --- Authorize -------------------------------------------------------
     // [Approve(cap), authorize] — the owner signs both; the issuer
-    // co-signs `authorize` (the server's half of the flow).
+    // co-signs `authorize` (the server's half of the flow). The terms
+    // carry the ledger nonce read above: a hard-coded nonce authorizes
+    // nothing once the ledger has consumed one.
     const authorization = await creditAuthorizationInstructions({
         authorizedSigner: sessionSigner.address,
         open,
@@ -210,21 +278,16 @@ async function main(): Promise<void> {
         terms: {
             cap: monthlyAmount,
             expiresAtSlot: BigInt(open.openSlot) + MAX_AUTHORIZATION_SLOTS,
-            nonce: 0n,
+            nonce: authorizationNonce,
         },
     });
     const authorize = authorization[1]!;
     const authorizeWithSigners: Instruction = {
         ...authorize,
         accounts: authorize.accounts?.map((account, index) =>
-            index === 0
-                ? { ...account, signer: payer }
-                : index === 1
-                  ? { ...account, signer: issuer }
-                  : account,
+            index === 0 ? { ...account, signer: payer } : index === 1 ? { ...account, signer: issuer } : account,
         ),
     };
-    const latest = await rpc.getLatestBlockhash().send();
     const authorizationMessage = pipe(
         createTransactionMessage({ version: 0 }),
         message => setTransactionMessageFeePayerSigner(payer, message),
@@ -246,9 +309,6 @@ async function main(): Promise<void> {
     // Base V1 open instruction, assembled exactly as the SDK's client
     // builder assembles it, then transformed to OpenWithHooks by the
     // local V2 port (the SDK has no V2 generated client yet).
-    const mintAddress = address(mint);
-    const tokenProgram = address(TOKEN_PROGRAM);
-    const [payerTokenAccount] = await findAssociatedTokenPda({ mint: mintAddress, owner: payer.address, tokenProgram });
     const [channelTokenAccount] = await findAssociatedTokenPda({
         mint: mintAddress,
         owner: address(open.channelId),
@@ -305,7 +365,8 @@ async function main(): Promise<void> {
                 },
                 message,
             ),
-        message => appendTransactionMessageInstructions([computeUnitLimit(MUSEBOOK_COMPUTE_UNIT_LIMIT), hookedOpen], message),
+        message =>
+            appendTransactionMessageInstructions([computeUnitLimit(MUSEBOOK_COMPUTE_UNIT_LIMIT), hookedOpen], message),
     );
     const openSignature = await sendAndConfirm(rpc, openMessage);
     console.log(`opened: ${openSignature}`);

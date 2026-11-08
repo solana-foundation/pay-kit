@@ -683,7 +683,10 @@ export declare namespace creditAuthorizationInstructions {
         /**
          * The open's distribution list, when it was supplied to the open
          * derivation rather than carried by the challenge. Defaults to the
-         * challenge's `distributionSplits`, else the sole-recipient payee.
+         * challenge's `distributionSplits`, else the empty list — the same
+         * fallback the open derivation (and the Rust client's
+         * `parse_splits`) uses, so the hashed preimage always names the
+         * open's actual recipients.
          */
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         /** The credit challenge the open was derived from. */
@@ -750,9 +753,8 @@ export async function creditAuthorizationInstructions(
         cap,
         distributionHash: await distributionHash(
             parameters.recipients ??
-                details.distributionSplits?.map(split => ({ bps: split.shareBps, recipient: split.recipient })) ?? [
-                    { bps: 10_000, recipient: open.payee },
-                ],
+                details.distributionSplits?.map(split => ({ bps: split.shareBps, recipient: split.recipient })) ??
+                [],
         ),
         expiresAtSlot: parseU64(terms.expiresAtSlot, 'expiresAtSlot'),
         nonce: parseU64(terms.nonce, 'nonce'),

@@ -7,7 +7,7 @@
  * caller-supplied. Only devnet has a reviewed Musebook deployment; every
  * other network is unavailable, and every check in this module fails closed.
  */
-import { address, getAddressEncoder, getProgramDerivedAddress, getUtf8Encoder } from '@solana/kit';
+import { address, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress, getUtf8Encoder } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { TOKEN_PROGRAM } from '../constants.js';
@@ -115,7 +115,7 @@ export function deploymentForNetwork(network: string): CreditDeployment | undefi
  * program stays pinned); on any other network it makes the provider
  * unavailable. Mirrors Rust `musebook::resolve`.
  */
-export function resolveDeployment(network: string, program?: string  ): CreditDeployment | undefined {
+export function resolveDeployment(network: string, program?: string): CreditDeployment | undefined {
     if (program === undefined) return deploymentForNetwork(network);
     if (program === MUSEBOOK_DEVNET_PROGRAM_ID) return deploymentForNetwork(network);
     const cluster = network.startsWith('solana:') ? network.slice('solana:'.length) : network;
@@ -295,6 +295,32 @@ export interface CreditAuthorization {
     readonly openSlot: bigint;
     readonly payee: string;
     readonly salt: bigint;
+}
+
+/** Provider `authorize` instruction tag (the byte before the 136-byte body). */
+export const AUTHORIZE_INSTRUCTION_TAG = 2;
+
+/**
+ * Decode provider `authorize` instruction data (tag + fixed 136-byte body)
+ * back into its fields, or `undefined` when the data is not an authorize
+ * instruction. Mirrors Rust `Authorization::decode_instruction_data`.
+ */
+export function decodeAuthorization(data: Uint8Array): CreditAuthorization | undefined {
+    if (data.length !== 137 || data[0] !== AUTHORIZE_INSTRUCTION_TAG) return undefined;
+    const decoder = getAddressDecoder();
+    const key = (offset: number): string => decoder.decode(data, offset + 1);
+    const view = new DataView(data.buffer, data.byteOffset);
+    const num = (i: number): bigint => view.getBigUint64(1 + 96 + i * 8, true);
+    return {
+        authorizedSigner: key(32),
+        cap: num(2),
+        distributionHash: new Uint8Array(data.subarray(1 + 64, 1 + 96)),
+        expiresAtSlot: num(4),
+        nonce: num(3),
+        openSlot: num(1),
+        payee: key(0),
+        salt: num(0),
+    };
 }
 
 /** Encode the provider `Authorization` body (fixed 136 bytes, tag excluded). */

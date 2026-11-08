@@ -19,26 +19,26 @@ const PRICE_TOLERANCE = 0.05;
 
 /**
  * Read the $CLAWD USD price from Jupiter (primary) cross-checked against
- * DexScreener. Fail closed: no fresh price from either source, or a
- * disagreement beyond tolerance, throws instead of guessing — a
- * subscription charge is never priced off a stale or contested quote.
+ * DexScreener. Both sources are required: if either has no fresh quote,
+ * or they disagree beyond tolerance, this throws instead of guessing —
+ * a subscription charge is never priced off a single unchecked source,
+ * a stale quote, or a contested one (the plan doc's fail-closed rule).
  */
 export async function clawdUsdPrice(): Promise<number> {
     const [jupiter, dexscreener] = await Promise.allSettled([jupiterPrice(), dexscreenerPrice()]);
     const jup = jupiter.status === 'fulfilled' ? jupiter.value : undefined;
     const dex = dexscreener.status === 'fulfilled' ? dexscreener.value : undefined;
-    if (jup !== undefined && dex !== undefined) {
-        const drift = Math.abs(jup - dex) / Math.max(jup, dex);
-        if (drift > PRICE_TOLERANCE) {
-            throw new Error(`$CLAWD price sources disagree (jupiter ${jup}, dexscreener ${dex}); refusing to price`);
-        }
-        return jup;
+    if (jup === undefined || dex === undefined) {
+        throw new Error(
+            '$CLAWD price unavailable from a required source ' +
+                `(jupiter ${jup ?? 'unavailable'}, dexscreener ${dex ?? 'unavailable'}); refusing to price without the cross-check`,
+        );
     }
-    const price = jup ?? dex;
-    if (price === undefined || !(price > 0)) {
-        throw new Error('$CLAWD price unavailable from Jupiter and DexScreener; refusing to price');
+    const drift = Math.abs(jup - dex) / Math.max(jup, dex);
+    if (drift > PRICE_TOLERANCE) {
+        throw new Error(`$CLAWD price sources disagree (jupiter ${jup}, dexscreener ${dex}); refusing to price`);
     }
-    return price;
+    return jup;
 }
 
 async function jupiterPrice(): Promise<number> {
