@@ -215,6 +215,15 @@ mod session_matrix {
     fn musebook_config() -> SessionConfig {
         SessionConfig {
             network: "devnet".into(),
+            // A real recipient is load-bearing, not decoration: the
+            // challenge embeds it and the client derive parses it as the
+            // payee pubkey, so the `SessionConfig::default()` empty
+            // string makes every derive fail before the matrix runs.
+            // Mirrors the kit's own in-tree musebook config.
+            recipient: signer(12).pubkey().to_string(),
+            amount: 100,
+            suggested_deposit: Some(1_000),
+            minimum_deposit: Some(100),
             channel_program: Some(musebook::DEVNET.channel_program()),
             channel_version: Some(2),
             credit_provider: Some(CreditProvider::Musebook),
@@ -226,7 +235,13 @@ mod session_matrix {
 
     fn challenge(config: SessionConfig) -> SessionRequest {
         let cache = BlockhashCache::new();
-        cache.set(musebook::DEVNET.channel_program().to_string(), 314, 42);
+        // Seed with a real blockhash (the devnet genesis hash) and slot
+        // 42 — `set(blockhash, last_valid_block_height, slot)`.
+        cache.set(
+            "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
+            314,
+            42,
+        );
         SessionServer::new(config, MemoryChannelStore::new())
             .with_blockhash_cache(cache)
             .build_challenge_request()
@@ -308,6 +323,7 @@ mod session_matrix {
         // Without a provider the keys are absent from the wire form entirely.
         let plain = challenge(SessionConfig {
             network: "devnet".into(),
+            recipient: signer(12).pubkey().to_string(),
             ..SessionConfig::default()
         });
         assert_eq!(plain.method_details.credit_provider, None);
