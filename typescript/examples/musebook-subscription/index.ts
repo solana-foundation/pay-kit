@@ -319,9 +319,18 @@ async function main(): Promise<void> {
         seeds: [getUtf8Encoder().encode('event_authority')],
     });
     // Open args: [discriminator=1][salt u64][deposit u64][gracePeriod u32]
-    // [openSlot u64][recipients: u32 count + (pubkey, bps u16) entries] —
-    // one recipient here: the merchant at the full 10_000 bps share.
-    const openData = new Uint8Array(1 + 8 + 8 + 4 + 8 + 4 + 34);
+    // [openSlot u64][recipients: u32 count + (pubkey, bps u16) entries].
+    // The recipients are the challenge's own distribution splits — the
+    // same list the derived open was built from and the same list the
+    // authorization's distribution hash commits to. Handing the open a
+    // different list (e.g. a hard-coded merchant-at-100% entry) makes
+    // the authorization and the open describe different payouts, and
+    // the channel PDA would not match the derived channel id either.
+    const openRecipients = (challenge.methodDetails.distributionSplits ?? []).map(split => ({
+        bps: split.shareBps,
+        recipient: split.recipient,
+    }));
+    const openData = new Uint8Array(1 + 8 + 8 + 4 + 8 + 4 + 34 * openRecipients.length);
     {
         const view = new DataView(openData.buffer);
         openData[0] = 1;
@@ -329,9 +338,11 @@ async function main(): Promise<void> {
         view.setBigUint64(9, BigInt(open.deposit), true);
         view.setUint32(17, open.gracePeriod, true);
         view.setBigUint64(21, BigInt(open.openSlot), true);
-        view.setUint32(29, 1, true);
-        openData.set(new Uint8Array(getAddressEncoder().encode(merchant.address)), 33);
-        view.setUint16(65, 10_000, true);
+        view.setUint32(29, openRecipients.length, true);
+        openRecipients.forEach((entry, index) => {
+            openData.set(new Uint8Array(getAddressEncoder().encode(address(entry.recipient))), 33 + 34 * index);
+            view.setUint16(33 + 32 + 34 * index, entry.bps, true);
+        });
     }
     const baseOpen: Instruction = {
         accounts: [
