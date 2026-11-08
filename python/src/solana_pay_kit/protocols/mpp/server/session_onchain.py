@@ -25,7 +25,18 @@ from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.credit_provider import (
+    CreditDeployment,
+    hooks_for_deployment,
+)
+from solana_pay_kit._paycore.credit_provider import (
+    resolve_deployment as resolve_credit_deployment_for,
+)
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.paymentchannels_v2 import (
+    OPEN_WITH_HOOKS_DISCRIMINATOR,
+    build_open_with_hooks,
+)
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
 from solana_pay_kit._paycore.transaction import (
     SignatureCheckError,
@@ -139,6 +150,11 @@ class VerifyOpenTxExpected:
     recent_blockhash: str = ""
     # Transaction versions the server accepts (``SessionConfig.transaction_versions``).
     accepted_versions: tuple[int, ...] = DEFAULT_ACCEPTED_VERSIONS
+    # The resolved Musebook credit deployment when the session is a credit
+    # session: opens must then be hooked opens on the V2 program, verified
+    # against the deployment's exact per-payer hooks. ``None`` = plain
+    # (unhooked) session.
+    credit_deployment: CreditDeployment | None = None
 
 
 @dataclass
@@ -271,6 +287,13 @@ async def verify_open_tx(
     operator raises ``ValueError`` rather than letting a standalone verifier
     accept an open without proving the slot-1 rentPayer.
 
+    When ``expected.credit_deployment`` is set (a Musebook credit session),
+    the open must be the hooked V2 form: discriminator 10, the compact hook
+    suffix, and the callback accounts appended — verified by exact
+    comparison against the hooked transform of the declared terms with the
+    deployment's per-payer hooks. A plain open is refused, as are hooks
+    derived for any other payer or mint.
+
     When the payload carries a non-placeholder signature, it must equal the
     transaction's own fee-payer signature. If ``rpc_client`` is non-None, that
     bound signature is additionally confirmed on-chain; ``None`` skips the
@@ -343,7 +366,13 @@ async def verify_open_tx(
         if instruction_program != str(program_id):
             raise PaymentError("open transaction contains an unexpected instruction", code="invalid-payload")
         data = bytes(ix.data)
-        if len(data) < 1 or data[0] != _OPEN_INSTRUCTION_DISCRIMINATOR or open_ix is not None:
+        # Credit sessions open with the hooked instruction (discriminator
+        # 10); plain sessions with the plain open (discriminator 1). The
+        # other form is an unexpected instruction here, never a fallback.
+        expected_discriminator = (
+            OPEN_WITH_HOOKS_DISCRIMINATOR if expected.credit_deployment is not None else _OPEN_INSTRUCTION_DISCRIMINATOR
+        )
+        if len(data) < 1 or data[0] != expected_discriminator or open_ix is not None:
             raise PaymentError("open transaction must contain exactly one open instruction", code="invalid-payload")
         open_ix = ix
     if open_ix is None:
@@ -440,6 +469,17 @@ async def verify_open_tx(
             program_id=program_id,
         )
     )
+    if expected.credit_deployment is not None:
+        # The expected instruction for a credit session is the hooked
+        # transform of the base open with the deployment's exact per-payer
+        # hooks — the exact-match below then pins the hook suffix and the
+        # appended callback accounts too, not just the base open.
+        expected_instruction = build_open_with_hooks(
+            expected_instruction,
+            hooks_for_deployment(expected.credit_deployment, payer, mint),
+            channel,
+            program_id,
+        )
     actual_accounts = [Pubkey.from_string(account_keys[index]) for index in accounts]
     if actual_accounts != [meta.pubkey for meta in expected_instruction.accounts] or bytes(open_ix.data) != bytes(
         expected_instruction.data
@@ -560,6 +600,15 @@ def open_tx_expected(config: OpenVerifierConfig, payload: OpenPayload, recent_bl
         raise PaymentError("feePayerKey is required when feePayer is true", code="invalid-config")
     token_program = config.token_program or default_token_program_for_currency(config.currency, config.network)
     versions = getattr(config, "transaction_versions", None)
+    # Credit sessions verify hooked opens against the resolved deployment.
+    # The session config was fully validated at construction
+    # (``resolve_credit_deployment``); an unresolvable deployment here
+    # fails closed rather than degrading to a plain-open check.
+    credit_deployment: CreditDeployment | None = None
+    if getattr(config, "credit_provider", None) is not None:
+        credit_deployment = resolve_credit_deployment_for(config.network, getattr(config, "credit_program", None))
+        if credit_deployment is None:
+            raise PaymentError("credit provider is unavailable on this network", code="invalid-config")
     return VerifyOpenTxExpected(
         authorized_signer=payload.authorized_signer,
         currency=config.currency,
@@ -573,6 +622,7 @@ def open_tx_expected(config: OpenVerifierConfig, payload: OpenPayload, recent_bl
         recipient=config.recipient,
         recent_blockhash=recent_blockhash,
         accepted_versions=tuple(sorted(set(versions))) if versions is not None else DEFAULT_ACCEPTED_VERSIONS,
+        credit_deployment=credit_deployment,
     )
 
 
