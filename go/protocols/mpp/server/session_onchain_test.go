@@ -412,7 +412,7 @@ func TestVerifyOpenTxRejectsPayloadChannelIDMismatch(t *testing.T) {
 
 func TestVerifyOpenTxConfirmsBoundSignatureViaRPC(t *testing.T) {
 	fixture := buildOpenTxFixture(t)
-	fakeRPC := testutil.NewFakeRPC()
+	fakeRPC := newSessionChannelRPC(t, fixture, nil)
 	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, fakeRPC); err != nil {
 		t.Fatalf("VerifyOpenTx with confirmed signature: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestNewOpenTxVerifierReturnsChannelPayerForTransaction(t *testing.T) {
 func TestNewOpenTxVerifierWithoutTransactionConfirmsSignature(t *testing.T) {
 	fixture := buildOpenTxFixture(t)
 	config := openSessionConfig(fixture)
-	verifier := NewOpenTxVerifier(config, testutil.NewFakeRPC())
+	verifier := NewOpenTxVerifier(config, newSessionChannelRPC(t, fixture, nil))
 	payload := fixture.payload
 	payload.Transaction = nil
 	if _, err := verifier(context.Background(), &payload); err != nil {

@@ -28,6 +28,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 const sessionMethodSecret = "session-method-secret"
@@ -85,15 +86,20 @@ func verifySessionAction(t *testing.T, session *Session, action any) (core.Recei
 	return session.VerifyCredential(context.Background(), sessionActionCredential(t, session, action))
 }
 
-// openTrustedChannel opens a transactionless push channel through the
-// credential layer and returns the voucher signer plus channel id. The open
-// signature is a valid base58 signature so the helper also works on sessions
-// with an RPC client configured (the fake RPC confirms unknown signatures).
+// openTrustedChannel seeds trusted state for voucher, delivery and settlement
+// tests. Funding verification is exercised separately with real encoded channel
+// accounts; these tests intentionally isolate behavior after a valid open.
 func openTrustedChannel(t *testing.T, session *Session, deposit uint64) (testVoucherSigner, string) {
 	t.Helper()
 	signer := newTestVoucherSigner(t)
 	channelID := solana.NewWallet().PublicKey().String()
-	openSessionChannel(t, session, channelID, deposit, signer.Address(), confirmedSignature(0x99))
+	payload := intents.OpenPayloadPush(channelID, fmt.Sprintf("%d", deposit), signer.Address(), confirmedSignature(0x99))
+	payer := solana.NewWallet().PublicKey().String()
+	payload.Payer = &payer
+	if _, err := session.Core().ProcessOpen(context.Background(), &payload); err != nil {
+		t.Fatalf("seed trusted channel: %v", err)
+	}
+	session.touch(channelID)
 	return signer, channelID
 }
 
@@ -509,24 +515,31 @@ func TestSessionOpenReplaySemantics(t *testing.T) {
 }
 
 func TestSessionOpenVerifiesSignatureOnChain(t *testing.T) {
-	fake := testutil.NewFakeRPC()
+	fixture := buildOpenTxFixture(t)
+	fake := newSessionChannelRPC(t, fixture, nil)
 	okSig := confirmedSignature(0x11)
 	ghostSig := confirmedSignature(0x22)
 	failedSig := confirmedSignature(0x33)
 	fake.Statuses[ghostSig] = nil
 	fake.Statuses[failedSig] = &rpc.SignatureStatusesResult{Err: map[string]any{"InstructionError": []any{0, "Custom"}}}
 
-	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
-	signer := newTestVoucherSigner(t)
-
-	channelID := solana.NewWallet().PublicKey().String()
-	receipt := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = fake
+		o.Operator = fixture.payer.PublicKey().String()
+		o.Recipient = fixture.payee.String()
+	})
+	fixture.payload.Transaction = nil
+	fixture.payload.Signature = okSig
+	receipt, err := verifySessionAction(t, session, intents.NewOpenAction(fixture.payload))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if receipt.Reference != okSig {
 		t.Fatalf("reference = %q", receipt.Reference)
 	}
 
 	ghostChannel := solana.NewWallet().PublicKey().String()
-	ghost := intents.OpenPayloadPush(ghostChannel, "1000", signer.Address(), ghostSig)
+	ghost := intents.OpenPayloadPush(ghostChannel, "1000", fixture.authorized.String(), ghostSig)
 	if _, err := verifySessionAction(t, session, intents.NewOpenAction(ghost)); err == nil ||
 		!strings.Contains(err.Error(), "not found") {
 		t.Fatalf("ghost signature error = %v", err)
@@ -535,7 +548,7 @@ func TestSessionOpenVerifiesSignatureOnChain(t *testing.T) {
 		t.Fatal("channel persisted despite unknown signature")
 	}
 
-	failed := intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", signer.Address(), failedSig)
+	failed := intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", fixture.authorized.String(), failedSig)
 	if _, err := verifySessionAction(t, session, intents.NewOpenAction(failed)); err == nil ||
 		!strings.Contains(err.Error(), "failed on-chain") {
 		t.Fatalf("failed signature error = %v", err)
@@ -742,15 +755,12 @@ func TestSessionTopUpHardening(t *testing.T) {
 
 func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	fake := testutil.NewFakeRPC()
-	openSig := confirmedSignature(0x44)
 	topupSig := confirmedSignature(0x55)
 	ghostSig := confirmedSignature(0x66)
 	fake.Statuses[ghostSig] = nil
 
 	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
-	signer := newTestVoucherSigner(t)
-	channelID := solana.NewWallet().PublicKey().String()
-	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
+	_, channelID := openTrustedChannel(t, session, 1_000)
 
 	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
 		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
@@ -899,9 +909,7 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 func TestSessionCloseWithoutSignerDoesNotSettle(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
-	signer := newTestVoucherSigner(t)
-	channelID := solana.NewWallet().PublicKey().String()
-	openSessionChannel(t, session, channelID, 1_000, signer.Address(), confirmedSignature(0x77))
+	_, channelID := openTrustedChannel(t, session, 1_000)
 
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err != nil {
 		t.Fatalf("close: %v", err)
@@ -1155,7 +1163,7 @@ func TestSessionOpenRejectsTransactionForWrongRecipient(t *testing.T) {
 
 func TestSessionServerSubmitterBroadcastsOnceAndReplaysWithoutRebroadcast(t *testing.T) {
 	fixture := buildOpenTxFixture(t)
-	fake := testutil.NewFakeRPC()
+	fake := newSessionChannelRPC(t, fixture, nil)
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
 		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
@@ -1203,7 +1211,7 @@ func TestSessionServerSubmitterCompletesFeePayerSignature(t *testing.T) {
 	// flow.
 	operator := testutil.NewPrivateKey()
 	fixture := buildServerCompletedOpenFixture(t, operator)
-	fake := testutil.NewFakeRPC()
+	fake := newSessionChannelRPC(t, fixture, func(c *pcgen.Channel) { c.RentPayer = operator.PublicKey() })
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
 		o.Operator = operator.PublicKey().String()
@@ -1378,8 +1386,13 @@ func TestSessionMiddlewareChallengeAndVerifyFlow(t *testing.T) {
 }
 
 func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
-	fake := &countingBlockhashRPC{FakeRPC: testutil.NewFakeRPC()}
-	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
+	fixture := buildOpenTxFixture(t)
+	fake := newSessionChannelRPC(t, fixture, nil)
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = fake
+		o.Operator = fixture.payer.PublicKey().String()
+		o.Recipient = fixture.payee.String()
+	})
 	handler := SessionMiddleware(session, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1390,9 +1403,7 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 		t.Fatalf("Challenge: %v", err)
 	}
 	calls := fake.calls()
-	signer := newTestVoucherSigner(t)
-	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
-		intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", signer.Address(), confirmedSignature(0x88))))
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(fixture.payload))
 	if err != nil {
 		t.Fatalf("NewPaymentCredential: %v", err)
 	}

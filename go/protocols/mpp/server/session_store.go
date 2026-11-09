@@ -56,6 +56,12 @@ type CommittedDelivery struct {
 // server's point of view. The JSON tags are the shared snake_case wire
 // names, so durable stores can interoperate across the language SDKs.
 type ChannelState struct {
+	// OpenFundingContext is a Go extension binding fresh admission to its
+	// server configuration and verification policy. Legacy/unbound records
+	// remain readable for recovery/settlement, but cannot take the open replay
+	// shortcut. Other SDKs do not necessarily preserve or enforce this field.
+	OpenFundingContext string `json:"open_funding_context,omitempty"`
+
 	// ChannelID is the on-chain channel address (base58).
 	//
 	// Push sessions: the payment-channel address.
