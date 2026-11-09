@@ -57,6 +57,48 @@ class ExpiresRfc3339Test < Minitest::Test
     refute_nil parser.parse("2099-01-01T00:00:00-08:00") # negative offset
   end
 
+  # The 18 vectors #284 lists as Ruby-divergent, keyed by corpus name.
+  RFC3339_CORPUS = [
+    ["go_longfrac_10digits_0000000000", "2021-09-29T16:04:33.0000000000Z", true],
+    ["go_longfrac_10digits_0000000001", "2021-09-29T16:04:33.0000000001Z", true],
+    ["go_longfrac_10digits_0123456789", "2021-09-29T16:04:33.0123456789Z", true],
+    ["go_longfrac_10digits_1000000000", "2021-09-29T16:04:33.1000000000Z", true],
+    ["go_longfrac_10digits_1000000009", "2021-09-29T16:04:33.1000000009Z", true],
+    ["go_longfrac_10digits_9999999999", "2021-09-29T16:04:33.9999999999Z", true],
+    ["go_longfrac_11digits_00123456789", "2021-09-29T16:04:33.00123456789Z", true],
+    ["go_longfrac_11digits_10000000000", "2021-09-29T16:04:33.10000000000Z", true],
+    ["go_longfrac_12digits_000123456789", "2021-09-29T16:04:33.000123456789Z", true],
+    ["go_longfrac_16digits_9999999999999999", "2021-09-29T16:04:33.9999999999999999Z", true],
+    ["jsts_date_time_026", "1985-04-12T00:59:59.999999999999999Z", true],
+    ["secfrac_10_digits", "2026-01-29T12:00:00.1234567890Z", true],
+    ["secfrac_19_digits_exceeds_int64", "2026-01-29T12:00:00.9999999999999999999Z", true],
+    ["jsts_date_time_008", "1998-12-31T23:58:60Z", false],
+    ["jsts_date_time_009", "1998-12-31T22:59:60Z", false],
+    ["leap_second_offset_rolls_local_date_forward_wrong_offset", "1999-01-01T00:59:60+02:00", false],
+    ["jsts_date_time_015", "1990-12-31T10:00:00+10:60", false],
+    ["offset_minute_out_of_range", "2026-01-29T12:00:00+00:60", false]
+  ].freeze
+
+  def test_rfc3339_parser_conforms_to_the_shared_corpus
+    parser = ::PayCore::Rfc3339Parser
+    RFC3339_CORPUS.each do |name, input, accept|
+      if accept
+        refute_nil parser.parse(input), name
+      else
+        assert_nil parser.parse(input), name
+      end
+    end
+  end
+
+  def test_rfc3339_parser_leap_second_maps_to_the_last_instant_of_59
+    parser = ::PayCore::Rfc3339Parser
+    mapped = Time.utc(1998, 12, 31, 23, 59, 59, Rational(999_999_999, 1000))
+    assert_equal mapped, parser.parse("1998-12-31T23:59:60Z")
+    assert_equal mapped, parser.parse("1999-01-01T00:59:60+01:00")
+    assert_nil parser.parse("1998-12-30T23:59:60Z"), "leap second off the UTC month end"
+    assert_equal Rational(999_999_999, 1_000_000_000), parser.parse("2021-09-29T16:04:33.9999999999Z").subsec, "truncated, not rounded"
+  end
+
   def test_expires_strict_rfc3339_branches
     # Lowercase t accepted.
     c1 = PayKit::Protocols::Mpp::Protocol::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01t00:00:00Z")
