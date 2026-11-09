@@ -6,9 +6,11 @@ Rust and Go implementations.
 
 from __future__ import annotations
 
+import calendar
 import json
 import re
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from solana_pay_kit.protocols.mpp.core.base64url import decode, decode_json, encode_json
@@ -29,7 +31,37 @@ class ParseError(Exception):
 # ISO-8601 / RFC 3339 timestamp: YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM).
 # Matches the canonical mpp-tools receipt timestamp validation; rejects loose
 # forms like "Jan 29 2026 12:00".
-_ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+_ISO8601_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?P<hour>[0-9]{2}):[0-9]{2}:"
+    r"(?P<second>[0-9]{2})(?:\.[0-9]+)?(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+
+
+def _validate_receipt_timestamp(value: str) -> None:
+    match = _ISO8601_RE.fullmatch(value)
+    if match is None:
+        raise ValueError("invalid receipt timestamp format")
+    # Python 3.14 normalizes ISO-8601's 24:00 to the next day; RFC 3339
+    # requires an hour in 00..23 regardless of the host parser's behavior.
+    if int(match.group("hour")) > 23:
+        raise ValueError("timestamp hour out of range")
+    offset = match.group("offset")
+    if offset != "Z" and (int(offset[1:3]) > 23 or int(offset[4:6]) > 59):
+        raise ValueError("timestamp offset out of range")
+
+    # Validate calendar/time fields without changing the receipt's wire value.
+    # datetime cannot represent leap seconds, so validate their position using
+    # second 59 and the same UTC month-end rule as #315.
+    leap_second = match.group("second") == "60"
+    normalized = value[:-1] + "+00:00" if offset == "Z" else value
+    if leap_second:
+        start, end = match.span("second")
+        normalized = normalized[:start] + "59" + normalized[end:]
+    parsed = datetime.fromisoformat(normalized)
+    if leap_second:
+        utc = parsed.astimezone(UTC)
+        if (utc.hour, utc.minute) != (23, 59) or utc.day != calendar.monthrange(utc.year, utc.month)[1]:
+            raise ValueError("leap second not at a UTC month end")
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +258,10 @@ def parse_receipt(header: str) -> Receipt:
             raise ParseError(f"Missing '{field}' in receipt")
 
     timestamp = str(data["timestamp"])
-    if not _ISO8601_RE.match(timestamp):
-        raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}")
+    try:
+        _validate_receipt_timestamp(timestamp)
+    except (ValueError, OverflowError) as exc:
+        raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}") from exc
 
     idle_timeout_seconds = data.get("idleTimeoutSeconds")
     if idle_timeout_seconds is not None and (
