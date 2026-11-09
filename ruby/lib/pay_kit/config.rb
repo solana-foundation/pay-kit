@@ -264,6 +264,28 @@ module PayKit
       @config
     end
 
+    def configure_from_env(prefix = "PAY_KIT_", env: ENV)
+      prefix = prefix.upcase
+      configure do |c|
+        env.each do |name, value|
+          key = name.upcase
+          next unless key.start_with?(prefix)
+
+          case key.delete_prefix(prefix)
+          when "NETWORK" then c.network = value
+          when "RPC_URL" then c.rpc_url = value unless value.empty?
+          when "ACCEPT" then c.accept = value.split(",").map(&:strip) - [""]
+          when "STABLECOINS" then c.stablecoins = value.split(",").map(&:strip) - [""]
+          when "PREFLIGHT" then c.preflight = env_bool(name, value)
+          when "MPP_REALM" then c.mpp.realm = value
+          when "MPP_CHALLENGE_BINDING_SECRET" then c.mpp.challenge_binding_secret = value
+          when "MPP_EXPIRES_IN" then c.mpp.expires_in = env_positive_int(name, value)
+          when "X402_FACILITATOR_URL" then c.x402.facilitator_url = value
+          end
+        end
+      end
+    end
+
     def config
       @config ||= Config.new
     end
@@ -278,6 +300,23 @@ module PayKit
     def reset!
       @config = nil
       @pricing = nil
+    end
+
+    private
+
+    def env_bool(name, value)
+      case value.strip.downcase
+      when "1", "true", "yes", "on" then true
+      when "0", "false", "no", "off" then false
+      else raise ConfigurationError, "#{name} must be one of 1/true/yes/on or 0/false/no/off, got #{value.inspect}"
+      end
+    end
+
+    def env_positive_int(name, value)
+      int = Integer(value, 10, exception: false)
+      return int if int&.positive?
+
+      raise ConfigurationError, "#{name} must be a positive integer, got #{value.inspect}"
     end
   end
 end

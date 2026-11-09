@@ -269,7 +269,6 @@ conformant.
 - Add `accepts?(protocol)` on `Gate`; keep `x402_accepted?` / `mpp_accepted?`
   as deprecated aliases for one release.
 - Add `payer` and ensure `scheme` on `Payment`.
-- Add `PayKit.configure_from_env`.
 - Stablecoin set: add `USDG`, `CASH`.
 - Wire `external_id` through every flow (currently inconsistent).
 
