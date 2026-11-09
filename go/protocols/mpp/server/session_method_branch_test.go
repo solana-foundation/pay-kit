@@ -512,10 +512,10 @@ func TestSubmitOpenTxFailureMatrix(t *testing.T) {
 		t.Fatalf("unsigned fee payer = %v", err)
 	}
 
-	// A payer signer that is not required by the transaction does not help.
+	// A signer outside the configured operator context is rejected up front.
 	stranger := testutil.NewPrivateKey()
 	if _, err := SubmitOpenTx(ctx, unsigned.expected, &unsigned.payload, stranger, fake); err == nil ||
-		!strings.Contains(err.Error(), "missing the fee-payer signature") {
+		!strings.Contains(err.Error(), "configured operator") {
 		t.Fatalf("stranger signer = %v", err)
 	}
 
