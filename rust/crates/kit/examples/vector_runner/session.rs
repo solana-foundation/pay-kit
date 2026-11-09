@@ -172,6 +172,25 @@ fn kit_server<S: ChannelStore>(
         token_program,
         fee_payer_signer,
         operator_signing_key: operator_key.map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed)),
+        // V2 (hooked) channels: the ABI version is explicit configuration
+        // and the hook policy is the kit's `ChannelHooks` JSON.
+        channel_program: match server.get("channelProgram").and_then(Value::as_str) {
+            None => None,
+            Some(program) => Some(
+                Pubkey::from_str(program).map_err(|e| format!("invalid channelProgram: {e}"))?,
+            ),
+        },
+        channel_version: match u64_field(server, "channelVersion")? {
+            None => None,
+            Some(version) => Some(u8::try_from(version).map_err(|_| "invalid channelVersion")?),
+        },
+        channel_hooks: match server.get("channelHooks") {
+            None | Some(Value::Null) => None,
+            Some(hooks) => Some(
+                serde_json::from_value(hooks.clone())
+                    .map_err(|e| format!("invalid channelHooks: {e}"))?,
+            ),
+        },
         ..SessionConfig::default()
     };
     let mut versions: Vec<TxVersion> = match server.get("transactionVersions") {
@@ -555,6 +574,11 @@ fn build_code_for(message: &str) -> Option<&'static str> {
         || has("spl token")
         || has("graceperiod")
         || has("decimals")
+        // V2 channel profile: hooks without version 2, an unknown ABI
+        // version, or a V2 deployment on an unsupported network.
+        || has("channelhooks")
+        || has("channel deployment")
+        || has("abi version")
         || has("invalid"))
     .then_some("invalid-challenge")
 }

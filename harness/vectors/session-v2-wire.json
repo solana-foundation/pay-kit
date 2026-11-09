@@ -1,0 +1,468 @@
+[
+  {
+    "bugType": "wire",
+    "description": "A V2 session challenge SessionRequest: methodDetails.channelVersion is the integer 2 and channelHooks carries the credit-provider pair (preFund and postDistribute: programId, 8-byte entrypoint as a byte array, four {address, writable} accounts, empty staticData; postFund and preDistribute absent). Frozen byte-for-byte through the production parser and JCS; an SDK without the V2 fields drops them and diverges.",
+    "expect": {
+      "exactBytes": {
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsSG9va3MiOnsicG9zdERpc3RyaWJ1dGUiOnsiYWNjb3VudHMiOlt7ImFkZHJlc3MiOiI3U3F1NGMySHBhVFRWWlNYeVRaWXRlN0VlaTJVTDhjY2VIcVZMNTZmam8xNyIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiI3NVVoOVZOV05XdGlTQXNyZXRiaFdZTkxpQWRBckdiWmhVRVFmeldhSEpDRCIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiI4RWlGOTFMSmZiYXRxSFJZM2syanA4ZHdyRlkzeURRZUVvdnBNRFpucEppUCIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwid3JpdGFibGUiOmZhbHNlfV0sImVudHJ5cG9pbnQiOls5OSwxMTQsMTAxLDEwMCwxMDUsMTE2LDMzLDMzXSwicHJvZ3JhbUlkIjoiSHF6bkw0RXBKVGJXWm1xcWV0YjRzSlBmdEJVTjFzNnVOZFFVUkJBZkFzQnIiLCJzdGF0aWNEYXRhIjpbXX0sInByZUZ1bmQiOnsiYWNjb3VudHMiOlt7ImFkZHJlc3MiOiI3U3F1NGMySHBhVFRWWlNYeVRaWXRlN0VlaTJVTDhjY2VIcVZMNTZmam8xNyIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiI3NVVoOVZOV05XdGlTQXNyZXRiaFdZTkxpQWRBckdiWmhVRVFmeldhSEpDRCIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiI4RWlGOTFMSmZiYXRxSFJZM2syanA4ZHdyRlkzeURRZUVvdnBNRFpucEppUCIsIndyaXRhYmxlIjp0cnVlfSx7ImFkZHJlc3MiOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwid3JpdGFibGUiOmZhbHNlfV0sImVudHJ5cG9pbnQiOls5OSwxMTQsMTAxLDEwMCwxMDUsMTE2LDMzLDMzXSwicHJvZ3JhbUlkIjoiSHF6bkw0RXBKVGJXWm1xcWV0YjRzSlBmdEJVTjFzNnVOZFFVUkJBZkFzQnIiLCJzdGF0aWNEYXRhIjpbXX19LCJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiY2hhbm5lbFZlcnNpb24iOjIsImRlY2ltYWxzIjo2LCJmZWVQYXllciI6dHJ1ZSwiZmVlUGF5ZXJLZXkiOiJDWGhyRlpKTEtxanptUDNzallMY0Y0ZFRlWFdLQ3k5ZTJTWFhaMllvNk1QWSIsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJuZXR3b3JrIjoiZGV2bmV0IiwicmVjZW50QmxvY2toYXNoIjoiRWtTbk5XaWQyY3Z3RVZuVng5YUJxYXdubWlDTmlEZ3AzZ1Vka0RQVEtOMU4iLCJyZWNlbnRTbG90IjoiMjUwMDAwMDAwIiwidG9rZW5Qcm9ncmFtIjoiVG9rZW5rZWdRZmVaeWlOd0FKYk5iR0tQRlhDV3VCdmY5U3M2MjNWUTVEQSIsInZvdWNoZXJTaWduZXIiOiJjbGllbnQifSwibWluaW11bURlcG9zaXQiOiIxMDAwIiwicmVjaXBpZW50IjoiQ1hockZaSkxLcWp6bVAzc2pZTGNGNGRUZVhXS0N5OWUyU1hYWjJZbzZNUFkiLCJzdWdnZXN0ZWREZXBvc2l0IjoiNTAwMCIsInVuaXRUeXBlIjoicmVxdWVzdCJ9",
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelHooks\":{\"postDistribute\":{\"accounts\":[{\"address\":\"7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17\",\"writable\":true},{\"address\":\"75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD\",\"writable\":true},{\"address\":\"8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP\",\"writable\":true},{\"address\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"writable\":false}],\"entrypoint\":[99,114,101,100,105,116,33,33],\"programId\":\"HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr\",\"staticData\":[]},\"preFund\":{\"accounts\":[{\"address\":\"7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17\",\"writable\":true},{\"address\":\"75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD\",\"writable\":true},{\"address\":\"8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP\",\"writable\":true},{\"address\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"writable\":false}],\"entrypoint\":[99,114,101,100,105,116,33,33],\"programId\":\"HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr\",\"staticData\":[]}},\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"channelVersion\":2,\"decimals\":6,\"feePayer\":true,\"feePayerKey\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"gracePeriodSeconds\":900,\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"voucherSigner\":\"client\"},\"minimumDeposit\":\"1000\",\"recipient\":\"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}"
+      },
+      "outcome": "accept"
+    },
+    "id": "session-v2-wire-request-hooked-frozen",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelHooks": {
+              "postDistribute": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              },
+              "preFund": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              }
+            },
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "channelVersion": 2,
+            "decimals": 6,
+            "feePayer": true,
+            "feePayerKey": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "client"
+          },
+          "minimumDeposit": "1000",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-6e96639589"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients and servers MUST bind the selected network, channel version, `channelProgram`, and supported state, instruction, voucher and hook ABIs as one configured tuple.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "channelVersion carried as the string \"2\": the field is an integer; a parser that coerces it (or ignores it and reads the hooks as V1) is wrong. Pair: session-v2-wire-request-hooked-frozen.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "channelVersion must be a JSON integer"
+    },
+    "id": "session-v2-wire-request-version-string-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelHooks": {
+              "postDistribute": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              },
+              "preFund": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              }
+            },
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "channelVersion": "2",
+            "decimals": 6,
+            "feePayer": true,
+            "feePayerKey": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "client"
+          },
+          "minimumDeposit": "1000",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-beb9ad1cbe"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Implementations MUST reject malformed or unsupported versions and MUST NOT retry a rejected V2 credential as V1.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A descriptor whose entrypoint has seven bytes: the callback entrypoint is exactly eight bytes; the parser must refuse the descriptor rather than pad or truncate it. Pair: session-v2-wire-request-hooked-frozen.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "hook descriptor entrypoint must be exactly 8 bytes"
+    },
+    "id": "session-v2-wire-request-hook-entrypoint-length-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelHooks": {
+              "postDistribute": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              },
+              "preFund": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              }
+            },
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "channelVersion": 2,
+            "decimals": 6,
+            "feePayer": true,
+            "feePayerKey": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "client"
+          },
+          "minimumDeposit": "1000",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-77f41c09b9"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Each descriptor MUST bind its target program, versioned entrypoint, ordered accounts or deterministic derivations, exact permissions and bounded static context.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "wire",
+    "description": "A descriptor account carrying a signer flag: the descriptor grammar has address and writable only; extra accounts never sign, and an unknown field is a malformed configuration, not a hint to ignore. Pair: session-v2-wire-request-hooked-frozen.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "invalid-payload",
+      "rejectReason": "hook descriptor accounts carry address and writable only"
+    },
+    "id": "session-v2-wire-request-hook-signer-flag-reject",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelHooks": {
+              "postDistribute": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "signer": true,
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              },
+              "preFund": {
+                "accounts": [
+                  {
+                    "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                    "signer": true,
+                    "writable": true
+                  },
+                  {
+                    "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                    "writable": true
+                  },
+                  {
+                    "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                    "writable": true
+                  },
+                  {
+                    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "writable": false
+                  }
+                ],
+                "entrypoint": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116,
+                  33,
+                  33
+                ],
+                "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+                "staticData": []
+              }
+            },
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "channelVersion": 2,
+            "decimals": 6,
+            "feePayer": true,
+            "feePayerKey": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "gracePeriodSeconds": 900,
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "client"
+          },
+          "minimumDeposit": "1000",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-77f41c09b9"
+    ],
+    "role": "both",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Extra accounts are not signers; their writable flags come from the descriptor.",
+      "section": "V2 Channel ABI"
+    },
+    "tier": "offline"
+  }
+]

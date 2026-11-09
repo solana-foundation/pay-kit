@@ -39,6 +39,31 @@ const voucherExpiresAt = z
  */
 const transactionVersions = z.array(z.union([z.literal(0), z.literal(1)]));
 
+/**
+ * `methodDetails.channelHooks` (mpp-specs-v2 V2 Lifecycle Hooks): the
+ * immutable callback policy a hooked channel commits at open. Four optional
+ * slots; each descriptor binds a target program, an exactly 8-byte
+ * entrypoint, at most four `{address, writable}` extra accounts (never
+ * signers) and at most 32 bytes of static context. Unknown fields are
+ * malformed configuration, not hints to ignore.
+ */
+const hookByte = z.number().check(z.int(), z.minimum(0), z.maximum(255));
+const hookAccount = z.strictObject({ address: z.string(), writable: z.boolean() });
+const hookDescriptor = z.strictObject({
+    accounts: z.optional(z.array(hookAccount).check(z.maxLength(4))),
+    entrypoint: z.array(hookByte).check(z.length(8)),
+    programId: z.string(),
+    staticData: z.optional(z.array(hookByte).check(z.maxLength(32))),
+});
+const channelHooks = z.strictObject({
+    postDistribute: z.optional(hookDescriptor),
+    postFund: z.optional(hookDescriptor),
+    preDistribute: z.optional(hookDescriptor),
+    preFund: z.optional(hookDescriptor),
+});
+/** `methodDetails.channelVersion`: a JSON integer; absent is V1, 2 selects the hooked profile. */
+const channelVersion = z.number().check(z.int(), z.minimum(0));
+
 const signedVoucher = z.object({
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     signature: z.string(),
@@ -351,8 +376,13 @@ export const session = Method.from({
             description: z.optional(z.string()),
             externalId: z.optional(z.string()),
             methodDetails: z.object({
+                /** Immutable lifecycle-hook policy of a V2 channel (requires channelVersion 2). */
+                channelHooks: z.optional(channelHooks),
+
                 channelId: z.optional(z.string()),
                 channelProgram: z.string(),
+                /** Channel ABI version: absent or 1 is V1, 2 selects the hooked instruction family. */
+                channelVersion: z.optional(channelVersion),
                 decimals: z.optional(z.number()),
                 distributionSplits: z.optional(z.array(z.object({ recipient: z.string(), shareBps: z.number() }))),
                 feePayer: z.optional(z.boolean()),

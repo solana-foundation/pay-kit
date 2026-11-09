@@ -1,0 +1,82 @@
+repo = "mpp-specs-v2"
+commit = "fcf5efa8cf1a70b3a0d5b33300e734fc0c6cc38c"
+files = [
+  "specs/methods/solana/draft-solana-session-*",
+]
+
+# The V2 channel profile with lifecycle hooks for the Solana session method,
+# pinned from solana-foundation/mpp-specs docs/mpp-v2-channel-profiles (PR 3)
+# until it merges. id = "MPPV2-" + sha256(normalised text)[:10]. `required =
+# true`: `pkc req-lint` fails if no case maps the id.
+#
+# The pinned text predates payment-channels#102 in two places that the cases
+# deliberately do not map: "The V2 program uses the existing instruction
+# discriminators" (the hooked family now has its own, 10-13) and the
+# devnet-only deployment statement (the canary channel ships on devnet and
+# mainnet, and both known programs load both account versions).
+
+[[requirement]]
+id = "MPPV2-beb9ad1cbe"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Implementations MUST reject malformed or unsupported versions and MUST NOT retry a rejected V2 credential as V1."
+required = true
+
+[[requirement]]
+id = "MPPV2-6e96639589"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Clients and servers MUST bind the selected network, channel version, `channelProgram`, and supported state, instruction, voucher and hook ABIs as one configured tuple."
+required = true
+
+[[requirement]]
+id = "MPPV2-2f5424f79b"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "They MUST verify account ownership and layout against that tuple before signing, sponsoring, resuming or accepting a payment."
+required = true
+
+[[requirement]]
+id = "MPPV2-5f4438c84d"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "V1 challenges and credentials MUST NOT carry V2 hook configuration."
+required = true
+
+[[requirement]]
+id = "MPPV2-f05cec9a26"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "A receiver MUST reject hook configuration paired with an absent or V1 channel version; it MUST NOT ignore that configuration and fund an unhooked channel instead."
+required = true
+
+[[requirement]]
+id = "MPPV2-7eb724a2ed"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "The V1 layouts and encodings in this document MUST NOT be reused for V2 without an explicit ABI definition."
+required = true
+
+[[requirement]]
+id = "MPPV2-cdcaf6309f"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Every eligible operation MUST invoke it, including terminal distribution with zero payer refund."
+required = true
+
+[[requirement]]
+id = "MPPV2-1cb0b76d43"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Missing configuration or required accounts MUST fail, not disable hooks."
+required = true
+
+[[requirement]]
+id = "MPPV2-71270a9762"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Recipient accounts and each hook's accounts MUST have an unambiguous partition."
+required = true
+
+[[requirement]]
+id = "MPPV2-7c7e5b0e73"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Payer and sponsor MUST approve configuration at opening; merchants MUST accept its policy before providing service."
+required = true
+
+[[requirement]]
+id = "MPPV2-77f41c09b9"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "Each descriptor MUST bind its target program, versioned entrypoint, ordered accounts or deterministic derivations, exact permissions and bounded static context."
+required = true

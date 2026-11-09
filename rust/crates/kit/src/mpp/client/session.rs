@@ -1008,8 +1008,9 @@ mod tests {
         assert!(derive(&request, None).is_err());
         request.method_details.channel_program =
             "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ".into();
+        // The canary program also runs V1 channels; an absent version is V1.
         request.method_details.channel_version = None;
-        assert!(derive(&request, None).is_err());
+        assert_eq!(derive(&request, None).unwrap().channel_version, None);
         request.method_details.channel_version = Some(2);
         for network in ["mainnet", "", "testnet", "mainnet-beta"] {
             request.method_details.network = network.into();

@@ -48,6 +48,11 @@ spl-token-2022 = { version = "=11.0.0", default-features = false, features = ["z
 spl-token-confidential-transfer-proof-extraction = "0.6"
 solana-zk-sdk-pod = "0.1.1"
 spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
+# Credit-provider session e2e: an axum merchant plus a reqwest client over
+# loopback HTTP, both driving the kit's MPP session server and client.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
+solana-account = "^4"
 
 [[test]]
 name = "settlement_onchain"
@@ -58,3 +63,8 @@ required-features = ["testkit"]
 name = "confidential_integration"
 path = "tests/confidential_integration.rs"
 required-features = ["confidential", "worker"]
+
+[[test]]
+name = "credit_provider_session_surfnet"
+path = "tests/credit_provider_session_surfnet.rs"
+required-features = ["testkit"]

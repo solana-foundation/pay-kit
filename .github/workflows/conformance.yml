@@ -102,7 +102,7 @@ jobs:
           # pkc req-lint reads the pinned spec repositories
           # (external/mpp-specs, typescript/external/x402, and the
           # unmerged Solana drafts external/mpp-specs-solana,
-          # external/mpp-specs-txv1, external/x402-txv1).
+          # external/mpp-specs-txv1, external/x402-txv1, external/mpp-specs-v2).
           submodules: true
       - uses: ./.github/actions/setup-pkc
         with:
