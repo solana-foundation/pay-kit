@@ -43,14 +43,17 @@ final class Json
         if (is_string($value)) {
             return self::encodeString($value);
         }
+        if ($value instanceof JsonDecodedObject) {
+            return self::encodeDecodedObject($value);
+        }
         if ($value instanceof \stdClass) {
-            // Only an EMPTY stdClass is meaningful here: it is the shape
-            // {@see self::decodePreservingObject()} produces for a JSON
-            // `{}` so the value round-trips as `{}` (PHP's assoc decode
-            // maps `{}` to the same zero-length array as `[]`, which RFC
-            // 8785 sec 3.2.2 distinguishes). Populated stdClass never
-            // comes out of this decoder and stays an unsupported payload
-            // shape, matching the base JSON-narrowing contract.
+            // Plain stdClass (not the decoder's marker subclass): only an
+            // EMPTY instance is accepted, round-tripping as `{}` (PHP's
+            // assoc decode maps `{}` to the same zero-length array as
+            // `[]`, which RFC 8785 sec 3.2.2 distinguishes). Populated
+            // plain stdClass never comes out of this decoder and stays an
+            // unsupported payload shape, matching the base JSON-narrowing
+            // contract.
             if ((array) $value !== []) {
                 throw new InvalidArgumentException('unsupported JSON value');
             }
@@ -88,6 +91,35 @@ final class Json
             $seen[$stringKey] = true;
             $pairs[] = [$stringKey, $item];
         }
+        return self::encodePairs($pairs);
+    }
+
+    /**
+     * Members of a {@see JsonDecodedObject}: iterating the object yields
+     * property names with their exact string form (the cast to an array
+     * instead coerces `"0"` back to int, which would re-encode a decoded
+     * `{"0":"x"}` as the list `["x"]`). The decoder already rejects
+     * duplicate keys, so no $seen set is needed here.
+     */
+    private static function encodeDecodedObject(JsonDecodedObject $value): string
+    {
+        $pairs = [];
+        // @phpstan-ignore foreach.nonIterable (iterating the stdClass property surface is the only route that keeps numeric-string names exact: both (array) and get_object_vars() coerce "0" to int 0. reportUnmatchedIgnoredErrors in phpstan.neon removes this automatically if phpstan starts modeling stdClass iteration.)
+        foreach ($value as $key => $item) {
+            $pairs[] = [(string) $key, $item];
+        }
+        return self::encodePairs($pairs);
+    }
+
+    /**
+     * Sort the (string key, value) pairs by UTF-16 code-unit order and
+     * emit the canonical object body shared by both the array-based and
+     * decoded-object encoders.
+     *
+     * @param list<array{0: string, 1: mixed}> $pairs
+     */
+    private static function encodePairs(array $pairs): string
+    {
         usort($pairs, static function (array $a, array $b): int {
             return self::compareUtf16($a[0], $b[0]);
         });
@@ -103,11 +135,18 @@ final class Json
      * distinction. PHP's `json_decode($x, true)` collapses both into a
      * zero-length array; callers need to know which one crossed the wire
      * because canonical RFC 8785 round-trips them as `{}` and `[]`
-     * respectively. A JSON `{}` decodes to a `\stdClass` instance (the
-     * encoder recognizes stdClass and emits `{}`), so no array key is
-     * overloaded as an internal marker and ordinary user keys can never
-     * collide with the representation. Every other JSON value decodes
-     * exactly like `json_decode($x, true)`.
+     * respectively. A JSON `{}` decodes as the empty {@see JsonDecodedObject}
+     * marker (the encoder recognizes the class and emits `{}`); a populated
+     * object decodes as {@see JsonDecodedObject} too, because plain arrays
+     * would coerce the string key `"0"` to int and re-encode the value as an
+     * array. Plain `\stdClass` payloads (not produced by this decoder) are
+     * unaffected. Every other JSON value decodes like `json_decode($x,
+     * true)`.
+     *
+     * The walk enforces the full JSON grammar over the entire input —
+     * trailing content after the root value, malformed numbers (`1e`,
+     * leading zeros), and raw control characters inside strings all throw,
+     * so malformed input never surfaces as valid-looking data.
      *
      * @return mixed
      */
@@ -115,7 +154,12 @@ final class Json
     {
         $pos = 0;
         $len = strlen($json);
-        return self::decodeValuePreserving($json, $len, $pos);
+        $value = self::decodeValuePreserving($json, $len, $pos);
+        self::skipWsPreserving($json, $len, $pos);
+        if ($pos < $len) {
+            throw new InvalidArgumentException("unexpected trailing content at position $pos");
+        }
+        return $value;
     }
 
     private static function decodeValuePreserving(string $json, int $len, int &$pos)
@@ -174,15 +218,23 @@ final class Json
                     throw new InvalidArgumentException('unterminated escape');
                 }
                 $esc = $json[$pos];
-                if ($esc === '"') $buf .= '"';
-                elseif ($esc === '\\') $buf .= '\\';
-                elseif ($esc === '/') $buf .= '/';
-                elseif ($esc === 'b') $buf .= "\x08";
-                elseif ($esc === 'f') $buf .= "\x0C";
-                elseif ($esc === 'n') $buf .= "\n";
-                elseif ($esc === 'r') $buf .= "\r";
-                elseif ($esc === 't') $buf .= "\t";
-                elseif ($esc === 'u') {
+                if ($esc === '"') {
+                    $buf .= '"';
+                } elseif ($esc === '\\') {
+                    $buf .= '\\';
+                } elseif ($esc === '/') {
+                    $buf .= '/';
+                } elseif ($esc === 'b') {
+                    $buf .= "\x08";
+                } elseif ($esc === 'f') {
+                    $buf .= "\x0C";
+                } elseif ($esc === 'n') {
+                    $buf .= "\n";
+                } elseif ($esc === 'r') {
+                    $buf .= "\r";
+                } elseif ($esc === 't') {
+                    $buf .= "\t";
+                } elseif ($esc === 'u') {
                     if ($pos + 4 >= $len) {
                         throw new InvalidArgumentException('truncated \\u escape');
                     }
@@ -226,6 +278,11 @@ final class Json
                 $pos++;
                 return $buf;
             }
+            if (ord($c) < 0x20) {
+                // Raw control characters are illegal inside JSON strings
+                // (RFC 8259 grammar: only 0x20+ unescaped).
+                throw new InvalidArgumentException(sprintf('raw control character 0x%02X in string at position %d', ord($c), $pos));
+            }
             $buf .= $c;
             $pos++;
         }
@@ -255,6 +312,13 @@ final class Json
             $pos++;
         }
         $text = substr($json, $start, $pos - $start);
+        // The lexer glyph class is a superset of the JSON number grammar
+        // (RFC 8259: an optional minus, 0 or 1-9-leading digits, optional
+        // fraction and exponent). Enforce the grammar outright so `1e`,
+        // `01`, `1-`, or a bare `-` fail closed instead of quietly casting.
+        if (!preg_match('/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/', $text)) {
+            throw new InvalidArgumentException("invalid JSON number: $text");
+        }
         if (str_contains($text, '.') || stripos($text, 'e') !== false) {
             return (float)$text;
         }
@@ -284,13 +348,13 @@ final class Json
         }
         $pos++;
         self::skipWsPreserving($json, $len, $pos);
-        $obj = [];
+        $obj = new JsonDecodedObject();
         if ($pos < $len && $json[$pos] === '}') {
             $pos++;
-            // An empty JSON object decodes as a stdClass instance so it
-            // stays distinct from the empty array an empty JSON array
-            // decodes to; encodeObject serializes the instance as `{}`.
-            return new \stdClass();
+            // The marker subclass keeps an empty decoded object distinct
+            // from the empty array an empty JSON array decodes to; the
+            // encoder recognizes the class and serializes it as `{}`.
+            return $obj;
         }
         while (true) {
             self::skipWsPreserving($json, $len, $pos);
@@ -303,7 +367,13 @@ final class Json
                 throw new InvalidArgumentException("expected : at position $pos");
             }
             $pos++;
-            $obj[$key] = self::decodeValuePreserving($json, $len, $pos);
+            // Property names keep their exact string form — a plain array
+            // would coerce "0" to int 0 and the value would re-encode as a
+            // list instead of the object the wire carried.
+            if (property_exists($obj, $key)) {
+                throw new InvalidArgumentException("duplicate object key: $key");
+            }
+            $obj->{$key} = self::decodeValuePreserving($json, $len, $pos);
             self::skipWsPreserving($json, $len, $pos);
             if ($pos < $len && $json[$pos] === ',') {
                 $pos++;

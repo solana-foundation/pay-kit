@@ -6,6 +6,7 @@ namespace PayKit\Tests\PayCore\Wire;
 
 use InvalidArgumentException;
 use PayKit\PayCore\Wire\Json;
+use PayKit\PayCore\Wire\JsonDecodedObject;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -318,5 +319,62 @@ final class JsonCanonicalTest extends TestCase
         $decoded = Json::decodePreservingObject('100000000000000000000');
         self::assertIsFloat($decoded);
         self::assertSame('100000000000000000000', Json::canonicalize($decoded));
+    }
+
+    public function testDecodePreservingObjectKeepsNumericStringKeysObjectShaped(): void
+    {
+        // PHP array keys coerce the string "0" to int 0, so a plain-array
+        // decode of {"0":"x"} would re-encode as the list ["x"] and lose
+        // the member entirely. Objects decode to JsonDecodedObject, whose
+        // property names keep their exact string form both at decode and
+        // (via iteration, not the coercing (array) cast) at encode time.
+        // (greptile review on PR #302; issue #110.)
+        self::assertInstanceOf(
+            JsonDecodedObject::class,
+            Json::decodePreservingObject('{"0":"x"}')
+        );
+        self::assertSame(
+            '{"0":"x"}',
+            Json::canonicalize(Json::decodePreservingObject('{"0":"x"}'))
+        );
+        self::assertSame(
+            '{"0":{"0":"x"},"00":"y"}',
+            Json::canonicalize(Json::decodePreservingObject('{"00": "y", "0": {"0": "x"}}'))
+        );
+    }
+
+    public function testDecodePreservingObjectRejectsDuplicateKeys(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('{"a": 1, "a": 2}');
+    }
+
+    public function testDecodePreservingObjectRejectsTrailingContent(): void
+    {
+        // The native json_decode() is too lax to pre-validate this (it
+        // decodes "true false" to null and reports no error), so the walk
+        // itself requires the input to be one complete JSON text.
+        // (greptile review on PR #302.)
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('true false');
+    }
+
+    public function testDecodePreservingObjectRejectsIncompleteExponent(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('1e');
+    }
+
+    public function testDecodePreservingObjectRejectsLeadingZeroNumber(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject('01');
+    }
+
+    public function testDecodePreservingObjectRejectsRawControlCharacter(): void
+    {
+        // RFC 8259: string contents must be 0x20+ or an escape sequence.
+        $this->expectException(InvalidArgumentException::class);
+        Json::decodePreservingObject("\x22a\x01b\x22");
     }
 }
