@@ -1806,7 +1806,9 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
             const raw = info.value?.data[0];
             if (!raw) throw new Error('submitOpenTx: confirmed channel account is missing');
             const hooks = await decodeChannelHooks(getBase64Codec().encode(raw), args.expected.channelProgram);
-            if (!sameChannelHooks(hooks.hooks, args.expected.channelHooks)) {
+            // A credit session's expected policy lives in `creditHooks`
+            // (derived per payer); `channelHooks` is unset there.
+            if (!sameChannelHooks(hooks.hooks, args.expected.creditHooks ?? args.expected.channelHooks)) {
                 throw new Error(
                     'submitOpenTx: confirmed channel hook configuration does not match the advertised policy',
                 );
