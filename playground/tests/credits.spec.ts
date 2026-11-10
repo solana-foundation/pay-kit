@@ -6,6 +6,10 @@ import { expect, test } from '@playwright/test'
 //   CREDIT_PROVIDER_SO=<payment-channels>/target/deploy/credit_provider.so
 test('a credit provider funds a session through lifecycle hooks', async ({ page, request }) => {
   const status = (await (await request.get('/api/v1/credits/status')).json()) as { enabled: boolean; reason?: string }
+  // CI builds the artifacts and sets PLAYGROUND_REQUIRE_CREDITS: a disabled card fails there.
+  if (process.env.PLAYGROUND_REQUIRE_CREDITS === '1') {
+    expect(status.enabled, `credit demo disabled: ${status.reason ?? ''}`).toBe(true)
+  }
   test.skip(!status.enabled, `credit demo disabled: ${status.reason ?? ''}`)
 
   await page.goto('/')

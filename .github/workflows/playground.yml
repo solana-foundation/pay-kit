@@ -82,10 +82,14 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Start Surfnet
         env:
-          # Fork the canonical sandbox so the local, single-instance RPC has
-          # the payment-channel and subscription programs without inheriting
-          # the hosted load balancer's cross-request blockhash races.
-          SURFPOOL_REMOTE_RPC_URL: https://402.surfnet.dev:8899
+          # Fork mainnet, as `surfpool start` does locally: the local,
+          # single-instance RPC gets the payment-channel and subscription
+          # programs without the hosted load balancer's cross-request
+          # blockhash races. A fork of the hosted sandbox (402.surfnet.dev)
+          # intermittently drops token accounts the faucet sets with
+          # cheatcodes, failing a random paid scenario with InvalidAccountData.
+          # PLAYGROUND_FORK_RPC_URL overrides the datasource (e.g. a keyed RPC).
+          SURFPOOL_REMOTE_RPC_URL: ${{ vars.PLAYGROUND_FORK_RPC_URL || 'https://api.mainnet-beta.solana.com' }}
         run: |
           node harness/start-surfnet-proxy.mjs > "$RUNNER_TEMP/surfnet.log" 2>&1 &
           surfnet_pid=$!
@@ -108,6 +112,11 @@ jobs:
           echo "Surfnet did not become healthy in 120s; startup log:"
           cat "$RUNNER_TEMP/surfnet.log"
           exit 1
+      # The credit-funded session card runs on the hook-enabled channel
+      # program and the reference credit provider (payment-channels#112).
+      - name: Credit-provider programs (cached by ref)
+        id: credit-programs
+        uses: ./.github/actions/build-credit-provider
       - name: Install branch TypeScript dependencies
         working-directory: typescript
         run: pnpm install --frozen-lockfile
@@ -127,6 +136,10 @@ jobs:
           PLAYGROUND_DISABLE_SIDECAR: "1"
           RPC_URL: http://localhost:8899
           VITE_RPC_URL: http://localhost:8899
+          PAYMENT_CHANNELS_V2_SO: ${{ steps.credit-programs.outputs.channel-so }}
+          CREDIT_PROVIDER_SO: ${{ steps.credit-programs.outputs.provider-so }}
+          # Fail, rather than skip, when the card is not enabled.
+          PLAYGROUND_REQUIRE_CREDITS: "1"
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7

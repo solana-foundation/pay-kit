@@ -1,0 +1,85 @@
+name: Build the hook-enabled channel program and the credit provider
+description: >
+  Check out payment-channels at the credit-provider reference (payment-channels#112),
+  and build the two SBF artifacts the playground's credit-funded session card runs on
+  a local Surfnet: the `stable` channel built with `--features hooks` (canonical
+  address, localnet treasury) and `examples/credit-provider`. Mirrors that repo's
+  `just test-credit-provider-surfpool` builds. Outputs both paths.
+
+inputs:
+  ref:
+    description: payment-channels commit to build (stack/nightly-7-canary-devnet).
+    required: false
+    default: 67759f1d6e7d5df85891fe4d0c85f0ad8bbc09b9
+  agave:
+    description: Agave release providing cargo-build-sbf.
+    required: false
+    default: v4.4.0
+
+outputs:
+  channel-so:
+    description: Absolute path to the hook-enabled payment_channels.so.
+    value: ${{ steps.locate.outputs.channel }}
+  provider-so:
+    description: Absolute path to credit_provider.so.
+    value: ${{ steps.locate.outputs.provider }}
+
+runs:
+  using: composite
+  steps:
+    # Both artifacts depend only on the ref, the toolchain and this file.
+    - name: Cache the built programs
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          _credit-provider/target/deploy-v2/payment_channels.so
+          _credit-provider/target/deploy/credit_provider.so
+        key: credit-provider-${{ runner.os }}-${{ inputs.ref }}-${{ inputs.agave }}-${{ hashFiles('.github/actions/build-credit-provider/action.yml') }}
+    - name: Checkout payment-channels
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v5
+      with:
+        repository: solana-foundation/payment-channels
+        ref: ${{ inputs.ref }}
+        path: _credit-provider
+        fetch-depth: 1
+    - name: Install Anza CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sh -c "$(curl -sSfL https://release.anza.xyz/${{ inputs.agave }}/install)"
+        echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+    # Separate target directories: the provider links the channel crate with
+    # `no-entrypoint`, and sharing a target dir with the program build makes
+    # the two runtimes collide.
+    - name: Build the hook-enabled channel program
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: _credit-provider
+      env:
+        SOLEX_CHANNEL: stable
+        CARGO_TARGET_DIR: ${{ github.workspace }}/_credit-provider/target/channel-sbf
+      run: >-
+        cargo build-sbf --tools-version v1.58 --arch v3 --features hooks
+        --manifest-path program/payment_channels/Cargo.toml
+        --sbf-out-dir target/deploy-v2
+    - name: Build the credit provider
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: _credit-provider
+      env:
+        CARGO_TARGET_DIR: ${{ github.workspace }}/_credit-provider/target/provider-sbf
+      run: >-
+        cargo build-sbf --tools-version v1.58 --arch v3
+        --manifest-path examples/credit-provider/Cargo.toml
+        --sbf-out-dir target/deploy
+    - name: Locate artifacts
+      id: locate
+      shell: bash
+      run: |
+        channel="$GITHUB_WORKSPACE/_credit-provider/target/deploy-v2/payment_channels.so"
+        provider="$GITHUB_WORKSPACE/_credit-provider/target/deploy/credit_provider.so"
+        test -s "$channel" && test -s "$provider"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "provider=$provider" >> "$GITHUB_OUTPUT"
