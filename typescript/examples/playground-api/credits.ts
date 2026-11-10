@@ -282,10 +282,15 @@ async function sendFetchResponse(res: ExpressResponse, response: Response): Prom
   res.send(Buffer.from(await response.arrayBuffer()))
 }
 
-function artifact(variable: string): Uint8Array | null {
+/** The program artifact named by `variable`; null when unset, an error message when unreadable. */
+function artifact(variable: string): Uint8Array | null | string {
   const path = process.env[variable]
   if (!path) return null
-  return new Uint8Array(readFileSync(path))
+  try {
+    return new Uint8Array(readFileSync(path))
+  } catch (error) {
+    return `${variable}=${path} is not readable: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 /**
@@ -296,14 +301,16 @@ export async function registerCredits(
   app: Express,
   options: { network: string; operator: KeyPairSigner; recipient: string; rpcUrl: string; secretKey: string },
 ): Promise<boolean> {
-  const channelElf = artifact('PAYMENT_CHANNELS_V2_SO')
-  const providerElf = artifact('CREDIT_PROVIDER_SO')
   const disabled = (reason: string): false => {
     app.get('/api/v1/credits/status', (_req, res) => res.json({ enabled: false, reason }))
     return false
   }
+  // The network decides first: off the local sandbox the artifacts are never read.
   if (options.network !== 'localnet') return disabled('the credit-provider demo runs on the local sandbox only')
-  if (!channelElf || !providerElf) {
+  const channelElf = artifact('PAYMENT_CHANNELS_V2_SO')
+  const providerElf = artifact('CREDIT_PROVIDER_SO')
+  for (const elf of [channelElf, providerElf]) if (typeof elf === 'string') return disabled(elf)
+  if (!(channelElf instanceof Uint8Array) || !(providerElf instanceof Uint8Array)) {
     return disabled(
       'set PAYMENT_CHANNELS_V2_SO and CREDIT_PROVIDER_SO to the payment-channels artifacts (hook-enabled channel program and examples/credit-provider)',
     )
@@ -339,6 +346,10 @@ export async function registerCredits(
 
   const merchants = new Map<string, Merchant>()
   const pending = new Map<string, string>()
+  // The customer's channel between a successful open and its close. One run
+  // per customer: enrolling again while it is open would replace the ledger
+  // and the merchant store that channel still depends on.
+  const openChannels = new Map<string, string>()
 
   const merchantFor = async (customer: Address): Promise<Merchant> => {
     const known = merchants.get(customer)
@@ -398,6 +409,13 @@ export async function registerCredits(
   app.post('/api/v1/credits/enroll', async (req, res) => {
     try {
       const customer = parseCustomer((req.body as { customer?: unknown }).customer)
+      const open = openChannels.get(customer)
+      if (open) {
+        res.status(409).json({
+          error: `channel ${open} is still open for this wallet: finish that session first, or reset the wallet`,
+        })
+        return
+      }
       const ledger = await ledgerAddress(p.program, customer)
       await cheat(rpcUrl, 'surfnet_setAccount', [
         ledger,
@@ -514,11 +532,16 @@ export async function registerCredits(
         return
       }
       let action = 'unknown'
+      let channelId: string | undefined
       try {
-        action = (Credential.fromRequest(request).payload as { action?: string }).action ?? action
+        const payload = Credential.fromRequest(request).payload as { action?: string; channelId?: string }
+        action = payload.action ?? action
+        channelId = payload.channelId
       } catch {
         /* the handler already verified the credential */
       }
+      if (action === 'open' && channelId) openChannels.set(customer, channelId)
+      if (action === 'close') openChannels.delete(customer)
       if (action === 'voucher') merchant.served += 1
       const body =
         action === 'voucher'

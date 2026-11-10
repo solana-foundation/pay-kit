@@ -5,7 +5,9 @@ import {
   CREDITS_STEPS,
   creditsStatus,
   explorerTx,
-  runCreditsFlow,
+  creditsRunActive,
+  currentCreditsRun,
+  runCreditsOnce,
   type CreditsState,
   type CreditsStatus,
 } from '../lib/credits'
@@ -32,9 +34,15 @@ export function Credits({ onBalanceChange }: { onBalanceChange?: () => void }) {
   // The merchant's balance before this run, to show what the run paid it.
   const [merchantBefore, setMerchantBefore] = useState<string | null>(null)
   const [last, setLast] = useState<unknown>(null)
-  const [running, setRunning] = useState(false)
+  // A run started before this page was (re)mounted is still in flight.
+  const [running, setRunning] = useState(creditsRunActive)
   const [outcome, setOutcome] = useState<'success' | 'failed' | null>(null)
   const logId = useRef(0)
+
+  // Reopened while an earlier run is in flight: wait for it, then re-enable.
+  useEffect(() => {
+    currentCreditsRun()?.finally(() => setRunning(false))
+  }, [])
 
   useEffect(() => {
     creditsStatus()
@@ -63,7 +71,7 @@ export function Credits({ onBalanceChange }: { onBalanceChange?: () => void }) {
     setMerchantBefore(null)
     setLast(null)
     try {
-      for await (const event of runCreditsFlow()) {
+      await runCreditsOnce((event) => {
         switch (event.type) {
           case 'step':
             setSteps((prev) =>
@@ -83,7 +91,7 @@ export function Credits({ onBalanceChange }: { onBalanceChange?: () => void }) {
             setLast(event.body)
             break
         }
-      }
+      })
       setOutcome('success')
     } catch (error) {
       pushLog(`Error: ${error instanceof Error ? error.message : String(error)}`, 'error')

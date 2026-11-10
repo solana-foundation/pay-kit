@@ -111,6 +111,38 @@ function receiptTxHash(response: Response): string | undefined {
  * customer): enroll, 402, the provider's approval, the hooked open, three
  * voucher-paid requests and the hooked close.
  */
+/**
+ * The run in flight, if any. It lives at module scope, not in the page, so
+ * leaving and reopening the card never starts a second run for the wallet
+ * while the first is still going.
+ */
+let activeRun: Promise<void> | null = null
+
+export function creditsRunActive(): boolean {
+  return activeRun !== null
+}
+
+/** The run in flight (settles when it ends, whatever the outcome), or null. */
+export function currentCreditsRun(): Promise<void> | null {
+  return activeRun?.catch(() => undefined) ?? null
+}
+
+/**
+ * Run the flow once at a time: `onEvent` receives every event; a second call
+ * while a run is in flight is refused.
+ */
+export async function runCreditsOnce(onEvent: (event: CreditsEvent) => void): Promise<void> {
+  if (activeRun) throw new Error('a credit-funded session is already running for this wallet')
+  activeRun = (async () => {
+    for await (const event of runCreditsFlow()) onEvent(event)
+  })()
+  try {
+    await activeRun
+  } finally {
+    activeRun = null
+  }
+}
+
 export async function* runCreditsFlow(): AsyncGenerator<CreditsEvent> {
   const customer = await getSigner()
   const quoteUrl = `/api/v1/credits/${customer.address}/quote`

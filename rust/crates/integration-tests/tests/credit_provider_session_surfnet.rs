@@ -822,7 +822,7 @@ async fn surfnet() -> Option<Prepared> {
 /// backing into the provider and receives credits. `None` (after
 /// `skip_or_fail`) without `CREDIT_E2E_DEVNET_RPC`, `CREDIT_E2E_FUNDER` and
 /// `CREDIT_PROVIDER_SO` (the deployment-aware provider, payment-channels#112).
-async fn devnet() -> Option<Prepared> {
+async fn devnet() -> Option<(Prepared, DevnetCleanup)> {
     let (Ok(url), Ok(funder_path), Some(_)) = (
         std::env::var("CREDIT_E2E_DEVNET_RPC"),
         std::env::var("CREDIT_E2E_FUNDER"),
@@ -868,20 +868,9 @@ async fn devnet() -> Option<Prepared> {
         )
         .await;
 
-    let dir = std::env::temp_dir().join(format!("credit-e2e-devnet-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let issuer_path = dir.join("issuer.json");
-    let provider_path = dir.join("provider.json");
-    std::fs::write(
-        &issuer_path,
-        serde_json::to_string(&issuer_bytes.to_vec()).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(
-        &provider_path,
-        serde_json::to_string(&provider_bytes.to_vec()).unwrap(),
-    )
-    .unwrap();
+    let keys = PrivateKeyDir::new(&provider);
+    let issuer_path = keys.write("issuer.json", &issuer_bytes);
+    let provider_path = keys.write("provider.json", &provider_bytes);
     let so = std::env::var("CREDIT_PROVIDER_SO").unwrap();
     let out =
         std::process::Command::new(std::env::var("SOLANA_CLI").unwrap_or_else(|_| "solana".into()))
@@ -909,7 +898,7 @@ async fn devnet() -> Option<Prepared> {
             .output()
             .unwrap();
     // Ephemeral keys never outlive the deployment.
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(keys);
     assert!(
         out.status.success(),
         "provider deployment failed: {}",
@@ -959,18 +948,159 @@ async fn devnet() -> Option<Prepared> {
         )
         .await;
     println!("customer deposited {CREDITS} and holds {CREDITS} credits");
-    Some(Prepared {
-        chain,
-        _surfnet: None,
-        network: "devnet",
-        channel_program,
+    let cleanup = DevnetCleanup {
+        funder,
+        issuer_bytes,
         provider,
-        customer,
-        issuer,
-        operator,
-        mint,
-        treasury_owner,
-    })
+        url: url.clone(),
+    };
+    Some((
+        Prepared {
+            chain,
+            _surfnet: None,
+            network: "devnet",
+            channel_program,
+            provider,
+            customer,
+            issuer,
+            operator,
+            mint,
+            treasury_owner,
+        },
+        cleanup,
+    ))
+}
+
+/// A directory only the current user can read, holding the ephemeral
+/// keypair files `solana program deploy` takes; removed on drop. Created
+/// fresh (never reused, so no symlink or pre-existing file is followed).
+struct PrivateKeyDir(std::path::PathBuf);
+
+impl PrivateKeyDir {
+    fn new(tag: &Pubkey) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("credit-e2e-devnet-{}-{tag}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&dir)
+            .expect("create a fresh private key directory");
+        Self(dir)
+    }
+
+    fn write(&self, name: &str, keypair: &[u8; 64]) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = self.0.join(name);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options
+            .open(&path)
+            .and_then(|mut file| {
+                file.write_all(serde_json::to_string(&keypair.to_vec()).unwrap().as_bytes())
+            })
+            .expect("write a private keypair file");
+        path
+    }
+}
+
+impl Drop for PrivateKeyDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What a devnet run needs to give its SOL back: the funder, the issuer
+/// (the provider program's upgrade authority) and the provider program.
+struct DevnetCleanup {
+    funder: MemorySigner,
+    issuer_bytes: [u8; 64],
+    provider: Pubkey,
+    url: String,
+}
+
+impl DevnetCleanup {
+    /// Close the temporary provider program (its rent goes to the funder),
+    /// then sweep every ephemeral signer's remaining SOL back to the funder.
+    /// Rent held by the run's mint and token accounts stays behind.
+    async fn sweep(self, flow: &Flow) {
+        let funder = self.funder.pubkey();
+        let keys = PrivateKeyDir::new(&funder);
+        let issuer_path = keys.write("issuer.json", &self.issuer_bytes);
+        let out = std::process::Command::new(
+            std::env::var("SOLANA_CLI").unwrap_or_else(|_| "solana".into()),
+        )
+        .args([
+            "program",
+            "close",
+            &self.provider.to_string(),
+            "--url",
+            &self.url,
+            "--keypair",
+            issuer_path.to_str().unwrap(),
+            "--authority",
+            issuer_path.to_str().unwrap(),
+            "--recipient",
+            &funder.to_string(),
+            "--bypass-warning",
+            "--commitment",
+            "confirmed",
+        ])
+        .output()
+        .expect("run solana program close");
+        drop(keys);
+        if !out.status.success() {
+            println!(
+                "warning: closing provider program {} failed: {}",
+                self.provider,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        for signer in [&flow.issuer, &flow.customer, flow.operator.as_ref()] {
+            let balance = flow
+                .chain
+                .rpc
+                .get_balance(&signer.pubkey())
+                .await
+                .unwrap_or(0);
+            // One signature at the base fee; the emptied account is deleted.
+            let Some(amount) = balance.checked_sub(5_000).filter(|amount| *amount > 0) else {
+                continue;
+            };
+            if let Err(error) = flow
+                .chain
+                .try_send(
+                    &[signer],
+                    &[system_transfer(&signer.pubkey(), &funder, amount)],
+                )
+                .await
+            {
+                println!("warning: sweeping {}: {error}", signer.pubkey());
+            }
+        }
+        println!("devnet SOL returned to {funder}");
+    }
+}
+
+/// Poll `future`, turning a panic into an `Err` so cleanup still runs.
+struct CatchUnwind<F>(std::pin::Pin<Box<F>>);
+
+impl<F: std::future::Future> std::future::Future for CatchUnwind<F> {
+    type Output = std::thread::Result<F::Output>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let inner = self.0.as_mut();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.poll(cx))) {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(value)) => std::task::Poll::Ready(Ok(value)),
+            Err(panic) => std::task::Poll::Ready(Err(panic)),
+        }
+    }
 }
 
 /// SPL `Revoke`: the customer withdraws the provider's refund approval.
@@ -1336,7 +1466,7 @@ fn session_key() -> ([u8; 64], Pubkey) {
 /// (preFund debits credits and backs the deposit), three voucher-paid
 /// requests, close (postDistribute returns the unused principal and
 /// restores credits).
-async fn happy_path(flow: Flow) {
+async fn happy_path(flow: &Flow) {
     let (key, key_pk) = session_key();
     let approval = flow.authorize(CAP, &key_pk).await.expect("authorize");
     println!("provider authorization: {approval}");
@@ -1398,7 +1528,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     let Some(prepared) = surfnet().await else {
         return;
     };
-    happy_path(Flow::start(prepared, DEPOSIT / 2).await).await;
+    happy_path(&Flow::start(prepared, DEPOSIT / 2).await).await;
 }
 
 /// The same flow live on devnet, against the deployed canary channel program.
@@ -1412,10 +1542,16 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
 /// ```
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn credit_provider_funds_an_mpp_session_on_devnet() {
-    let Some(prepared) = devnet().await else {
+    let Some((prepared, cleanup)) = devnet().await else {
         return;
     };
-    happy_path(Flow::start(prepared, DEPOSIT / 2).await).await;
+    let flow = Flow::start(prepared, DEPOSIT / 2).await;
+    let outcome = CatchUnwind(Box::pin(happy_path(&flow))).await;
+    // Give the devnet SOL back whether or not the flow passed.
+    cleanup.sweep(&flow).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 /// A top-up runs the same funding callback: the provider debits more
