@@ -1,5 +1,12 @@
 export * from '../constants.js';
 export {
+    type ChannelHooks,
+    type ChannelVersion,
+    type HookAccount,
+    type HookDescriptor,
+    resolveChannelDeployment,
+} from '../shared/channel-hooks.js';
+export {
     isSolanaChargeChallenge,
     isSolanaSessionChallenge,
     selectSolanaChargeChallenge,
@@ -22,7 +29,6 @@ export {
 } from './PaymentChannels.js';
 export type { PaymentChannelOpen, PaymentChannelOpenTransaction } from './PaymentChannels.js';
 export {
-    type ChannelHooks,
     configAddress,
     type CreditDeployment,
     CreditProviderError,
@@ -30,8 +36,6 @@ export {
     deploymentForNetwork,
     devnetWithProgram,
     distributionHash,
-    type HookAccount,
-    type HookDescriptor,
     hooksForDeployment,
     isCreditChannel,
     ledgerAddress,

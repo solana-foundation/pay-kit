@@ -48,11 +48,13 @@ export function validateHooks(hooks: ChannelHooks): void {
         if (hook.programId === ZERO_ADDRESS || hook.programId === PAYMENT_CHANNELS_V2_PROGRAM_ID) {
             throw new Error('payment-channel ABI: enabled hook has zero or self target program');
         }
-        if (hook.accounts.length > MAX_HOOK_ACCOUNTS || hook.staticData.length > MAX_STATIC_DATA) {
+        const accounts = hook.accounts ?? [];
+        const staticData = hook.staticData ?? [];
+        if (accounts.length > MAX_HOOK_ACCOUNTS || staticData.length > MAX_STATIC_DATA) {
             throw new Error('payment-channel ABI: hook exceeds account or static-data bounds');
         }
         const seen = new Set<string>();
-        for (const account of hook.accounts) {
+        for (const account of accounts) {
             if (seen.has(account.address) || account.address === hook.programId) {
                 throw new Error('payment-channel ABI: duplicate or target-aliasing hook account');
             }
@@ -70,9 +72,11 @@ export function encodeOpenSuffix(hooks: ChannelHooks): Uint8Array {
         if (!hook) continue;
         bytes.push(...addressBytes(hook.programId));
         bytes.push(...hook.entrypoint);
-        bytes.push(hook.accounts.length, hook.staticData.length);
-        bytes.push(...hook.staticData);
-        for (const account of hook.accounts) {
+        const accounts = hook.accounts ?? [];
+        const staticData = hook.staticData ?? [];
+        bytes.push(accounts.length, staticData.length);
+        bytes.push(...staticData);
+        for (const account of accounts) {
             bytes.push(...addressBytes(account.address));
             bytes.push(account.writable ? 1 : 0);
         }
@@ -89,10 +93,12 @@ export function encodeFixed(hooks: ChannelHooks): Uint8Array {
         const out = bytes.subarray(index * HOOK_DESCRIPTOR_SIZE, (index + 1) * HOOK_DESCRIPTOR_SIZE);
         out.set(addressBytes(hook.programId), 0);
         out.set(hook.entrypoint, 32);
-        out[40] = hook.accounts.length;
-        out[41] = hook.staticData.length;
-        out.set(hook.staticData, 42);
-        hook.accounts.forEach((account, accountIndex) => {
+        const accounts = hook.accounts ?? [];
+        const staticData = hook.staticData ?? [];
+        out[40] = accounts.length;
+        out[41] = staticData.length;
+        out.set(staticData, 42);
+        accounts.forEach((account, accountIndex) => {
             const offset = 74 + accountIndex * 33;
             out.set(addressBytes(account.address), offset);
             out[offset + 32] = account.writable ? 1 : 0;
@@ -147,7 +153,7 @@ async function appendedHookAccounts(
         const authority = await findCallbackAuthority(channel, hash, phase, hook.programId, programAddress);
         metas.push({ address: address(hook.programId), role: AccountRole.READONLY });
         metas.push({ address: address(authority), role: AccountRole.READONLY });
-        for (const account of hook.accounts) {
+        for (const account of hook.accounts ?? []) {
             if (account.address === channel || account.address === authority) {
                 throw new Error('payment-channel ABI: hook extra aliases channel or callback authority');
             }

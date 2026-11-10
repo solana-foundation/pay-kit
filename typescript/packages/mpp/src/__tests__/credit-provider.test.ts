@@ -168,10 +168,10 @@ describe('hook derivation', () => {
         expect(descriptor.staticData).toEqual([]);
         expect(descriptor.accounts).toHaveLength(4);
         const ledger = await ledgerAddress(MUSEBOOK_DEVNET_DEPLOYMENT, payer.address, USDC_DEVNET_MINT);
-        expect(descriptor.accounts[0]).toEqual({ address: ledger, writable: true });
-        expect(descriptor.accounts[1]?.writable).toBe(true);
-        expect(descriptor.accounts[2]?.writable).toBe(true);
-        expect(descriptor.accounts[3]).toEqual({ address: SPL_TOKEN_PROGRAM_ID, writable: false });
+        expect(descriptor.accounts![0]).toEqual({ address: ledger, writable: true });
+        expect(descriptor.accounts![1]?.writable).toBe(true);
+        expect(descriptor.accounts![2]?.writable).toBe(true);
+        expect(descriptor.accounts![3]).toEqual({ address: SPL_TOKEN_PROGRAM_ID, writable: false });
     });
 
     test('isCreditChannel is an exact match, not a resemblance', async () => {

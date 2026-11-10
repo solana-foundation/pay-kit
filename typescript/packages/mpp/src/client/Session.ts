@@ -11,7 +11,8 @@ import type { Challenge as MppxChallenge, Receipt as MppxReceipt } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
-import type { ChannelHooks, CreditProvider } from '../shared/credit-provider.js';
+import type { ChannelHooks } from '../shared/channel-hooks.js';
+import type { CreditProvider } from '../shared/credit-provider.js';
 import { encodeVoucherMessageLoose } from '../shared/voucher.js';
 import type { TransactionVersion } from '../utils/transaction-versions.js';
 
@@ -69,15 +70,22 @@ export interface SessionSplit {
 /** Solana-specific method details carried by a session challenge. */
 export interface SessionMethodDetails {
     /**
-     * Immutable lifecycle callbacks approved when opening a V2 channel.
-     * Exclusive with `creditProvider`: a credit challenge must not also
-     * carry static hooks — the client derives the provider's per-payer
-     * hooks instead.
+     * Immutable lifecycle-hook policy the channel commits at open
+     * (mpp-specs-v2 V2 Lifecycle Hooks). Requires `channelVersion: 2`; the
+     * client encodes it into `openWithHooks` byte for byte and the server
+     * refuses any other configuration. Exclusive with `creditProvider`: a
+     * credit challenge must not also carry static hooks — the client
+     * derives the provider's per-payer hooks instead.
      */
     readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId?: string | undefined;
     readonly channelProgram: string;
-    /** Channel account/instruction ABI. Absent means V1, not auto-detection. */
+    /**
+     * Channel ABI version (mpp-specs-v2 Versioned Channel Profiles): absent
+     * or 1 is the V1 instruction set, 2 the hooked family (`openWithHooks`
+     * 10, `topUpWithHooks` 11, `distributeWithHooks` 12,
+     * `withdrawPayerWithHooks` 13) on the same program.
+     */
     readonly channelVersion?: number | undefined;
     /**
      * Issuer that co-signs the credit `authorize` (base58). Present exactly

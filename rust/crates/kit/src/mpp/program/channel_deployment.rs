@@ -39,7 +39,7 @@ pub(crate) fn resolve(
         ));
     }
     if let Some(hooks) = hooks {
-        hooks.validate()?;
+        hooks.validate_for_program(&deployment.program_id)?;
     }
     Ok(deployment)
 }
@@ -67,7 +67,9 @@ mod tests {
         let program = crate::core::payment_channels::default_program_id();
         assert_eq!(resolve(program, None, None).unwrap().version, 1);
         assert_eq!(resolve(program, Some(1), None).unwrap().version, 1);
-        assert!(resolve(program, Some(2), None).is_err());
+        // The canonical program runs the dual-version runtime too; V2 is an
+        // explicit selection, never implied by the address.
+        assert_eq!(resolve(program, Some(2), None).unwrap().version, 2);
         assert!(resolve(program, Some(3), None).is_err());
         assert!(resolve(program, None, Some(&ChannelHooks::default())).is_err());
     }
@@ -75,8 +77,8 @@ mod tests {
     #[test]
     fn v2_requires_explicit_matching_abi() {
         let program = Pubkey::from_str("CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ").unwrap();
-        assert!(resolve(program, None, None).is_err());
-        assert!(resolve(program, Some(1), None).is_err());
+        assert_eq!(resolve(program, None, None).unwrap().version, 1);
+        assert_eq!(resolve(program, Some(1), None).unwrap().version, 1);
         assert_eq!(resolve(program, Some(2), None).unwrap().version, 2);
         assert!(resolve(Pubkey::new_unique(), Some(2), None).is_err());
     }

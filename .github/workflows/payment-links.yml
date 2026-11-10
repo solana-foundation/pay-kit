@@ -51,7 +51,8 @@ jobs:
     name: e2e (typescript)
     needs: changes
     if: needs.changes.outputs.typescript == 'true'
-    runs-on: ubuntu-latest
+    # Playwright Chromium does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -117,7 +118,8 @@ jobs:
     name: e2e (rust)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    # Playwright Chromium does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -178,7 +180,8 @@ jobs:
     name: e2e (go)
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    # Playwright Chromium does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6

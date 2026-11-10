@@ -17,3 +17,8 @@
 	url = https://github.com/solana-foundation/x402.git
 	shallow = true
 	branch = feat/svm-client-transaction-v1
+[submodule "external/mpp-specs-v2"]
+	path = external/mpp-specs-v2
+	url = https://github.com/solana-foundation/mpp-specs.git
+	shallow = true
+	branch = docs/mpp-v2-channel-profiles
