@@ -87,19 +87,27 @@ jobs:
           # the hosted load balancer's cross-request blockhash races.
           SURFPOOL_REMOTE_RPC_URL: https://402.surfnet.dev:8899
         run: |
-          node harness/start-surfnet-proxy.mjs &
-          ready=0
-          for i in $(seq 1 50); do
-            if curl -sf -X POST http://localhost:8899 \
+          node harness/start-surfnet-proxy.mjs > "$RUNNER_TEMP/surfnet.log" 2>&1 &
+          surfnet_pid=$!
+          # Forked startup can take longer than the offline payment-link jobs.
+          deadline=$((SECONDS + 120))
+          while (( SECONDS < deadline )); do
+            if ! kill -0 "$surfnet_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/surfnet.log"
+              exit 1
+            fi
+            if curl --max-time 2 -sf -X POST http://localhost:8899 \
               -H "Content-Type: application/json" \
               -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
               | grep -q '"result":"ok"'; then
-              ready=1
-              break
+              cat "$RUNNER_TEMP/surfnet.log"
+              exit 0
             fi
-            sleep 0.2
+            sleep 1
           done
-          test "$ready" -eq 1
+          echo "Surfnet did not become healthy in 120s; startup log:"
+          cat "$RUNNER_TEMP/surfnet.log"
+          exit 1
       - name: Install branch TypeScript dependencies
         working-directory: typescript
         run: pnpm install --frozen-lockfile

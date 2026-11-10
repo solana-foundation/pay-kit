@@ -115,7 +115,8 @@ fn check_id(id: &str) -> bool {
 /// `<repo>/specs/<path>.md` for any pinned repository (`SpecRepo::ALL`).
 fn check_doc(doc: &str) -> bool {
     // Any pinned spec checkout (`case::SpecRepo`): mpp-specs/, x402/, and
-    // the unmerged drafts (mpp-specs-solana/, mpp-specs-txv1/, x402-txv1/).
+    // the unmerged drafts (mpp-specs-solana/, mpp-specs-txv1/, x402-txv1/,
+    // mpp-specs-v2/).
     let rest = crate::case::SpecRepo::ALL.iter().find_map(|repo| {
         doc.strip_prefix(repo.prefix())
             .and_then(|r| r.strip_prefix("/specs/"))
@@ -176,7 +177,7 @@ pub fn validate(vector: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .is_some_and(check_doc)
     {
-        return Err("spec.doc must be <pinned repo>/specs/....md (mpp-specs, x402, mpp-specs-solana, mpp-specs-txv1, x402-txv1)".into());
+        return Err("spec.doc must be <pinned repo>/specs/....md (mpp-specs, x402, mpp-specs-solana, mpp-specs-txv1, x402-txv1, mpp-specs-v2)".into());
     }
     if spec
         .get("section")

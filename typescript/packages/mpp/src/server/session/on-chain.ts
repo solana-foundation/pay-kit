@@ -65,8 +65,18 @@ import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channe
 import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
 import { getOpenArgsDecoder } from '../../generated/payment-channels/types/openArgs.js';
 import {
-    AUTHORIZE_INSTRUCTION_TAG,
     type ChannelHooks,
+    type ChannelVersion,
+    decodeChannelHooks,
+    DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR,
+    encodeOpenHookSuffix,
+    OPEN_WITH_HOOKS_DISCRIMINATOR,
+    sameChannelHooks,
+    TOP_UP_WITH_HOOKS_DISCRIMINATOR,
+    withLifecycleHooks,
+} from '../../shared/channel-hooks.js';
+import {
+    AUTHORIZE_INSTRUCTION_TAG,
     configAddress,
     type CreditDeployment,
     decodeAuthorization,
@@ -77,7 +87,7 @@ import {
     MUSEBOOK_COMPUTE_UNIT_LIMIT,
     SPL_TOKEN_PROGRAM_ID,
 } from '../../shared/credit-provider.js';
-import { buildOpenWithHooks, OPEN_WITH_HOOKS_DISCRIMINATOR } from '../../shared/payment-channels-v2.js';
+import { buildOpenWithHooks } from '../../shared/payment-channels-v2.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
 import {
@@ -358,7 +368,11 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
 
 /** Arguments to {@link buildDistributeInstruction}. */
 export interface DistributeBuildArgs {
+    /** The channel's committed hook policy (V2); the distribution pair's bundle is appended. */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelState: { readonly channelId: string; readonly payee: string; readonly payer: string };
+    /** Channel ABI version; 2 builds `distributeWithHooks` (12). */
+    readonly channelVersion?: ChannelVersion | undefined;
     readonly mint: string;
     /** Cluster the channel lives on; selects the deployment's treasury owner. */
     readonly network: string;
@@ -435,13 +449,25 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
         } as unknown as Parameters<typeof getDistributeInstruction>[0],
         { programAddress: programId },
     );
+    if (args.channelVersion === 2) {
+        return (await withLifecycleHooks(ix as unknown as Instruction, {
+            channel: args.channelState.channelId,
+            discriminator: DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR,
+            hooks: args.channelHooks ?? {},
+            phases: [2, 4],
+        })) as unknown as ServerInstruction;
+    }
     return ix as unknown as ServerInstruction;
 }
 
 /** Arguments to the top_up instruction builder. */
 export interface TopUpBuildArgs {
     readonly amount: bigint;
+    /** The channel's committed hook policy (V2); the funding pair's bundle is appended. */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId: string;
+    /** Channel ABI version; 2 builds `topUpWithHooks` (11). */
+    readonly channelVersion?: ChannelVersion | undefined;
     readonly mint: string;
     readonly payer: TransactionSigner;
     readonly programId?: Address | undefined;
@@ -472,6 +498,14 @@ export async function buildTopUpInstruction(args: TopUpBuildArgs): Promise<Serve
         },
         { programAddress: programId },
     );
+    if (args.channelVersion === 2) {
+        return (await withLifecycleHooks(ix as unknown as Instruction, {
+            channel: args.channelId,
+            discriminator: TOP_UP_WITH_HOOKS_DISCRIMINATOR,
+            hooks: args.channelHooks ?? {},
+            phases: [0, 2],
+        })) as unknown as ServerInstruction;
+    }
     return ix as unknown as ServerInstruction;
 }
 
@@ -511,8 +545,16 @@ export function buildReclaimInstruction(args: ReclaimBuildArgs): ServerInstructi
  */
 export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
+    /**
+     * The advertised hook policy (V2). The open's compact configuration and
+     * callback bundle must encode exactly this; mirrors the
+     * `channel_hooks` comparison in the Rust SessionServer.
+     */
+    readonly channelHooks?: ChannelHooks | undefined;
     /** Optional override for the payment-channels program id. */
     readonly channelProgram?: string | undefined;
+    /** Advertised channel ABI version; 2 expects `openWithHooks` (10). */
+    readonly channelVersion?: ChannelVersion | undefined;
     /**
      * The pinned credit deployment, when the session is credit-backed. Set
      * together with `creditHooks`: the verifier then expects an
@@ -702,8 +744,11 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             throw new Error('verifyOpenTx: credit open does not target the pinned V2 channel program');
         }
     }
-    const expectedDiscriminator = creditHooks ? OPEN_WITH_HOOKS_DISCRIMINATOR : OPEN_DISCRIMINATOR;
-
+    // A V2 server expects the hooked open (10); the V1 tag never opens a
+    // hooked channel and the hooked tag never lands on a V1 server
+    // (mpp-specs-v2 Versioned Channel Profiles). Credit sessions are V2.
+    const openDiscriminator =
+        creditHooks !== undefined || expected.channelVersion === 2 ? OPEN_WITH_HOOKS_DISCRIMINATOR : OPEN_DISCRIMINATOR;
     let openIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
     const computeBudgetIxs: CompiledComputeBudgetInstruction[] = [];
     const orderedPrograms: { data?: Uint8Array | undefined; program: string }[] = [];
@@ -722,7 +767,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         // empty data, or a second open) would ride along under the sponsor's
         // co-signature. Mirrors the Rust SessionServer instruction allowlist.
         // Some decoders omit `data` entirely for empty instruction data.
-        if (!ix.data || ix.data.length < 1 || ix.data[0] !== expectedDiscriminator || openIx) {
+        if (!ix.data || ix.data.length < 1 || ix.data[0] !== openDiscriminator || openIx) {
             throw new Error('verifyOpenTx: open transaction contains an unexpected instruction');
         }
         openIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
@@ -888,6 +933,11 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     const baseExpectedOpen = await buildExpectedOpenInstruction({
         authorizedSigner: authorizedSignerAddr,
         channel: channelAddr,
+        // For a credit open the hooked transform is layered on below via
+        // `buildOpenWithHooks`, so the base here stays the plain open; the
+        // static-hooks profile transforms inside the builder instead.
+        channelHooks: creditHooks ? undefined : expected.channelHooks,
+        channelVersion: creditHooks ? 1 : expected.channelVersion,
         deposit,
         gracePeriod,
         mint: mintAddr,
@@ -1192,6 +1242,8 @@ export async function deriveChannelAddress(args: {
 async function buildExpectedOpenInstruction(args: {
     readonly authorizedSigner: string;
     readonly channel: string;
+    readonly channelHooks?: ChannelHooks | undefined;
+    readonly channelVersion?: ChannelVersion | undefined;
     readonly deposit: bigint;
     readonly gracePeriod: number;
     readonly mint: string;
@@ -1236,6 +1288,16 @@ async function buildExpectedOpenInstruction(args: {
         },
         { programAddress: args.programAddress },
     );
+    if (args.channelVersion === 2) {
+        const hooks = args.channelHooks ?? {};
+        return (await withLifecycleHooks(ix as unknown as Instruction, {
+            channel: args.channel,
+            discriminator: OPEN_WITH_HOOKS_DISCRIMINATOR,
+            hooks,
+            phases: [0, 2],
+            suffix: encodeOpenHookSuffix(hooks),
+        })) as unknown as ServerInstruction;
+    }
     return ix as unknown as ServerInstruction;
 }
 
@@ -1406,8 +1468,12 @@ async function verifyClientTransactionSignatures(
 /** Arguments to {@link verifyTopUpTx}. */
 export interface VerifyTopUpTxArgs {
     readonly additionalAmount: bigint;
+    /** The channel's committed hook policy (V2). */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId: string;
     readonly channelProgram: string;
+    /** Channel ABI version; 2 expects `topUpWithHooks` (11) with its bundle. */
+    readonly channelVersion?: ChannelVersion | undefined;
     /** The transaction fee payer the channel's policy requires. */
     readonly feePayer?: string | undefined;
     /** SPL mint of the channel; with `tokenProgram`, pins the instruction's accounts. */
@@ -1457,7 +1523,9 @@ export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
         args.mint && args.tokenProgram
             ? await buildTopUpInstruction({
                   amount: args.additionalAmount,
+                  channelHooks: args.channelHooks,
                   channelId: args.channelId,
+                  channelVersion: args.channelVersion,
                   mint: args.mint,
                   payer: createNoopSigner(address(args.payer)),
                   programId: address(args.channelProgram),
@@ -1729,6 +1797,21 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
         ) {
             throw new Error('submitOpenTx: confirmed channel state does not match the verified open transaction');
         }
+        // A hooked channel also commits its policy: the 1121-byte account
+        // must be version 2 with an idle guard and the advertised descriptors.
+        if (args.expected.channelVersion === 2) {
+            const info = (await args.rpc
+                .getAccountInfo(address(verified.channelId), { commitment: 'confirmed', encoding: 'base64' })
+                .send()) as { readonly value: { readonly data: readonly [string, string] } | null };
+            const raw = info.value?.data[0];
+            if (!raw) throw new Error('submitOpenTx: confirmed channel account is missing');
+            const hooks = await decodeChannelHooks(getBase64Codec().encode(raw), args.expected.channelProgram);
+            if (!sameChannelHooks(hooks.hooks, args.expected.channelHooks)) {
+                throw new Error(
+                    'submitOpenTx: confirmed channel hook configuration does not match the advertised policy',
+                );
+            }
+        }
     };
     let signature: Signature;
     try {
@@ -1773,7 +1856,11 @@ export interface SubmitSettleAndDistributeArgs {
      * this with a real pipe/sign call.
      */
     readonly buildAndSignWireTransaction: (instructions: readonly ServerInstruction[]) => Promise<string>;
+    /** The channel's committed hook policy (V2); the distribution pair's bundle is appended. */
+    readonly channelHooks?: ChannelHooks | undefined;
     readonly channelId: string;
+    /** Channel ABI version; 2 distributes with `distributeWithHooks` (12). */
+    readonly channelVersion?: ChannelVersion | undefined;
     readonly currency?: string | undefined;
     readonly mint: string;
     /** Cluster the channel lives on; selects the deployment's treasury owner. */
@@ -1842,7 +1929,9 @@ export async function submitSettleAndDistribute(
     });
 
     const distribute = await buildDistributeInstruction({
+        channelHooks: args.channelHooks,
         channelState: { channelId: args.channelId, payee: args.payee, payer: args.payer },
+        channelVersion: args.channelVersion,
         mint: args.mint,
         network: args.network,
         payerAddr: args.payer,
