@@ -4,25 +4,6 @@ import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from './constants.js';
 
 const sessionVoucherSigner = z.enum(['client', 'operator']);
 
-/**
- * V2 channel lifecycle hooks (mirrors `ChannelHooks` in
- * `rust/crates/kit/src/core/payment_channel/v2.rs`): byte fields are JSON
- * number arrays, exactly as the Rust serde representation carries them.
- */
-const hookAccount = z.object({ address: z.string(), writable: z.boolean() });
-const hookDescriptor = z.object({
-    accounts: z.array(hookAccount),
-    entrypoint: z.array(z.number()),
-    programId: z.string(),
-    staticData: z.array(z.number()),
-});
-const channelHooks = z.object({
-    postDistribute: z.optional(hookDescriptor),
-    postFund: z.optional(hookDescriptor),
-    preDistribute: z.optional(hookDescriptor),
-    preFund: z.optional(hookDescriptor),
-});
-
 /** Recognized credit providers (reviewed lowercase names only). */
 const creditProvider = z.enum(['coinflow', 'musebook']);
 const sessionAuthentication = z.object({
@@ -60,6 +41,31 @@ const voucherExpiresAt = z
  * numbers and a bare integer are refused. Absent means `[0]`.
  */
 const transactionVersions = z.array(z.union([z.literal(0), z.literal(1)]));
+
+/**
+ * `methodDetails.channelHooks` (mpp-specs-v2 V2 Lifecycle Hooks): the
+ * immutable callback policy a hooked channel commits at open. Four optional
+ * slots; each descriptor binds a target program, an exactly 8-byte
+ * entrypoint, at most four `{address, writable}` extra accounts (never
+ * signers) and at most 32 bytes of static context. Unknown fields are
+ * malformed configuration, not hints to ignore.
+ */
+const hookByte = z.number().check(z.int(), z.minimum(0), z.maximum(255));
+const hookAccount = z.strictObject({ address: z.string(), writable: z.boolean() });
+const hookDescriptor = z.strictObject({
+    accounts: z.optional(z.array(hookAccount).check(z.maxLength(4))),
+    entrypoint: z.array(hookByte).check(z.length(8)),
+    programId: z.string(),
+    staticData: z.optional(z.array(hookByte).check(z.maxLength(32))),
+});
+const channelHooks = z.strictObject({
+    postDistribute: z.optional(hookDescriptor),
+    postFund: z.optional(hookDescriptor),
+    preDistribute: z.optional(hookDescriptor),
+    preFund: z.optional(hookDescriptor),
+});
+/** `methodDetails.channelVersion`: a JSON integer; absent is V1, 2 selects the hooked profile. */
+const channelVersion = z.number().check(z.int(), z.minimum(0));
 
 const signedVoucher = z.object({
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
@@ -373,11 +379,13 @@ export const session = Method.from({
             description: z.optional(z.string()),
             externalId: z.optional(z.string()),
             methodDetails: z.object({
+                /** Immutable lifecycle-hook policy of a V2 channel (requires channelVersion 2). */
                 channelHooks: z.optional(channelHooks),
+
                 channelId: z.optional(z.string()),
                 channelProgram: z.string(),
-                /** Channel account/instruction ABI. Absent means V1, not auto-detection. */
-                channelVersion: z.optional(z.number()),
+                /** Channel ABI version: absent or 1 is V1, 2 selects the hooked instruction family. */
+                channelVersion: z.optional(channelVersion),
                 /** Issuer that co-signs the credit `authorize`. Present exactly when `creditProvider` is. */
                 creditIssuer: z.optional(z.string()),
                 /** Credit provider whose per-payer hooks the client must derive. Exclusive with `channelHooks`. */

@@ -82,7 +82,7 @@ impl ReqId {
                 Ok(Self(id.to_string()))
             }
             _ => Err(format!(
-                "invalid requirement id {id:?}: expected <MPP|X402|MPPTX|X402TX>-<10 hex>"
+                "invalid requirement id {id:?}: expected <MPP|X402|MPPTX|X402TX|MPPV2>-<10 hex>"
             )),
         }
     }
@@ -110,15 +110,21 @@ pub enum SpecRepo {
     /// PR 3473): SVM transaction-version negotiation for exact, upto and
     /// batch-settlement, not yet merged upstream.
     X402TxV1,
+    /// `external/mpp-specs-v2` (solana-foundation/mpp-specs
+    /// docs/mpp-v2-channel-profiles, PR 3): the V2 channel profile with
+    /// lifecycle hooks for the Solana session and charge methods, not yet
+    /// merged upstream.
+    MppSpecsV2,
 }
 
 impl SpecRepo {
-    pub const ALL: [SpecRepo; 5] = [
+    pub const ALL: [SpecRepo; 6] = [
         SpecRepo::MppSpecs,
         SpecRepo::X402,
         SpecRepo::MppSpecsSolana,
         SpecRepo::MppSpecsTxV1,
         SpecRepo::X402TxV1,
+        SpecRepo::MppSpecsV2,
     ];
 
     /// Prefix of `SpecRef::doc` naming this repository.
@@ -129,6 +135,7 @@ impl SpecRepo {
             SpecRepo::MppSpecsSolana => "mpp-specs-solana",
             SpecRepo::MppSpecsTxV1 => "mpp-specs-txv1",
             SpecRepo::X402TxV1 => "x402-txv1",
+            SpecRepo::MppSpecsV2 => "mpp-specs-v2",
         }
     }
 
@@ -140,6 +147,7 @@ impl SpecRepo {
             SpecRepo::MppSpecsSolana => "external/mpp-specs-solana",
             SpecRepo::MppSpecsTxV1 => "external/mpp-specs-txv1",
             SpecRepo::X402TxV1 => "external/x402-txv1",
+            SpecRepo::MppSpecsV2 => "external/mpp-specs-v2",
         }
     }
 
@@ -152,6 +160,9 @@ impl SpecRepo {
             // keeps their sentence ids apart from the merged documents'.
             SpecRepo::MppSpecsTxV1 => "MPPTX",
             SpecRepo::X402TxV1 => "X402TX",
+            // The V2 profile draft rewrites much of the session document; its
+            // sentence ids stay apart from the merged text's.
+            SpecRepo::MppSpecsV2 => "MPPV2",
         }
     }
 }

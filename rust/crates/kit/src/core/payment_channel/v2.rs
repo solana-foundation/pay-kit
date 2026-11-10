@@ -10,27 +10,21 @@ use super::v1;
 use crate::core::{Error, Result};
 use crate::generated::payment_channels::generated::accounts::Channel;
 
+/// The canary deployment (`Solex.toml` channel `canary`). Both known programs
+/// run the dual-version runtime: V1 and hooked V2 accounts load at the same
+/// address, so the ABI version is explicit configuration, never inferred from
+/// the program id.
 pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ";
-pub const CHANNEL_ACCOUNT_SIZE: usize = 1121;
-pub const HOOK_DESCRIPTOR_SIZE: usize = 206;
-pub const MAX_HOOK_ACCOUNTS: usize = 4;
-pub const MAX_STATIC_DATA: usize = 32;
-
-/// Outer discriminators of the hook-carrying V2 instructions
-/// (`payment-channels` `OpenWithHooks`..`WithdrawPayerWithHooks`). The base
-/// V1 tags (1/3/7/8) reject trailing hook data and never run callbacks.
+/// Hooked instructions have their own discriminators; the V1 tags never
+/// operate on a V2 account and vice versa.
 pub const OPEN_WITH_HOOKS_DISCRIMINATOR: u8 = 10;
 pub const TOP_UP_WITH_HOOKS_DISCRIMINATOR: u8 = 11;
 pub const DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR: u8 = 12;
 pub const WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR: u8 = 13;
-
-/// Only hook-carrying configurations switch to the `*WithHooks` tags; the
-/// empty-hooks encoding is left exactly as before.
-fn retag(instruction: &mut Instruction, hooks: &ChannelHooks, tag: u8) {
-    if !hooks.is_empty() {
-        instruction.data[0] = tag;
-    }
-}
+pub const CHANNEL_ACCOUNT_SIZE: usize = 1121;
+pub const HOOK_DESCRIPTOR_SIZE: usize = 206;
+pub const MAX_HOOK_ACCOUNTS: usize = 4;
+pub const MAX_STATIC_DATA: usize = 32;
 
 /// Additional callback accounts never acquire signer privileges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,9 +80,7 @@ impl ChannelHooks {
     pub fn validate(&self) -> Result<()> {
         for hook in self.slots().into_iter().flatten() {
             let program = v1::parse_pubkey(&hook.program_id)?;
-            if program == Pubkey::default()
-                || program == v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?
-            {
+            if program == Pubkey::default() {
                 return Err(invalid("enabled hook has zero or self target program"));
             }
             if hook.accounts.len() > MAX_HOOK_ACCOUNTS || hook.static_data.len() > MAX_STATIC_DATA {
@@ -100,6 +92,17 @@ impl ChannelHooks {
                 if !seen.insert(address) || address == program {
                     return Err(invalid("duplicate or target-aliasing hook account"));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate self targets against the deployment selected by the caller.
+    pub fn validate_for_program(&self, program_id: &Pubkey) -> Result<()> {
+        self.validate()?;
+        for hook in self.slots().into_iter().flatten() {
+            if v1::parse_pubkey(&hook.program_id)? == *program_id {
+                return Err(invalid("enabled hook has zero or self target program"));
             }
         }
         Ok(())
@@ -179,20 +182,21 @@ impl Deployment {
         self.decode_channel(data)
     }
 
+    /// Bind a known program to an explicit ABI version. An absent version is
+    /// V1; version 2 selects the hooked instruction family on the same program.
     pub fn resolve(program_id: Pubkey, version: Option<u8>) -> Result<Self> {
-        let actual = if program_id == v1::default_program_id() {
-            1
-        } else if program_id == v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)? {
-            2
-        } else {
+        if program_id != v1::default_program_id()
+            && program_id != v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?
+        {
             return Err(invalid("unknown channel program"));
-        };
-        if version.unwrap_or(1) != actual {
-            return Err(invalid("program and ABI version mismatch"));
+        }
+        let version = version.unwrap_or(1);
+        if !matches!(version, 1 | 2) {
+            return Err(invalid("unsupported channel ABI version"));
         }
         Ok(Self {
             program_id,
-            version: actual,
+            version,
         })
     }
 
@@ -200,7 +204,7 @@ impl Deployment {
         // Revalidate because the public fields are useful to callers but mutable.
         Self::resolve(self.program_id, Some(self.version))?;
         if self.version == 2 {
-            return decode_channel(data);
+            return decode_channel_for_program(data, &self.program_id);
         }
         Ok(ChannelState {
             channel: decode_base(data, 1)?,
@@ -229,6 +233,10 @@ fn decode_base(data: &[u8], version: u8) -> Result<Channel> {
 }
 
 pub fn decode_channel(data: &[u8]) -> Result<ChannelState> {
+    decode_channel_for_program(data, &v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID)?)
+}
+
+fn decode_channel_for_program(data: &[u8], program_id: &Pubkey) -> Result<ChannelState> {
     if data.len() != CHANNEL_ACCOUNT_SIZE {
         return Err(invalid("invalid V2 channel length"));
     }
@@ -281,7 +289,7 @@ pub fn decode_channel(data: &[u8]) -> Result<ChannelState> {
         pre_distribute,
         post_distribute,
     };
-    hooks.validate()?;
+    hooks.validate_for_program(program_id)?;
     if hooks.config_hash()? != data[265..297] {
         return Err(invalid("hook configuration hash mismatch"));
     }
@@ -332,6 +340,7 @@ fn append_hooks(
 ) -> Result<()> {
     let program = v1::from_address(&instruction.program_id);
     Deployment::resolve(program, Some(2))?;
+    hooks.validate_for_program(&program)?;
     let hash = hooks.config_hash()?;
     for phase in phases {
         if let Some(hook) = hooks.slots()[phase] {
@@ -365,8 +374,8 @@ pub fn build_open_instruction(
     hooks: &ChannelHooks,
 ) -> Result<Instruction> {
     let mut instruction = v1::build_open_instruction(params);
+    instruction.data[0] = OPEN_WITH_HOOKS_DISCRIMINATOR;
     instruction.data.extend(hooks.encode_open_suffix()?);
-    retag(&mut instruction, hooks, OPEN_WITH_HOOKS_DISCRIMINATOR);
     append_hooks(
         &mut instruction,
         &v1::derive_channel_addresses(params).channel,
@@ -388,7 +397,7 @@ pub fn build_top_up_instruction(
 ) -> Result<Instruction> {
     let mut instruction =
         v1::build_top_up_instruction(payer, channel, mint, amount, token_program, program_id);
-    retag(&mut instruction, hooks, TOP_UP_WITH_HOOKS_DISCRIMINATOR);
+    instruction.data[0] = TOP_UP_WITH_HOOKS_DISCRIMINATOR;
     append_hooks(&mut instruction, channel, hooks, 0..2)?;
     Ok(instruction)
 }
@@ -417,7 +426,7 @@ pub fn build_distribute_instruction(
         token_program,
         program_id,
     );
-    retag(&mut instruction, hooks, DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR);
+    instruction.data[0] = DISTRIBUTE_WITH_HOOKS_DISCRIMINATOR;
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -447,11 +456,7 @@ pub fn build_withdraw_payer_instruction(
     }
     .instruction();
     instruction.program_id = v1::to_address(program_id);
-    retag(
-        &mut instruction,
-        hooks,
-        WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR,
-    );
+    instruction.data = vec![WITHDRAW_PAYER_WITH_HOOKS_DISCRIMINATOR];
     append_hooks(&mut instruction, channel, hooks, 2..4)?;
     Ok(instruction)
 }
@@ -535,6 +540,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn self_targets_follow_selected_deployment() {
+        let canonical = v1::default_program_id();
+        let canary = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
+        for (program, other) in [(canonical, canary), (canary, canonical)] {
+            let mut hooks = hooks();
+            hooks.pre_fund.as_mut().unwrap().program_id = program.to_string();
+            assert!(hooks.validate_for_program(&program).is_err());
+            let deployment = Deployment::resolve(program, Some(2)).unwrap();
+            assert!(deployment.decode_channel(&state(&hooks)).is_err());
+            hooks.pre_fund.as_mut().unwrap().program_id = other.to_string();
+            assert!(hooks.validate_for_program(&program).is_ok());
+            assert!(deployment.decode_channel(&state(&hooks)).is_ok());
+        }
+    }
+
     fn state(hooks: &ChannelHooks) -> Vec<u8> {
         let mut bytes = vec![0; CHANNEL_ACCOUNT_SIZE];
         bytes[0] = 1;
@@ -606,10 +627,20 @@ mod tests {
         );
         let v2 = v1::parse_pubkey(PAYMENT_CHANNELS_PROGRAM_ID).unwrap();
         assert_eq!(Deployment::resolve(v2, Some(2)).unwrap().version, 2);
-        assert!(Deployment::resolve(v2, None).is_err());
-        assert!(Deployment::resolve(v2, Some(1)).is_err());
+        // Both known programs run the dual-version runtime; the version is
+        // explicit configuration and defaults to V1.
+        assert_eq!(Deployment::resolve(v2, None).unwrap().version, 1);
+        assert_eq!(Deployment::resolve(v2, Some(1)).unwrap().version, 1);
+        assert_eq!(
+            Deployment::resolve(v1::default_program_id(), Some(2))
+                .unwrap()
+                .version,
+            2
+        );
         assert!(Deployment::resolve(Pubkey::new_from_array([5; 32]), None).is_err());
+        assert!(Deployment::resolve(Pubkey::new_from_array([5; 32]), Some(2)).is_err());
         assert!(Deployment::resolve(v1::default_program_id(), Some(3)).is_err());
+        assert!(Deployment::resolve(v1::default_program_id(), Some(0)).is_err());
     }
 
     #[test]
@@ -674,7 +705,7 @@ mod tests {
             &channel,
             &mint,
             &token,
-            &v1::default_program_id(),
+            &Pubkey::new_unique(),
             &config,
         )
         .is_err());
@@ -773,7 +804,7 @@ mod tests {
             .all(|account| !account.is_signer));
 
         let mut wrong_program = params;
-        wrong_program.program_id = v1::default_program_id();
+        wrong_program.program_id = Pubkey::new_unique();
         assert!(build_open_instruction(&wrong_program, &hooks).is_err());
     }
 

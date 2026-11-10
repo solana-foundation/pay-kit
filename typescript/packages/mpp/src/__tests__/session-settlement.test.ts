@@ -987,6 +987,37 @@ async function usdcAta(owner: string): Promise<string> {
     return ata;
 }
 
+describe('session() preserves the stored channel ABI', () => {
+    test.each([undefined, 1] as const)('V1 channel (%s) closes after switching the server to V2', async version => {
+        const { f, sent, voucher, rpc } = await watermarkedFixture();
+        await f.store.updateChannel(f.channel.address, current => ({ ...current!, channelVersion: version }));
+        const method = makeMethod(f, rpc, { channelVersion: 2 });
+        await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
+        expect(
+            decodeSent(sent[0]!)
+                .filter(ix => ix.program === PAYMENT_CHANNELS_PROGRAM_ID.toString())
+                .map(ix => ix.data[0]),
+        ).toContain(7);
+    });
+
+    test('V2 close keeps its stored distribution hook after server configuration changes', async () => {
+        const { f, sent, voucher, rpc } = await watermarkedFixture();
+        const hookProgram = (await generateKeyPairSigner()).address;
+        await f.store.updateChannel(f.channel.address, current => ({
+            ...current!,
+            channelVersion: 2,
+            channelHooks: { postDistribute: { programId: hookProgram, entrypoint: [1, 2, 3, 4, 5, 6, 7, 8] } },
+        }));
+        const method = makeMethod(f, rpc, { channelVersion: 2, channelHooks: {} });
+        await verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher }));
+        const distribute = decodeSent(sent[0]!).find(
+            ix => ix.program === PAYMENT_CHANNELS_PROGRAM_ID.toString() && ix.data[0] === 12,
+        );
+        expect(distribute).toBeDefined();
+        expect(distribute!.accounts).toContain(hookProgram);
+    });
+});
+
 describe('session() close settlement treasury', () => {
     // ATA(4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap, USDC_DEVNET_MINT, TOKEN_PROGRAM)
     const DEVNET_TREASURY_ATA = 'BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz';

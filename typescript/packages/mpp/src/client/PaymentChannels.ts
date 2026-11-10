@@ -36,13 +36,16 @@ import {
     TOKEN_PROGRAM,
     validateNetwork,
 } from '../constants.js';
-import {
-    findEventAuthorityPda,
-    getOpenInstruction,
-    PAYMENT_CHANNELS_PROGRAM_ADDRESS,
-} from '../generated/payment-channels/index.js';
+import { findEventAuthorityPda, getOpenInstruction } from '../generated/payment-channels/index.js';
 import {
     type ChannelHooks,
+    type ChannelVersion,
+    encodeOpenHookSuffix,
+    OPEN_WITH_HOOKS_DISCRIMINATOR,
+    resolveChannelDeployment,
+    withLifecycleHooks,
+} from '../shared/channel-hooks.js';
+import {
     configAddress,
     distributionHash,
     encodeAuthorization,
@@ -213,7 +216,7 @@ export async function buildOpenPaymentChannelTransaction(
     // address into the instruction without signing here.
     const rentPayerSigner = feePayer === signer.address ? signer : createNoopSigner(feePayer);
 
-    const instruction = getOpenInstruction(
+    const v1Instruction = getOpenInstruction(
         {
             associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
             authorizedSigner,
@@ -238,6 +241,20 @@ export async function buildOpenPaymentChannelTransaction(
         },
         { programAddress },
     );
+    // A V2 challenge opens a hooked channel: `openWithHooks` (10) with the
+    // challenged hook policy encoded after the V1 payload and the funding
+    // pair's callback bundle appended to the V1 accounts. The V1 payload,
+    // accounts and signers are unchanged (mpp-specs-v2 V2 Channel ABI).
+    const instruction =
+        open.channelVersion === 2
+            ? await withLifecycleHooks(v1Instruction, {
+                  channel: open.channelId,
+                  discriminator: OPEN_WITH_HOOKS_DISCRIMINATOR,
+                  hooks: open.channelHooks ?? {},
+                  phases: [0, 2],
+                  suffix: encodeOpenHookSuffix(open.channelHooks ?? {}),
+              })
+            : v1Instruction;
     // Only the blockhash is compiled into the message; the challenge does not
     // carry a lastValidBlockHeight, so pin the lifetime with a sentinel — the
     // server broadcasts (and the program enforces freshness), not this client.
@@ -251,7 +268,7 @@ export async function buildOpenPaymentChannelTransaction(
         createTransactionMessage({ version: messageVersion }),
         msg => setTransactionMessageFeePayer(feePayer, msg),
         msg => setTransactionMessageLifetimeUsingBlockhash(lifetime, msg),
-        msg => appendTransactionMessageInstructions([instruction], msg),
+        msg => appendTransactionMessageInstructions([instruction as typeof v1Instruction], msg),
     );
     // Version 1 carries the compute budget in the message header and never
     // as ComputeBudget instructions; unset, it is budgeted zero and cannot
@@ -488,9 +505,10 @@ function resolveIdleTimeoutSelection(request: SessionRequest, selected?: number)
 }
 
 interface PreparedPaymentChannelOpen {
-    /** Per-payer credit hooks for a `creditProvider` challenge; undefined for plain channels. */
+    /** Per-payer credit hooks for a `creditProvider` challenge; the challenged hook policy otherwise. */
     readonly channelHooks: ChannelHooks | undefined;
     readonly channelId: string;
+    readonly channelVersion: ChannelVersion;
     readonly deposit: bigint;
     readonly gracePeriod: number;
     readonly mint: string;
@@ -524,18 +542,30 @@ async function preparePaymentChannelOpen(
         throw new Error('payment-channel sessions require an SPL token currency');
     }
 
+    // The challenge binds network, program, ABI version and hook policy as
+    // one tuple (mpp-specs-v2 Versioned Channel Profiles): an unknown
+    // program or version, hooks without version 2, or V2 outside
+    // devnet/localnet refuse the challenge before anything is signed.
     const channelProgram = request.methodDetails.channelProgram;
     // A credit challenge names the pinned V2 hooks program instead of the
-    // V1 program the generated client targets; its program check happens
-    // in `creditChannelHooks` against the resolved deployment.
+    // V1 program the generated client targets; its program, version and
+    // network are checked in `creditChannelHooks` against the resolved
+    // credit deployment (which produces the credit refusals), so the
+    // generic deployment resolution — program, version, hooks and network
+    // bound as one tuple — only binds plain challenges here.
     const isCreditChallenge = request.methodDetails.creditProvider !== undefined;
-    if (!isCreditChallenge && channelProgram !== PAYMENT_CHANNELS_PROGRAM_ADDRESS) {
-        throw new Error(`session challenge channelProgram ${channelProgram} is an unknown channel program`);
-    }
+    const deployment = isCreditChallenge
+        ? { channelHooks: undefined, channelVersion: 2 as ChannelVersion, programAddress: address(channelProgram) }
+        : resolveChannelDeployment({
+              channelHooks: request.methodDetails.channelHooks,
+              channelProgram,
+              channelVersion: request.methodDetails.channelVersion,
+              network,
+          });
     if (parameters.programAddress !== undefined && parameters.programAddress !== channelProgram) {
         throw new Error('program override does not match channelProgram');
     }
-    const programAddress = address(channelProgram);
+    const programAddress = deployment.programAddress;
     // Mirror the Rust client: the challenged token program, else the default
     // for the challenge currency (PYUSD/USDG/CASH are Token-2022 mints).
     const tokenProgram = address(
@@ -591,8 +621,9 @@ async function preparePaymentChannelOpen(
     });
 
     return {
-        channelHooks,
+        channelHooks: channelHooks ?? deployment.channelHooks,
         channelId,
+        channelVersion: deployment.channelVersion,
         deposit,
         gracePeriod,
         mint,

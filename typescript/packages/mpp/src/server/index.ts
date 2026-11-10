@@ -1,5 +1,13 @@
 export * from '../constants.js';
 export {
+    type ChannelHooks,
+    type ChannelVersion,
+    decodeChannelHooks,
+    type HookAccount,
+    type HookDescriptor,
+    resolveChannelDeployment,
+} from '../shared/channel-hooks.js';
+export {
     type CreditDeployment,
     type CreditProvider,
     MUSEBOOK_DEVNET_PROGRAM_ID,
