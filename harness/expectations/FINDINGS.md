@@ -333,7 +333,8 @@ version 0 only and reads no `transactionVersions`.
 
 ## session-v2-hooked-channels
 
-**Cases:** `vector/session-v2-*` except `vector/session-v2-server-v1-rejects-hooked-open`
+**Cases:** `vector/session-v2-*` except `vector/session-v2-server-v1-rejects-hooked-open` and
+`vector/session-v2-server-v1-rejects-hooked-topup`
 (rust/crates/conformance/src/cases/session_v2.rs; mpp-specs-v2, payment-channels#102)
 **SDKs:** python (TypeScript fixed in pay-kit#415; Go, Swift and Kotlin declare the inputs unsupported)
 
@@ -351,15 +352,19 @@ implement it. The Python SDK:
   hooks come without a version or whose version is unknown;
 - pins the V1 open layout in the server, so a hooked open is refused as an
   unexpected instruction and a plain V1 open is accepted where the V2 server
-  must refuse it.
+  must refuse it;
+- pins the V1 `topUp` layout in the same way: a hooked channel's
+  `topUpWithHooks` (11, with its `preFund` bundle) is refused, and a plain V1
+  `topUp` that skips the funding hook is accepted.
 
 Fix: regenerate the channel client from the payment-channels#102 IDL, add the
 two method-detail fields, port the V2 builders and account decoder, and make
-the server rebuild `openWithHooks` from its hook policy (the Rust kit's
+the server rebuild `openWithHooks` and `topUpWithHooks` from its hook policy (the Rust kit's
 `core/payment_channel/v2.rs` and `mpp/server/session.rs` are the reference;
 the TypeScript port in `shared/channel-hooks.ts` shows the same shape in a
-second language). `vector/session-v2-server-v1-rejects-hooked-open` passes
-already: a V1 server refuses discriminator 10 as an unexpected instruction.
+second language). `vector/session-v2-server-v1-rejects-hooked-open` and
+`vector/session-v2-server-v1-rejects-hooked-topup` pass already: a V1 server
+refuses discriminators 10 and 11 as unexpected instructions.
 
 ## Resolved on 2026-10-20
 

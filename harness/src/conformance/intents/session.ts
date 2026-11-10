@@ -252,7 +252,13 @@ function storedChannel(channel: Json): ChannelState {
   return {
     ...(channel.authentication ? { authentication: channel.authentication as ChannelState["authentication"] } : {}),
     authorizedSigner: text(channel, "authorizedSigner", "channel"),
+    ...(channel.channelHooks !== undefined
+      ? { channelHooks: channel.channelHooks as ChannelState["channelHooks"] }
+      : {}),
     channelId: text(channel, "channelId", "channel"),
+    ...(channel.channelVersion !== undefined
+      ? { channelVersion: channel.channelVersion as ChannelState["channelVersion"] }
+      : {}),
     closeRequestedAt: u64(channel.closureStartedAt, "channel.closureStartedAt"),
     committedDeliveries: [],
     cumulative: number("acceptedCumulative"),

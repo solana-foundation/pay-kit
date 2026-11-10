@@ -368,6 +368,12 @@ ids = [
   "vector/session-v2-server-open-hook-account-substituted-reject",
   "vector/session-v2-server-open-hook-config-altered-reject",
   "vector/session-v2-server-v1-rejects-hooked-open",
+  "vector/session-v2-server-topup-hooked-accept",
+  "vector/session-v2-server-topup-empty-hooks-accept",
+  "vector/session-v2-server-topup-plain-topup-reject",
+  "vector/session-v2-server-topup-hook-bundle-dropped-reject",
+  "vector/session-v2-server-topup-hook-account-substituted-reject",
+  "vector/session-v2-server-v1-rejects-hooked-topup",
 ]
 
 [[unsupported]]

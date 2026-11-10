@@ -34,6 +34,7 @@ use serde_json::{json, Map, Value};
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pay_kit::core::payment_channels as pc;
+use solana_pay_kit::core::payment_channels_v2::{self, ChannelHooks};
 use solana_pay_kit::core::store::{
     ChannelState, ChannelStore, MemoryChannelStore, ObservedLifecycle, OnchainObservation,
     CHANNEL_STATE_SCHEMA_VERSION,
@@ -437,6 +438,10 @@ pub struct Channel {
     /// Operator mode: a request already charged, recorded under
     /// `IDEMPOTENCY_KEY` with the operator's voucher for its cumulative.
     pub processed_use: Option<ProcessedRequest>,
+    /// The channel ABI its open recorded (`channelVersion`): `None` is V1.
+    pub channel_version: Option<u8>,
+    /// The hook policy its open committed (`channelHooks`, V2 only).
+    pub channel_hooks: Option<Value>,
 }
 
 impl Channel {
@@ -453,6 +458,8 @@ impl Channel {
             closed: false,
             bound_proof: false,
             processed_use: None,
+            channel_version: None,
+            channel_hooks: None,
         }
     }
 
@@ -511,6 +518,13 @@ impl Channel {
         }
         if let Some(at) = self.closure_started_at {
             out["closureStartedAt"] = json!(at);
+        }
+        // A V2 channel records the ABI and hook policy its open committed.
+        if let Some(version) = self.channel_version {
+            out["channelVersion"] = json!(version);
+        }
+        if let Some(hooks) = &self.channel_hooks {
+            out["channelHooks"] = hooks.clone();
         }
         // Every opened channel records its opening challenge; an
         // operator-signed one also binds the payer's proof.
@@ -948,6 +962,13 @@ pub enum TxTamper {
     TopUpChannel(Pubkey),
     /// The top-up amount argument.
     TopUpAmount(u64),
+    /// A hooked top-up's account list cut back to the V1 top-up accounts:
+    /// the `preFund` bundle is gone.
+    TopUpDropHookBundle,
+    /// The first committed extra of a hooked top-up's `preFund` bundle
+    /// (after the V1 accounts, the target and the callback authority) set to
+    /// `key`.
+    TopUpHookExtra(Pubkey),
     /// A `mutate.rs` transaction operator.
     Op(Mutation),
 }
@@ -976,7 +997,9 @@ impl TxTamper {
             TxTamper::OffCurveSigner => OpenBindingMismatch,
             TxTamper::OpenTruncateAccounts(_) | TxTamper::OpenDataByte(..) => OpenBindingMismatch,
             TxTamper::FeePayer(_) => FeePayerMismatch,
-            TxTamper::TopUpChannel(_) => ChannelIdMismatch,
+            TxTamper::TopUpChannel(_)
+            | TxTamper::TopUpDropHookBundle
+            | TxTamper::TopUpHookExtra(_) => ChannelIdMismatch,
             TxTamper::TopUpAmount(_) => AmountMismatch,
             TxTamper::Op(op) => return op.expected(crate::case::Suite::Session),
         })
@@ -1011,6 +1034,14 @@ impl TxTamper {
             TxTamper::FeePayer(seed) => format!("transaction fee payer set to {}", key(*seed)),
             TxTamper::TopUpChannel(k) => format!("top-up channel account set to {k}"),
             TxTamper::TopUpAmount(a) => format!("top-up amount argument set to {a}"),
+            TxTamper::TopUpDropHookBundle => format!(
+                "top-up account list truncated to the {} V1 top-up accounts",
+                v1_topup_accounts()
+            ),
+            TxTamper::TopUpHookExtra(k) => format!(
+                "top-up account #{} (the preFund bundle's first committed extra) set to {k}",
+                v1_topup_accounts() + 2
+            ),
             TxTamper::Op(op) => op.describe(),
         }
     }
@@ -1091,6 +1122,19 @@ impl TxTamper {
                     }
                     TxTamper::TopUpAmount(a) => {
                         d.instructions[open_at].data[1..9].copy_from_slice(&a.to_le_bytes())
+                    }
+                    TxTamper::TopUpDropHookBundle => {
+                        d.instructions[open_at]
+                            .accounts
+                            .truncate(v1_topup_accounts());
+                    }
+                    TxTamper::TopUpHookExtra(k) => {
+                        let at = v1_topup_accounts() + 2;
+                        d.instructions[open_at]
+                            .accounts
+                            .get_mut(at)
+                            .ok_or("top-up has no hook bundle")?
+                            .pubkey = *k;
                     }
                     TxTamper::Op(_) => unreachable!(),
                 }
@@ -1254,8 +1298,14 @@ pub enum Action {
         voucher: VoucherSpec,
     },
     /// A top-up transaction of `amount` for `channel`, fee paid by the
-    /// channel's rent payer.
-    TopUp { channel: Channel, amount: u64 },
+    /// channel's rent payer, built for `built_for`'s channel ABI (default:
+    /// the verifying server's): a V2 server's top-up is `topUpWithHooks`
+    /// (11) with its `preFund` bundle.
+    TopUp {
+        channel: Channel,
+        amount: u64,
+        built_for: Option<Server>,
+    },
     Close {
         channel: Channel,
         voucher: Option<VoucherSpec>,
@@ -1343,17 +1393,43 @@ impl Recipe {
     }
 }
 
-/// Build a top-up transaction (version 0, budget prefix) for `channel`.
-fn topup_transaction(channel: &Channel, amount: u64) -> Result<String, String> {
+/// The V1 `topUp` account count: a hooked top-up's bundle starts here.
+fn v1_topup_accounts() -> usize {
+    let k = Pubkey::default();
+    pc::build_top_up_instruction(&k, &k, &k, 0, &k, &k)
+        .accounts
+        .len()
+}
+
+/// Build a top-up transaction (version 0, budget prefix) for `channel`, in
+/// `server`'s channel ABI: V1 `topUp`, or V2 `topUpWithHooks` carrying the
+/// server's `preFund` bundle.
+fn topup_transaction(channel: &Channel, amount: u64, server: &Server) -> Result<String, String> {
     let params = channel.open.params();
-    let ix = pc::build_top_up_instruction(
-        &client(),
-        &channel.id(),
-        &params.mint,
-        amount,
-        &params.token_program,
-        &params.program_id,
-    );
+    let ix = if server.channel_version == Some(2) {
+        let hooks: ChannelHooks =
+            serde_json::from_value(server.channel_hooks.clone().unwrap_or_else(|| json!({})))
+                .map_err(|e| format!("invalid channelHooks: {e}"))?;
+        payment_channels_v2::build_top_up_instruction(
+            &client(),
+            &channel.id(),
+            &params.mint,
+            amount,
+            &params.token_program,
+            &params.program_id,
+            &hooks,
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        pc::build_top_up_instruction(
+            &client(),
+            &channel.id(),
+            &params.mint,
+            amount,
+            &params.token_program,
+            &params.program_id,
+        )
+    };
     let budget = ComputeBudget::new(200_000, 1);
     let mut tx = solana_pay_kit::core::tx::build_unsigned(
         TxVersion::V0,
@@ -1394,13 +1470,21 @@ pub async fn materialize(recipe: &Recipe) -> Result<Value, String> {
                 "voucher": voucher.json(channel)?,
             })
         }
-        Action::TopUp { channel, amount } => {
+        Action::TopUp {
+            channel,
+            amount,
+            built_for,
+        } => {
             verify.insert("channel".into(), channel.json()?);
             json!({
                 "action": "topUp",
                 "channelId": channel.id().to_string(),
                 "additionalAmount": amount.to_string(),
-                "transaction": topup_transaction(channel, *amount)?,
+                "transaction": topup_transaction(
+                    channel,
+                    *amount,
+                    built_for.as_ref().unwrap_or(&recipe.server),
+                )?,
             })
         }
         Action::Close {
@@ -1591,13 +1675,6 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
         .get("sessionServerVerify")
         .ok_or("input.sessionServerVerify missing")?;
     let store = std::sync::Arc::new(MemoryChannelStore::new());
-    if let Some(channel) = params.get("channel") {
-        let state = stored_channel(channel)?;
-        store
-            .put_channel(&state.channel_id.clone(), state)
-            .await
-            .map_err(|e| format!("seed channel: {e}"))?;
-    }
     let fee_payer = input
         .get("sessionServerFeePayerSecretKey")
         .map(|_| signer_from(input, "sessionServerFeePayerSecretKey"))
@@ -1611,6 +1688,12 @@ pub async fn verify(input: &Value) -> Result<Observed, String> {
         Ok(server) => server,
         Err(e) => return Ok(Observed::NotExpressible(e)),
     };
+    if let Some(channel) = params.get("channel") {
+        let state = stored_channel(channel)?;
+        testkit::seed_channel(&server, state)
+            .await
+            .map_err(|e| format!("seed channel: {e}"))?;
+    }
     let action: SessionAction = match serde_json::from_value(params["credential"].clone()) {
         Ok(action) => action,
         Err(e) => return Ok(reject(format!("invalid payload: session credential: {e}"))),

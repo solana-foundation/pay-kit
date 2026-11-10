@@ -28,6 +28,11 @@ ids = [
   "vector/session-v2-server-open-hook-bundle-dropped-reject",
   "vector/session-v2-server-open-hook-account-substituted-reject",
   "vector/session-v2-server-open-hook-config-altered-reject",
+  "vector/session-v2-server-topup-hooked-accept",
+  "vector/session-v2-server-topup-empty-hooks-accept",
+  "vector/session-v2-server-topup-plain-topup-reject",
+  "vector/session-v2-server-topup-hook-bundle-dropped-reject",
+  "vector/session-v2-server-topup-hook-account-substituted-reject",
   "vector/session-v2-build-hooked-open",
   "vector/session-v2-build-hooks-without-version-reject",
   "vector/session-v2-build-unsupported-version-reject",
@@ -36,5 +41,5 @@ ids = [
   "vector/session-v2-wire-request-hook-entrypoint-length-reject",
   "vector/session-v2-wire-request-hook-signer-flag-reject",
 ]
-reason = "the Python SDK has no V2 channel profile: the session wire types drop channelVersion/channelHooks, the client builds a V1 open for a V2 challenge and the server pins the V1 open layout"
+reason = "the Python SDK has no V2 channel profile: the session wire types drop channelVersion/channelHooks, the client builds a V1 open for a V2 challenge and the server pins the V1 open and topUp layouts"
 tracking = "FINDINGS.md#session-v2-hooked-channels"

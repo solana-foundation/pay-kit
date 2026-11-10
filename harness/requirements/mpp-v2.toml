@@ -80,3 +80,9 @@ id = "MPPV2-77f41c09b9"
 doc = "specs/methods/solana/draft-solana-session-00.md"
 text = "Each descriptor MUST bind its target program, versioned entrypoint, ordered accounts or deterministic derivations, exact permissions and bounded static context."
 required = true
+
+[[requirement]]
+id = "MPPV2-99320dbf57"
+doc = "specs/methods/solana/draft-solana-session-00.md"
+text = "`open` and `topUp` MUST enforce the same funding pair."
+required = true

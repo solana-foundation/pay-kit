@@ -522,7 +522,14 @@ fn voucher_recipe(channel: Channel, voucher: VoucherSpec) -> Recipe {
 }
 
 fn topup_recipe(server: Server, channel: Channel, amount: u64) -> Recipe {
-    Recipe::new(server, Action::TopUp { channel, amount })
+    Recipe::new(
+        server,
+        Action::TopUp {
+            channel,
+            amount,
+            built_for: None,
+        },
+    )
 }
 
 fn close_recipe(channel: Channel, voucher: Option<VoucherSpec>, authentication: bool) -> Recipe {
