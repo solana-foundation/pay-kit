@@ -23,6 +23,9 @@ overrides:
   browserslist: '4.28.7'
   'brace-expansion@1.1.12': '1.1.21'
   'brace-expansion@2.0.2': '2.1.7'
+  # GHSA-g3hv-75wg-m249 (globparts amplification DoS, patched in 11.0.1, no
+  # 9.x/10.x backport). Dev tooling only: glob 10, typedoc, typescript-estree.
+  'minimatch@>=7.0.0 <11.0.1': '11.0.5'
   'brace-expansion@5.0.4': '5.0.12'
   'brace-expansion@5.0.6': '5.0.12'
   'linkify-it': '5.0.2'
