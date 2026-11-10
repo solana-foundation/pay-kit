@@ -426,13 +426,6 @@ async fn verify(input: &Value) -> Result<Outcome, Rejection> {
         ));
     };
     let store = std::sync::Arc::new(MemoryChannelStore::new());
-    if let Some(channel) = params.get("channel") {
-        let state = stored_channel(channel)?;
-        store
-            .put_channel(&state.channel_id.clone(), state)
-            .await
-            .map_err(|e| format!("seed channel: {e}"))?;
-    }
     let fee_payer = input
         .get("sessionServerFeePayerSecretKey")
         .map(|_| signer_from(input, "sessionServerFeePayerSecretKey"))
@@ -446,6 +439,12 @@ async fn verify(input: &Value) -> Result<Outcome, Rejection> {
         Ok(server) => server,
         Err(e) => return Ok(Outcome::Unsupported(e)),
     };
+    if let Some(channel) = params.get("channel") {
+        let state = stored_channel(channel)?;
+        testkit::seed_channel(&server, state)
+            .await
+            .map_err(|e| format!("seed channel: {e}"))?;
+    }
     let action: SessionAction = serde_json::from_value(params["credential"].clone())
         .map_err(|e| reject(format!("invalid payload: session credential: {e}")))?;
     let result = match &action {

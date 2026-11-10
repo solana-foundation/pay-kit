@@ -180,6 +180,7 @@ body {
 .topnav-pill.session      { --tile: var(--ios-pink);   --tile-2: var(--ios-pink-2); }
 .topnav-pill.upto         { --tile: var(--ios-pink);   --tile-2: var(--ios-pink-2); }
 .topnav-pill.docs         { --tile: var(--ios-gray);   --tile-2: var(--ios-gray-2); }
+.topnav-pill.credits      { --tile: #30B158;           --tile-2: #248A3D; }
 
 /* Yellow tile uses dark text — overrides the white-text defaults below. */
 .topnav-pill.subscription .title  { color: #0a0a0a; }
@@ -1703,6 +1704,93 @@ body {
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 12px;
+}
+
+/* ── Credit-funded session ── */
+
+.credits-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.credits-intro {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-secondary);
+}
+
+.credits-intro p { margin: 0 0 12px; max-width: 920px; }
+
+.credits-intro code,
+.credits-meta code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.credits-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.credits-meta dt { color: var(--fg-muted); }
+.credits-meta dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+
+.credits-grid {
+  display: grid;
+  grid-template-columns: 260px minmax(280px, 1fr) minmax(320px, 1.2fr);
+  min-height: 420px;
+}
+
+.credits-grid > * {
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  min-width: 0;
+}
+
+.credits-grid > :last-child { border-right: 0; }
+
+.credits-balances h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.credits-balances table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.credits-balances th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--fg-secondary);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.credits-balances td {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 1000px) {
+  .credits-grid { grid-template-columns: 1fr; }
+  .credits-grid > * { border-right: 0; border-bottom: 1px solid var(--border); }
 }
 
 /* ── Endpoint picker (⌘K) ── */

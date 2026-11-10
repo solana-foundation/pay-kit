@@ -12,6 +12,7 @@ import { loadSecretKey, getSigner, getBalances, type Balances } from './lib/wall
 import { Charges } from './pages/Charges'
 import { Subscriptions } from './pages/Subscriptions'
 import { Sessions } from './pages/Sessions'
+import { Credits } from './pages/Credits'
 import { X402 } from './pages/X402'
 import { Docs } from './pages/Docs'
 import { ApiReference } from './pages/ApiReference'
@@ -97,6 +98,7 @@ function Shell() {
           <Route path="/charges" element={<Charges onBalanceChange={refreshBalances} />} />
           <Route path="/subscriptions" element={<Subscriptions onBalanceChange={refreshBalances} />} />
           <Route path="/sessions" element={<Sessions onBalanceChange={refreshBalances} />} />
+          <Route path="/credits" element={<Credits onBalanceChange={refreshBalances} />} />
           <Route path="/x402" element={<X402 onBalanceChange={refreshBalances} />} />
           <Route path="/docs" element={<Docs />} />
           <Route path="/docs/ref/:lang" element={<ApiReference />} />

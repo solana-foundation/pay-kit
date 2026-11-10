@@ -1,0 +1,1373 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "A 500 top-up of a hooked channel: topUpWithHooks (discriminator 11) with the V1 top-up payload and accounts followed by the same preFund bundle the open carried (target program, callback authority, four committed extras); sponsored, so the operator is fee payer and co-signs. Control for every top-up reject in this file. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-v2-server-topup-hooked-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "channelVersion": 2,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACzoFEoQmHRRODTVV1jyLwNGDOVP+7FFYOThhkf6oDoLK/8R7If+Gou380ET3SWMa2JiNQIQByUQ4hgevClLeMFgAIABg1mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup02bxiP8WCh+EzShhT2GcEIWZgwahTEpeZ+ARSokFSG8p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa76SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwcABQJADQMABwAJAwEAAAAAAAAACwwBBgQFCQgMCgMCBAgJC/QBAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-99320dbf57",
+      "MPPV2-6e96639589"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "`open` and `topUp` MUST enforce the same funding pair.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A top-up of a V2 channel whose hook slots are all disabled (channelHooks {}): still topUpWithHooks (11), with no callback bundle, never the V1 topUp. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-v2-server-topup-empty-hooks-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelHooks": {},
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "channelVersion": 2,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABUlxpjXpj5plkJZmLkuvKnAuCwFx2JoR1Eo8OtI6dNU7vUNbZm2snHcyN5gW5S3Bvp80WEIgWSomRU2p/Y4WcCgAIABAlmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAgGAQQCAwcGCQv0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {},
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-7eb724a2ed",
+      "MPPV2-99320dbf57"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The V1 layouts and encodings in this document MUST NOT be reused for V2 without an explicit ABI definition.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A well-formed V1 topUp (no hook bundle) of the hooked channel: it would add the deposit without running preFund, so the provider's funding approval is skipped; the server must refuse it rather than credit an unhooked top-up. Pair: session-v2-server-topup-hooked-accept. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-v2-server-topup-plain-topup-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "channelVersion": 2,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARuGymW0QDbQN+kaY9XVP6O/7Gc/1AiSqtSonaH5gwYjDQw2bTwGUE0RzsveDAFSSsRg7pEN3Ty9nRojwjjqQEgAIABAlmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAgGAQQCAwcGCQP0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-99320dbf57",
+      "MPPV2-1cb0b76d43"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Missing configuration or required accounts MUST fail, not disable hooks.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The hooked top-up keeps discriminator 11 but loses its preFund bundle: the instruction cannot run its mandatory funding callback. Pair: session-v2-server-topup-hooked-accept. Mutation: top-up account list truncated to the 6 V1 top-up accounts. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-v2-server-topup-hook-bundle-dropped-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "channelVersion": 2,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABUlxpjXpj5plkJZmLkuvKnAuCwFx2JoR1Eo8OtI6dNU7vUNbZm2snHcyN5gW5S3Bvp80WEIgWSomRU2p/Y4WcCgAIABAlmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqTtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6np6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa7MSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMFAAUCQA0DAAUACQMBAAAAAAAAAAgGAQQCAwcGCQv0AQAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-99320dbf57",
+      "MPPV2-1cb0b76d43",
+      "MPPV2-71270a9762"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Recipient accounts and each hook's accounts MUST have an unambiguous partition.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The preFund bundle's first committed extra (the provider's credit ledger) replaced by a stranger: the top-up no longer matches the funding pair the channel committed at open. Pair: session-v2-server-topup-hooked-accept. Mutation: top-up account #8 (the preFund bundle's first committed extra) set to FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "channel-id-mismatch"
+    },
+    "id": "session-v2-server-topup-hook-account-substituted-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "channelVersion": 2,
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOpDXsECYDWIA9g/KWqVIQ+uW8tet3V7/8/Rht8GyN2wZ8DxAwOOCU2onNvywuMw83EQ9sMhKZcZ7SLS5xohQKgAIABg1mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5rhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7NVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup02bxiP8WCh+EzShhT2GcEIWZgwahTEpeZ+ARSokFSG8p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa76SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwcABQJADQMABwAJAwEAAAAAAAAACwwBBgMFCQgMCgQCAwgJC/QBAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-99320dbf57",
+      "MPPV2-71270a9762"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Recipient accounts and each hook's accounts MUST have an unambiguous partition.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The hooked top-up (built for the V2 server's channel ABI) presented to the V1 server for the same channel: the V1 server expects the V1 topUp and must not accept topUpWithHooks (11). Pair: session-v2-server-topup-hooked-accept. The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-v2-server-v1-rejects-hooked-topup",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "channel": {
+          "acceptedCumulative": "100",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "escrowedAmount": "1000",
+          "highestVoucher": {
+            "signature": "3TTmHLYgmFME59RgfWTFtbTPNkbGqxX5nK1qYKAtmMy6Gwp5L1htjCnaKVWmmLGjhCYVK6QhWaBeeYe6UGnzCDp3",
+            "signatureType": "ed25519",
+            "signer": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "voucher": {
+              "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+              "cumulativeAmount": "100",
+              "expiresAt": 4102444800
+            }
+          },
+          "idleTimeoutSeconds": 300,
+          "openSlot": "250000000",
+          "openingChallengeId": "c_session_conformance_0001",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "rentPayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "settledOnChain": "0",
+          "spentAmount": "100",
+          "status": "open",
+          "voucherSigner": "client"
+        },
+        "credential": {
+          "action": "topUp",
+          "additionalAmount": "500",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACzoFEoQmHRRODTVV1jyLwNGDOVP+7FFYOThhkf6oDoLK/8R7If+Gou380ET3SWMa2JiNQIQByUQ4hgevClLeMFgAIABg1mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup02bxiP8WCh+EzShhT2GcEIWZgwahTEpeZ+ARSokFSG8p6H7pOsrCQmT99Lf1iuJ4rhyB3pjn9fXR6jpn2PUFa76SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwcABQJADQMABwAJAwEAAAAAAAAACwwBBgQFCQgMCgMCBAgJC/QBAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-5f4438c84d"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "V1 challenges and credentials MUST NOT carry V2 hook configuration.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  }
+]

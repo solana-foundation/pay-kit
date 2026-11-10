@@ -3650,6 +3650,25 @@ async fn prepare_open_transaction(
 pub mod testkit {
     use super::*;
 
+    /// Seed `state` as a channel `server` opened: stamped with the server's
+    /// deployment binding (a V2 server refuses a stored channel without the
+    /// binding its own `open` records), then stored through the server's
+    /// store.
+    pub async fn seed_channel<S: ChannelStore>(
+        server: &SessionServer<S>,
+        mut state: ChannelState,
+    ) -> Result<()> {
+        if let Some(binding) = &server.store.binding {
+            binding.insert(&mut state)?;
+        }
+        let id = state.channel_id.clone();
+        server
+            .store
+            .put_channel(&id, state)
+            .await
+            .map_err(store_err)
+    }
+
     /// The offline checks [`SessionServer`] applies to a client-paid `open`
     /// before it broadcasts: the open parameters the payload declares,
     /// against the server's configuration (`payment_channel_open_params`),

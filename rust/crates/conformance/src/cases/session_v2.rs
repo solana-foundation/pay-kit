@@ -23,13 +23,14 @@ use crate::case::{
     spec, BugType, CaseBuilder, Expect, Input, Intent, Mode, Pin, RejectCode, Role, SpecRef, Suite,
 };
 use crate::realize::session::{
-    provider_hooks, stranger, Action, Authorized, BuildRecipe, Edit, OpenBuild, Recipe, Server,
-    TxTamper, RECENT_SLOT,
+    provider_hooks, stranger, Action, Authorized, BuildRecipe, Channel, Edit, OpenBuild,
+    OpenParams, Recipe, Server, TxTamper, RECENT_SLOT,
 };
 
 const DOC: &str = "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md";
 
 const OPEN: &str = "session-v2-server-open.json";
+const TOPUP: &str = "session-v2-server-topup.json";
 const BUILD: &str = "session-v2-build.json";
 const WIRE: &str = "session-v2-wire.json";
 
@@ -46,6 +47,7 @@ const R_MISSING_FAILS: &str = "MPPV2-1cb0b76d43";
 const R_PARTITION: &str = "MPPV2-71270a9762";
 const R_APPROVE_AT_OPEN: &str = "MPPV2-7c7e5b0e73";
 const R_DESCRIPTOR_BINDS: &str = "MPPV2-77f41c09b9";
+const R_FUNDING_PAIR: &str = "MPPV2-99320dbf57";
 
 // ── spec references ────────────────────────────────────────────────────────
 
@@ -138,6 +140,60 @@ fn open_built_for(server: Server, built_for: Server) -> Recipe {
             build: OpenBuild::default(),
             built_from: Some(built_for),
             verify_slot: RECENT_SLOT,
+        },
+    )
+}
+
+fn topup_case(
+    id: &str,
+    spec: SpecRef,
+    reqs: &[&str],
+    description: &str,
+    recipe: Recipe,
+    expect: Expect,
+) -> CaseBuilder {
+    let description = match recipe.describe() {
+        Some(what) => format!("{description} Mutation: {what}."),
+        None => description.to_string(),
+    };
+    CaseBuilder::new(
+        id,
+        TOPUP,
+        Suite::Session,
+        Intent::Session,
+        Mode::VerifyTransaction,
+        Role::Server,
+        BugType::AuthBypass,
+        spec,
+        &format!("{description} The top-up is a client-signed transaction for the stored channel (opened under the server's challenge, 100 accepted); the server runs every check it makes before broadcasting."),
+        Input::Session(Box::new(recipe)),
+        expect,
+    )
+    .requirements(reqs)
+}
+
+/// The channel `server`'s challenge opened (sponsored: the operator is its
+/// rent payer), 100 accepted, recording the server's channel ABI and hook
+/// policy.
+fn channel_of(server: &Server) -> Channel {
+    Channel {
+        open: OpenParams::client(server),
+        channel_version: server.channel_version,
+        channel_hooks: server.channel_hooks.clone(),
+        ..Channel::client(100)
+    }
+}
+
+/// A 500 top-up of `server`'s channel, built for `built_for`'s channel ABI
+/// (default: `server`'s).
+fn topup(server: Server, built_for: Option<Server>) -> Recipe {
+    let channel = channel_of(&server);
+    Recipe::new(
+        server,
+        Action::TopUp {
+            channel,
+            amount: 500,
+            built_for,
         },
     )
 }
@@ -350,6 +406,56 @@ crate::registry! {
         &[R_NO_V2_IN_V1, R_NOT_V1_LAYOUT],
         "The kit client's hooked open (built for the V2 server's challenge) presented to the V1 server for the same channel: the V1 server expects the V1 open (1) and must not accept openWithHooks (10). Pair: session-v2-server-open-hooked-accept (the V2 server accepting the same open).",
         open_built_for(v1_server(), hooked_server()),
+        rej(RejectCode::UnexpectedInstruction),
+    ).build();
+
+    // ── the server verifying a hooked top-up ──
+    session_v2_server_topup_hooked_accept => topup_case(
+        "session-v2-server-topup-hooked-accept",
+        hooks_spec("`open` and `topUp` MUST enforce the same funding pair."),
+        &[R_FUNDING_PAIR, R_BIND_TUPLE],
+        "A 500 top-up of a hooked channel: topUpWithHooks (discriminator 11) with the V1 top-up payload and accounts followed by the same preFund bundle the open carried (target program, callback authority, four committed extras); sponsored, so the operator is fee payer and co-signs. Control for every top-up reject in this file.",
+        topup(hooked_server(), None),
+        accept(),
+    ).build();
+    session_v2_server_topup_empty_hooks_accept => topup_case(
+        "session-v2-server-topup-empty-hooks-accept",
+        profiles("The V1 layouts and encodings in this document MUST NOT be reused for V2 without an explicit ABI definition."),
+        &[R_NOT_V1_LAYOUT, R_FUNDING_PAIR],
+        "A top-up of a V2 channel whose hook slots are all disabled (channelHooks {}): still topUpWithHooks (11), with no callback bundle, never the V1 topUp.",
+        topup(unhooked_v2_server(), None),
+        accept(),
+    ).build();
+    session_v2_server_topup_plain_topup_reject => topup_case(
+        "session-v2-server-topup-plain-topup-reject",
+        hooks_spec("Missing configuration or required accounts MUST fail, not disable hooks."),
+        &[R_FUNDING_PAIR, R_MISSING_FAILS],
+        "A well-formed V1 topUp (no hook bundle) of the hooked channel: it would add the deposit without running preFund, so the provider's funding approval is skipped; the server must refuse it rather than credit an unhooked top-up. Pair: session-v2-server-topup-hooked-accept.",
+        topup(hooked_server(), Some(v1_server())),
+        rej(RejectCode::UnexpectedInstruction),
+    ).build();
+    session_v2_server_topup_hook_bundle_dropped_reject => topup_case(
+        "session-v2-server-topup-hook-bundle-dropped-reject",
+        hooks_spec("Recipient accounts and each hook's accounts MUST have an unambiguous partition."),
+        &[R_FUNDING_PAIR, R_MISSING_FAILS, R_PARTITION],
+        "The hooked top-up keeps discriminator 11 but loses its preFund bundle: the instruction cannot run its mandatory funding callback. Pair: session-v2-server-topup-hooked-accept.",
+        topup(hooked_server(), None).tx(TxTamper::TopUpDropHookBundle),
+        rej(RejectCode::ChannelIdMismatch),
+    ).build();
+    session_v2_server_topup_hook_account_substituted_reject => topup_case(
+        "session-v2-server-topup-hook-account-substituted-reject",
+        hooks_spec("Recipient accounts and each hook's accounts MUST have an unambiguous partition."),
+        &[R_FUNDING_PAIR, R_PARTITION],
+        "The preFund bundle's first committed extra (the provider's credit ledger) replaced by a stranger: the top-up no longer matches the funding pair the channel committed at open. Pair: session-v2-server-topup-hooked-accept.",
+        topup(hooked_server(), None).tx(TxTamper::TopUpHookExtra(stranger())),
+        rej(RejectCode::ChannelIdMismatch),
+    ).build();
+    session_v2_server_v1_rejects_hooked_topup => topup_case(
+        "session-v2-server-v1-rejects-hooked-topup",
+        profiles("V1 challenges and credentials MUST NOT carry V2 hook configuration."),
+        &[R_NO_V2_IN_V1],
+        "The hooked top-up (built for the V2 server's channel ABI) presented to the V1 server for the same channel: the V1 server expects the V1 topUp and must not accept topUpWithHooks (11). Pair: session-v2-server-topup-hooked-accept.",
+        topup(v1_server(), Some(hooked_server())),
         rej(RejectCode::UnexpectedInstruction),
     ).build();
 

@@ -67,6 +67,8 @@ a faucet (`/api/v1/faucet/airdrop`) using sandbox cheatcodes — see
 | `RECIPIENT` | (operator address) | Address that receives payments |
 | `FEE_PAYER_KEY` | (auto-generated) | Base58 operator keypair — fee-pays + signs settlement |
 | `MPP_SECRET_KEY` | (random per-boot) | HMAC secret binding MPP challenges |
+| `PAYMENT_CHANNELS_V2_SO` | (unset) | Hook-enabled payment-channels program; with `CREDIT_PROVIDER_SO`, mounts the credit-funded session routes (localnet only) |
+| `CREDIT_PROVIDER_SO` | (unset) | payment-channels `examples/credit-provider` program |
 
 ## Layout
 
@@ -74,6 +76,7 @@ a faucet (`/api/v1/faucet/airdrop`) using sandbox cheatcodes — see
 index.ts          # the whole server: createPayKit + gated routes + meta endpoints
 docs.ts           # unpaid SDK-reference markdown server (Docs / ApiReference)
 sandbox.ts        # LOCAL SANDBOX ONLY — surfnet funding + faucet + plan bootstrap
+credits.ts        # LOCAL SANDBOX ONLY — a credit provider funds a session (V2 lifecycle hooks)
 ```
 
 This package is intentionally **not** part of the `typescript/` pnpm workspace:

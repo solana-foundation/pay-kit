@@ -660,6 +660,9 @@ export type VectorInput = {
       settledOnChain: string;
       idleTimeoutSeconds: number;
       openingChallengeId: string;
+      // V2: the channel ABI and hook policy the open recorded.
+      channelVersion?: number;
+      channelHooks?: Record<string, unknown>;
       highestVoucher?: Record<string, unknown>;
       closureStartedAt?: number;
       authentication?: Record<string, unknown>;

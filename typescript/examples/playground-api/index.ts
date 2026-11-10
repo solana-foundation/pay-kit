@@ -25,6 +25,7 @@ import {
 } from '@solana/kit'
 import { createPayKit, session, subscription, usage, usd } from '@solana/pay-kit'
 
+import { registerCredits } from './credits.js'
 import { registerDocs } from './docs.js'
 import { bootstrapPlan, fundSandbox, fundUsdc, registerFaucet } from './sandbox.js'
 
@@ -133,6 +134,16 @@ if (NETWORK === 'localnet') {
   registerFaucet(app, RPC_URL)
 }
 
+// Credit-provider funded sessions (V2 lifecycle hooks), local sandbox only;
+// see credits.ts for the artifacts it needs.
+const CREDITS_ENABLED = await registerCredits(app, {
+  network: NETWORK,
+  operator,
+  recipient: RECIPIENT,
+  rpcUrl: RPC_URL,
+  secretKey: SECRET_KEY,
+})
+
 // ── Priced routes ──
 // Paths are generic (/api/v1/<name>) and names stay clean; the protocol + scheme
 // each route accepts is carried by the discovery offers (method/scheme), not the URL.
@@ -230,6 +241,7 @@ const server = app.listen(PORT, () => {
   console.log(`  Network ${NETWORK}   RPC ${RPC_URL}`)
   console.log(`  Recipient ${RECIPIENT}\n`)
   console.log('  GET  /openapi.json  (discovery)')
+  if (CREDITS_ENABLED) console.log('  GET  /api/v1/credits/:customer/quote  (credit-funded session)')
   for (const [path, item] of Object.entries(paths)) {
     for (const method of Object.keys(item)) console.log(`  ${method.toUpperCase().padEnd(4)} ${path}`)
   }
