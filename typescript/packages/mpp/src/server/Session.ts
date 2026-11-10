@@ -503,6 +503,11 @@ function resolveSessionConfig(parameters: session.Parameters): ResolvedSessionCo
         if (resolvedProgramId.toString() !== deployment.channelProgramId) {
             invalid('channelProgram must be the pinned V2 channel program');
         }
+        if (parameters.channelHooks !== undefined) {
+            // Mirrors the Rust `channel_hooks must be unset` check: a static
+            // policy would be silently dropped here, so refuse it instead.
+            invalid('channelHooks must be unset; hooks are derived per payer');
+        }
         if (tokenProgram !== SPL_TOKEN_PROGRAM_ID) {
             invalid('tokenProgram must be SPL Token');
         }
@@ -1193,6 +1198,12 @@ interface HandleOpenArgs {
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     const { config, context, payload } = args;
     const { expected, open: verified } = await validateOpen(config, payload, context);
+    // The hooks the channel actually commits: the derived per-payer hooks
+    // for a credit session, the configured static policy otherwise. The
+    // saved state and the replay check must use these — `config.channelHooks`
+    // is unset for credit sessions, so copying it would strip the provider
+    // callbacks from every later top-up and settlement.
+    const effectiveChannelHooks = expected.creditHooks ?? config.channelHooks;
     const { recentSlot } = context;
     const openSlot = verified.openSlot;
     const existingChannel = await config.store.getChannel(verified.channelId);
@@ -1213,7 +1224,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     const newState: ChannelState = {
         authentication: payload.authentication,
         authorizedSigner: payload.authorizedSigner,
-        channelHooks: structuredClone(config.channelHooks),
+        channelHooks: structuredClone(effectiveChannelHooks),
         channelId: verified.channelId,
         channelVersion: config.channelVersion,
         closeRequestedAt: undefined,
@@ -1254,7 +1265,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 context.challengeId !== current.openingChallengeId ||
                 config.voucherSigner !== current.voucherSigner ||
                 config.channelVersion !== (current.channelVersion ?? 1) ||
-                !sameChannelHooks(config.channelHooks, current.channelHooks) ||
+                !sameChannelHooks(effectiveChannelHooks, current.channelHooks) ||
                 !optionalSessionAuthenticationMatches(payload.authentication, current.authentication)
             ) {
                 throw new Error(`open replay does not match existing channel ${verified.channelId}`);
@@ -2328,6 +2339,8 @@ export declare namespace session {
          * commits (mpp-specs-v2 V2 Lifecycle Hooks). Requires
          * `channelVersion: 2`. Advertised as `methodDetails.channelHooks`;
          * the client's `openWithHooks` must encode it byte for byte.
+         * Mutually exclusive with `creditProvider` — a credit session
+         * derives its hooks per payer and refuses a static policy.
          */
         readonly channelHooks?: ChannelHooks;
         /** Payment-channels program ID. */
