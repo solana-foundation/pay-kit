@@ -69,6 +69,15 @@ use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::mpp::solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+
+/// A client reading at `confirmed`: on a live cluster the default
+/// (`finalized`) lags the transactions this test just landed.
+fn rpc_client(url: &str) -> RpcClient {
+    RpcClient::new_with_commitment(
+        url.to_string(),
+        solana_commitment_config::CommitmentConfig::confirmed(),
+    )
+}
 use surfpool_sdk::{Keypair, Surfnet};
 
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -251,15 +260,134 @@ fn authorize_ix(
     mint: &Pubkey,
     issuer: &Pubkey,
     authorization: &Authorization,
+    channel_program: &Pubkey,
 ) -> Instruction {
     let ledger = ledger_address(provider, owner, mint);
     let mut data = vec![AUTHORIZE];
     data.extend(authorization.encode());
+    let mut accounts = vec![
+        AccountMeta::new_readonly(*owner, true),
+        AccountMeta::new_readonly(*issuer, true),
+        AccountMeta::new(ledger, false),
+        AccountMeta::new(ata(&ledger, mint), false),
+        AccountMeta::new(ata(owner, mint), false),
+        AccountMeta::new_readonly(token_program(), false),
+    ];
+    // The provider defaults to the canonical deployment; any other (the
+    // canary) is named by a trailing account (payment-channels#112).
+    if *channel_program != v1::default_program_id() {
+        accounts.push(AccountMeta::new_readonly(*channel_program, false));
+    }
+    Instruction {
+        program_id: *provider,
+        accounts,
+        data,
+    }
+}
+
+const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+/// The `canary` channel deployment (payment-channels `Solex.toml`).
+const CANARY_CHANNEL_PROGRAM: &str = "CHNLxBtXw7VPqd5GMcbtVoEbn4ehyaSoiHj56Ao5sWkJ";
+
+fn system_transfer(from: &Pubkey, to: &Pubkey, lamports: u64) -> Instruction {
+    let mut data = 2u32.to_le_bytes().to_vec();
+    data.extend(lamports.to_le_bytes());
+    Instruction {
+        program_id: Pubkey::from_str(SYSTEM_PROGRAM).unwrap(),
+        accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
+        data,
+    }
+}
+
+fn create_mint_ixs(
+    payer: &Pubkey,
+    mint: &Pubkey,
+    authority: &Pubkey,
+    rent: u64,
+) -> [Instruction; 2] {
+    let mut create = 0u32.to_le_bytes().to_vec();
+    create.extend(rent.to_le_bytes());
+    create.extend(82u64.to_le_bytes());
+    create.extend(token_program().to_bytes());
+    let mut init = vec![20u8, 6];
+    init.extend(authority.to_bytes());
+    init.push(0);
+    [
+        Instruction {
+            program_id: Pubkey::from_str(SYSTEM_PROGRAM).unwrap(),
+            accounts: vec![
+                AccountMeta::new(*payer, true),
+                AccountMeta::new(*mint, true),
+            ],
+            data: create,
+        },
+        Instruction {
+            program_id: token_program(),
+            accounts: vec![AccountMeta::new(*mint, false)],
+            data: init,
+        },
+    ]
+}
+
+fn create_ata_ix(payer: &Pubkey, owner: &Pubkey, mint: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM).unwrap(),
+        accounts: vec![
+            AccountMeta::new(*payer, true),
+            AccountMeta::new(ata(owner, mint), false),
+            AccountMeta::new_readonly(*owner, false),
+            AccountMeta::new_readonly(*mint, false),
+            AccountMeta::new_readonly(Pubkey::from_str(SYSTEM_PROGRAM).unwrap(), false),
+            AccountMeta::new_readonly(token_program(), false),
+        ],
+        data: vec![1],
+    }
+}
+
+fn mint_to_ix(mint: &Pubkey, to: &Pubkey, authority: &Pubkey, amount: u64) -> Instruction {
+    let mut data = vec![7u8];
+    data.extend(amount.to_le_bytes());
+    Instruction {
+        program_id: token_program(),
+        accounts: vec![
+            AccountMeta::new(*mint, false),
+            AccountMeta::new(*to, false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+        data,
+    }
+}
+
+/// The provider's `initialize`: the issuer must be the provider program's
+/// upgrade authority, proven through its ProgramData account.
+fn initialize_ix(provider: &Pubkey, owner: &Pubkey, mint: &Pubkey, issuer: &Pubkey) -> Instruction {
+    let loader = Pubkey::from_str(UPGRADEABLE_LOADER).unwrap();
+    let program_data = Pubkey::find_program_address(&[provider.as_ref()], &loader).0;
+    Instruction {
+        program_id: *provider,
+        accounts: vec![
+            AccountMeta::new(*owner, true),
+            AccountMeta::new(ledger_address(provider, owner, mint), false),
+            AccountMeta::new_readonly(*mint, false),
+            AccountMeta::new_readonly(*provider, false),
+            AccountMeta::new_readonly(program_data, false),
+            AccountMeta::new_readonly(*issuer, true),
+            AccountMeta::new_readonly(Pubkey::from_str(SYSTEM_PROGRAM).unwrap(), false),
+        ],
+        data: vec![0],
+    }
+}
+
+/// The provider's `deposit`: real tokens into the vault before credits.
+fn deposit_ix(provider: &Pubkey, owner: &Pubkey, mint: &Pubkey, amount: u64) -> Instruction {
+    let ledger = ledger_address(provider, owner, mint);
+    let mut data = vec![1u8];
+    data.extend(amount.to_le_bytes());
     Instruction {
         program_id: *provider,
         accounts: vec![
             AccountMeta::new_readonly(*owner, true),
-            AccountMeta::new_readonly(*issuer, true),
             AccountMeta::new(ledger, false),
             AccountMeta::new(ata(&ledger, mint), false),
             AccountMeta::new(ata(owner, mint), false),
@@ -470,7 +598,7 @@ async fn close(merchant: &Merchant, payload: &ClosePayload) -> Result<Value, Str
     let mut instructions = params
         .settle_instructions(&operator)
         .map_err(|error| error.to_string())?;
-    let rpc = RpcClient::new(merchant.rpc_url.clone());
+    let rpc = rpc_client(&merchant.rpc_url);
     let channel = rpc
         .get_account(&params.channel_id)
         .await
@@ -564,6 +692,22 @@ fn artifact(variable: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// A chain prepared for the flow: programs in place, the customer holding
+/// `CREDITS` with the provider and nothing in their own token account.
+struct Prepared {
+    chain: Chain,
+    /// Keeps an in-process Surfnet alive for the test's duration.
+    _surfnet: Option<Surfnet>,
+    network: &'static str,
+    channel_program: Pubkey,
+    provider: Pubkey,
+    customer: MemorySigner,
+    issuer: MemorySigner,
+    operator: Arc<MemorySigner>,
+    mint: Pubkey,
+    treasury_owner: Pubkey,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn credit_provider_funds_an_mpp_session_end_to_end() {
     let (Some(channel_elf), Some(provider_elf)) = (
@@ -585,7 +729,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         .expect("start surfnet");
     let chain = Chain {
         url: surfnet.rpc_url().to_string(),
-        rpc: RpcClient::new(surfnet.rpc_url().to_string()),
+        rpc: rpc_client(surfnet.rpc_url()),
         http: reqwest::Client::new(),
     };
     for _ in 0..100 {
@@ -595,8 +739,8 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    // The hooked channel program at its canonical address (the interface crate
-    // and the provider example pin this id), plus the provider program.
+    // The hooked channel program at its canonical address (built from the
+    // `stable` channel with `--features hooks`), plus the provider program.
     let channel_program = v1::default_program_id();
     let provider = Pubkey::new_unique();
     chain.write_program(&channel_program, &channel_elf).await;
@@ -608,17 +752,15 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     let (customer, _) = signer();
     let (issuer, _) = signer();
     let (operator, _) = signer();
-    let (_, session_key) = signer();
-    let session_signer = MemorySigner::from_bytes(&session_key).unwrap();
-    let session_pubkey = session_signer.pubkey();
     let operator = Arc::new(operator);
-    let customer_pk = customer.pubkey();
-    let operator_pk = operator.pubkey();
-    for key in [&customer_pk, &issuer.pubkey(), &operator_pk] {
+    for key in [&customer.pubkey(), &issuer.pubkey(), &operator.pubkey()] {
         testkit::fund_sol(&chain.url, key, 5_000_000_000).await;
     }
 
     // ── Money: a mint, the customer's credits, the provider's backing ───────
+    // Planted with cheatcodes: the customer already holds credits.
+    let customer_pk = customer.pubkey();
+    let operator_pk = operator.pubkey();
     let mint = Pubkey::new_unique();
     chain
         .set_account(&mint, TOKEN_PROGRAM, &mint_bytes(6), 10_000_000)
@@ -630,10 +772,6 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         "the localnet treasury must match the stable channel build"
     );
     let ledger = ledger_address(&provider, &customer_pk, &mint);
-    let vault = ata(&ledger, &mint);
-    let customer_ata = ata(&customer_pk, &mint);
-    let merchant_ata = ata(&operator_pk, &mint);
-    let treasury_ata = ata(&treasury_owner, &mint);
     let mint_str = mint.to_string();
     testkit::fund_token(&chain.url, &ledger, &mint_str, CREDITS, TOKEN_PROGRAM).await;
     for owner in [&customer_pk, &operator_pk, &treasury_owner] {
@@ -647,6 +785,222 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
             10_000_000,
         )
         .await;
+
+    run_flow(Prepared {
+        chain,
+        _surfnet: Some(surfnet),
+        network: "localnet",
+        channel_program,
+        provider,
+        customer,
+        issuer,
+        operator,
+        mint,
+        treasury_owner,
+    })
+    .await;
+}
+
+/// The same flow live on devnet, against the deployed canary channel program.
+///
+/// Every step is a real transaction: the provider program is deployed with a
+/// fresh issuer as its upgrade authority, a fresh SPL mint is created, the
+/// customer deposits real backing into the provider and receives credits,
+/// then the MPP session runs exactly as on Surfnet.
+///
+/// ```sh
+/// CREDIT_E2E_DEVNET_RPC=<https devnet RPC> \
+/// CREDIT_E2E_FUNDER=<keypair file with ~2 devnet SOL> \
+/// CREDIT_PROVIDER_SO=$PC/target/deploy/credit_provider.so \
+/// cargo test -p paykit-integration-tests --features testkit \
+///   --test credit_provider_session_surfnet devnet -- --nocapture
+/// ```
+///
+/// `CREDIT_PROVIDER_SO` must be the deployment-aware provider
+/// (payment-channels#112). Skips unless all three are set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credit_provider_funds_an_mpp_session_on_devnet() {
+    let (Ok(url), Ok(funder_path), Some(_)) = (
+        std::env::var("CREDIT_E2E_DEVNET_RPC"),
+        std::env::var("CREDIT_E2E_FUNDER"),
+        artifact("CREDIT_PROVIDER_SO"),
+    ) else {
+        skip_or_fail("set CREDIT_E2E_DEVNET_RPC, CREDIT_E2E_FUNDER and CREDIT_PROVIDER_SO");
+        return;
+    };
+    assert!(url.starts_with("https://"), "devnet RPC must be https");
+    let chain = Chain {
+        url: url.clone(),
+        rpc: rpc_client(&url),
+        http: reqwest::Client::new(),
+    };
+    let funder_bytes: Vec<u8> =
+        serde_json::from_str(&std::fs::read_to_string(&funder_path).unwrap()).unwrap();
+    let funder = MemorySigner::from_bytes(&funder_bytes).unwrap();
+    let channel_program = Pubkey::from_str(CANARY_CHANNEL_PROGRAM).unwrap();
+    let deployed = chain
+        .rpc
+        .get_account(&channel_program)
+        .await
+        .expect("canary channel program on devnet");
+    assert!(
+        deployed.executable,
+        "the canary channel program is not executable"
+    );
+
+    // ── Parties, funded from the funder ────────────────────────────────────
+    let (customer, _) = signer();
+    let (issuer, issuer_bytes) = signer();
+    let (operator, _) = signer();
+    let (provider_signer, provider_bytes) = signer();
+    let provider = provider_signer.pubkey();
+    let operator = Arc::new(operator);
+    chain
+        .send(
+            &[&funder],
+            &[
+                system_transfer(&funder.pubkey(), &customer.pubkey(), 100_000_000),
+                system_transfer(&funder.pubkey(), &operator.pubkey(), 200_000_000),
+                system_transfer(&funder.pubkey(), &issuer.pubkey(), 1_500_000_000),
+            ],
+        )
+        .await;
+
+    // ── The provider program, deployed with the issuer as upgrade authority ──
+    let dir = std::env::temp_dir().join(format!("credit-e2e-devnet-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let issuer_path = dir.join("issuer.json");
+    let provider_path = dir.join("provider.json");
+    std::fs::write(
+        &issuer_path,
+        serde_json::to_string(&issuer_bytes.to_vec()).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &provider_path,
+        serde_json::to_string(&provider_bytes.to_vec()).unwrap(),
+    )
+    .unwrap();
+    let so = std::env::var("CREDIT_PROVIDER_SO").unwrap();
+    let out =
+        std::process::Command::new(std::env::var("SOLANA_CLI").unwrap_or_else(|_| "solana".into()))
+            .args([
+                "program",
+                "deploy",
+                "--url",
+                &url,
+                "--keypair",
+                issuer_path.to_str().unwrap(),
+                "--upgrade-authority",
+                issuer_path.to_str().unwrap(),
+                "--program-id",
+                provider_path.to_str().unwrap(),
+                "--use-rpc",
+                "--skip-feature-verify",
+                "--commitment",
+                "confirmed",
+                "--max-sign-attempts",
+                "100",
+                "--with-compute-unit-price",
+                "10000",
+                &so,
+            ])
+            .output()
+            .unwrap();
+    // Ephemeral keys never outlive the deployment.
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "provider deployment failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    println!("provider program {provider} deployed");
+
+    // ── Money: a fresh mint, real backing deposited into the provider ──────
+    let customer_pk = customer.pubkey();
+    let operator_pk = operator.pubkey();
+    let (mint_signer, _) = signer();
+    let mint = mint_signer.pubkey();
+    let treasury_owner = v1::treasury_owner_for_cluster("devnet");
+    assert_eq!(
+        treasury_owner.to_string(),
+        "4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap",
+        "the devnet treasury must match the canary devnet build"
+    );
+    let mint_rent = chain
+        .rpc
+        .get_minimum_balance_for_rent_exemption(82)
+        .await
+        .unwrap();
+    let [create_mint, init_mint] = create_mint_ixs(&customer_pk, &mint, &customer_pk, mint_rent);
+    chain
+        .send(&[&customer, &mint_signer], &[create_mint, init_mint])
+        .await;
+    let ledger = ledger_address(&provider, &customer_pk, &mint);
+    chain
+        .send(
+            &[&customer],
+            &[
+                create_ata_ix(&customer_pk, &customer_pk, &mint),
+                create_ata_ix(&customer_pk, &operator_pk, &mint),
+                create_ata_ix(&customer_pk, &treasury_owner, &mint),
+                create_ata_ix(&customer_pk, &ledger, &mint),
+                mint_to_ix(&mint, &ata(&customer_pk, &mint), &customer_pk, CREDITS),
+            ],
+        )
+        .await;
+    chain
+        .send(
+            &[&customer, &issuer],
+            &[
+                initialize_ix(&provider, &customer_pk, &mint, &issuer.pubkey()),
+                deposit_ix(&provider, &customer_pk, &mint, CREDITS),
+            ],
+        )
+        .await;
+    println!("customer deposited {CREDITS} and holds {CREDITS} credits");
+
+    run_flow(Prepared {
+        chain,
+        _surfnet: None,
+        network: "devnet",
+        channel_program,
+        provider,
+        customer,
+        issuer,
+        operator,
+        mint,
+        treasury_owner,
+    })
+    .await;
+}
+
+/// 402 → provider approval → hooked open → voucher-paid requests → close,
+/// with on-chain assertions at each step.
+async fn run_flow(prepared: Prepared) {
+    let Prepared {
+        chain,
+        _surfnet,
+        network,
+        channel_program,
+        provider,
+        customer,
+        issuer,
+        operator,
+        mint,
+        treasury_owner,
+    } = prepared;
+    let customer_pk = customer.pubkey();
+    let operator_pk = operator.pubkey();
+    let (_, session_key) = signer();
+    let session_signer = MemorySigner::from_bytes(&session_key).unwrap();
+    let session_pubkey = session_signer.pubkey();
+    let mint_str = mint.to_string();
+    let ledger = ledger_address(&provider, &customer_pk, &mint);
+    let vault = ata(&ledger, &mint);
+    let customer_ata = ata(&customer_pk, &mint);
+    let merchant_ata = ata(&operator_pk, &mint);
+    let treasury_ata = ata(&treasury_owner, &mint);
     assert_eq!(chain.token_balance(&vault).await, Some(CREDITS));
     assert_eq!(chain.token_balance(&customer_ata).await, Some(0));
     let ledger_before = decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data);
@@ -664,7 +1018,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         minimum_deposit: Some(DEPOSIT / 2),
         currency: mint_str.clone(),
         decimals: 6,
-        network: "localnet".to_string(),
+        network: network.to_string(),
         channel_program: Some(channel_program),
         channel_version: Some(2),
         channel_hooks: Some(hooks.clone()),
@@ -733,6 +1087,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
                     &mint,
                     &issuer.pubkey(),
                     &authorization,
+                    &channel_program,
                 ),
             ],
         )
@@ -740,7 +1095,10 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     println!("provider authorization: {approval}");
     assert!(decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data).active);
 
-    let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new(chain.url.clone());
+    let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
+        chain.url.clone(),
+        solana_commitment_config::CommitmentConfig::confirmed(),
+    );
     let blockhash = OpenBlockhash::verify(&blocking_rpc, &request)
         .await
         .expect("challenged blockhash is live");
