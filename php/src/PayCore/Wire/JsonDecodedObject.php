@@ -7,14 +7,22 @@ namespace PayKit\PayCore\Wire;
 /**
  * A JSON object decoded by {@see Json::decodePreservingObject()}.
  *
- * PHP arrays would collapse the string key `"0"` to int `0`, so a decoded
- * `{"0":"x"}` would re-encode as the list `["x"]` instead of the object the
- * wire carried. stdClass property names keep their exact string form, and
- * extending stdClass (whose dynamic-property surface this marker deliberately
- * relies on, like json_decode itself) keeps it JSON-shaped while remaining
- * distinguishable from arbitrary `stdClass` payloads, which stay rejected as
- * unsupported values unless empty.
+ * Both PHP representations of an object lose wire information, so the
+ * members are kept as raw (name, value) pairs instead: array keys coerce
+ * the string "0" to int 0 (a plain-array decode of {"0":"x"} would
+ * re-encode as the list ["x"]), and property names cannot represent
+ * every member either — PHP forbids even creating a property whose name
+ * starts with a NUL byte, which is valid JSON ({"\u0000x":1}). The pair
+ * list imposes no key transformation at all, so every member round-trips
+ * exactly as the wire carried it.
  */
-final class JsonDecodedObject extends \stdClass
+final class JsonDecodedObject
 {
+    /**
+     * @param list<array{0: string, 1: mixed}> $members
+     */
+    public function __construct(
+        public readonly array $members,
+    ) {
+    }
 }

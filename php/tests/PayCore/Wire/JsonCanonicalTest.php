@@ -343,6 +343,24 @@ final class JsonCanonicalTest extends TestCase
         );
     }
 
+    public function testDecodePreservingObjectKeepsNulPrefixedKeys(): void
+    {
+        // Property names starting with a NUL byte are reserved for PHP's
+        // visibility mangling and cannot even be created on an object, so
+        // the earlier property-per-member representation threw a native
+        // Error for this valid JSON; members are a raw pair list, which
+        // the key passes through untouched. (greptile review on PR #302;
+        // issue #110.)
+        self::assertInstanceOf(
+            JsonDecodedObject::class,
+            Json::decodePreservingObject('{"\u0000x": 1}')
+        );
+        self::assertSame(
+            '{"\u0000x":1}',
+            Json::canonicalize(Json::decodePreservingObject('{"\u0000x": 1}'))
+        );
+    }
+
     public function testDecodePreservingObjectRejectsDuplicateKeys(): void
     {
         $this->expectException(InvalidArgumentException::class);

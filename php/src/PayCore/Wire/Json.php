@@ -47,13 +47,13 @@ final class Json
             return self::encodeDecodedObject($value);
         }
         if ($value instanceof \stdClass) {
-            // Plain stdClass (not the decoder's marker subclass): only an
-            // EMPTY instance is accepted, round-tripping as `{}` (PHP's
-            // assoc decode maps `{}` to the same zero-length array as
-            // `[]`, which RFC 8785 sec 3.2.2 distinguishes). Populated
-            // plain stdClass never comes out of this decoder and stays an
-            // unsupported payload shape, matching the base JSON-narrowing
-            // contract.
+            // Plain stdClass payloads are not produced by this decoder —
+            // it yields JsonDecodedObject instances — so they stay an
+            // unsupported shape matching the base JSON-narrowing
+            // contract; the one acceptance is the EMPTY instance, which
+            // round-trips as `{}` (PHP's assoc decode maps `{}` to the
+            // same zero-length array as `[]`, which RFC 8785 sec 3.2.2
+            // distinguishes).
             if ((array) $value !== []) {
                 throw new InvalidArgumentException('unsupported JSON value');
             }
@@ -95,20 +95,14 @@ final class Json
     }
 
     /**
-     * Members of a {@see JsonDecodedObject}: iterating the object yields
-     * property names with their exact string form (the cast to an array
-     * instead coerces `"0"` back to int, which would re-encode a decoded
-     * `{"0":"x"}` as the list `["x"]`). The decoder already rejects
-     * duplicate keys, so no $seen set is needed here.
+     * Members were captured as exact (name, value) pairs at decode time
+     * — the wire names flow through untouched, and duplicate names are
+     * the decoder's contract, so none are re-checked here. Sorting and
+     * emission are shared with the array-based encoder.
      */
     private static function encodeDecodedObject(JsonDecodedObject $value): string
     {
-        $pairs = [];
-        // @phpstan-ignore foreach.nonIterable (iterating the stdClass property surface is the only route that keeps numeric-string names exact: both (array) and get_object_vars() coerce "0" to int 0. reportUnmatchedIgnoredErrors in phpstan.neon removes this automatically if phpstan starts modeling stdClass iteration.)
-        foreach ($value as $key => $item) {
-            $pairs[] = [(string) $key, $item];
-        }
-        return self::encodePairs($pairs);
+        return self::encodePairs($value->members);
     }
 
     /**
@@ -135,13 +129,14 @@ final class Json
      * distinction. PHP's `json_decode($x, true)` collapses both into a
      * zero-length array; callers need to know which one crossed the wire
      * because canonical RFC 8785 round-trips them as `{}` and `[]`
-     * respectively. A JSON `{}` decodes as the empty {@see JsonDecodedObject}
-     * marker (the encoder recognizes the class and emits `{}`); a populated
-     * object decodes as {@see JsonDecodedObject} too, because plain arrays
-     * would coerce the string key `"0"` to int and re-encode the value as an
-     * array. Plain `\stdClass` payloads (not produced by this decoder) are
-     * unaffected. Every other JSON value decodes like `json_decode($x,
-     * true)`.
+     * respectively. Every JSON object decodes as a {@see JsonDecodedObject}
+     * marker (the encoder recognizes the class and emits `{}` for the
+     * empty one), and its members are kept as raw (name, value) pairs:
+     * plain arrays would coerce the string key `"0"` to int and re-encode
+     * the value as an array, while property names cannot carry names that
+     * start with a NUL byte. Plain `\stdClass` payloads (not produced by
+     * this decoder) are unaffected. Every other JSON value decodes like
+     * `json_decode($x, true)`.
      *
      * The walk enforces the full JSON grammar over the entire input —
      * trailing content after the root value, malformed numbers (`1e`,
@@ -341,21 +336,27 @@ final class Json
         return (float)$text;
     }
 
-    private static function decodeObjectPreserving(string $json, int $len, int &$pos): array|\stdClass
+    private static function decodeObjectPreserving(string $json, int $len, int &$pos): JsonDecodedObject
     {
         if ($json[$pos] !== '{') {
             throw new InvalidArgumentException("expected { at position $pos");
         }
         $pos++;
         self::skipWsPreserving($json, $len, $pos);
-        $obj = new JsonDecodedObject();
         if ($pos < $len && $json[$pos] === '}') {
             $pos++;
-            // The marker subclass keeps an empty decoded object distinct
-            // from the empty array an empty JSON array decodes to; the
-            // encoder recognizes the class and serializes it as `{}`.
-            return $obj;
+            // The marker keeps an empty decoded object distinct from the
+            // empty array an empty JSON array decodes to; the encoder
+            // recognizes the class and serializes it as `{}`.
+            return new JsonDecodedObject([]);
         }
+        // Members are captured as raw (name, value) pairs: a plain array
+        // would coerce "0" to int 0 and the value would re-encode as a
+        // list instead of the object the wire carried, and property
+        // names cannot carry names that start with a NUL byte. Names are
+        // compared exactly — never through an array-key cast.
+        $members = [];
+        $seen = [];
         while (true) {
             self::skipWsPreserving($json, $len, $pos);
             if ($pos >= $len || $json[$pos] !== '"') {
@@ -367,13 +368,11 @@ final class Json
                 throw new InvalidArgumentException("expected : at position $pos");
             }
             $pos++;
-            // Property names keep their exact string form — a plain array
-            // would coerce "0" to int 0 and the value would re-encode as a
-            // list instead of the object the wire carried.
-            if (property_exists($obj, $key)) {
+            if (array_key_exists($key, $seen)) {
                 throw new InvalidArgumentException("duplicate object key: $key");
             }
-            $obj->{$key} = self::decodeValuePreserving($json, $len, $pos);
+            $seen[$key] = true;
+            $members[] = [$key, self::decodeValuePreserving($json, $len, $pos)];
             self::skipWsPreserving($json, $len, $pos);
             if ($pos < $len && $json[$pos] === ',') {
                 $pos++;
@@ -381,7 +380,7 @@ final class Json
             }
             if ($pos < $len && $json[$pos] === '}') {
                 $pos++;
-                return $obj;
+                return new JsonDecodedObject($members);
             }
             throw new InvalidArgumentException("expected , or } at position $pos");
         }
