@@ -39,9 +39,13 @@ import {
 } from '../client/PaymentChannels.js';
 import type { SessionRequest } from '../client/Session.js';
 import { ASSOCIATED_TOKEN_PROGRAM } from '../constants.js';
+import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
+import { ChannelStatus } from '../generated/payment-channels/types/channelStatus.js';
 import { findEventAuthorityPda, getOpenInstruction } from '../generated/payment-channels/index.js';
 import { createSessionServer, session as serverSession } from '../server/Session.js';
+import { submitOpenTx } from '../server/session/on-chain.js';
 import { createMemorySessionStore } from '../server/session/store.js';
+import { encodeFixedHookDescriptors, hookConfigHash } from '../shared/channel-hooks.js';
 import {
     CreditProviderError,
     decodeAuthorization,
@@ -52,6 +56,7 @@ import {
     hooksForDeployment,
     isCreditChannel,
     ledgerAddress,
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
     MUSEBOOK_DEVNET_DEPLOYMENT,
     MUSEBOOK_DEVNET_PROGRAM_ID,
     PAYMENT_CHANNELS_V2_PROGRAM_ID,
@@ -415,6 +420,15 @@ describe('server credit sessions', () => {
             { overrides: { network: 'mainnet' }, pattern: /unavailable on network "mainnet"/ },
             { overrides: { tokenProgram: TOKEN_2022_PROGRAM }, pattern: /tokenProgram must be SPL Token/ },
             { overrides: { creditProvider: 'coinflow' }, pattern: /credit provider coinflow is unavailable/ },
+            {
+                overrides: {
+                    channelHooks: {
+                        postDistribute: { entrypoint: [1, 2, 3, 4, 5, 6, 7, 8], programId: MUSEBOOK_DEVNET_PROGRAM_ID },
+                    },
+                    channelVersion: 2,
+                },
+                pattern: /channelHooks must be unset/,
+            },
         ];
         for (const { overrides, pattern } of cases) {
             const { params } = await creditServerParams(overrides);
@@ -662,5 +676,136 @@ describe('Greptile #417: hooked opens through the server verifier', () => {
         await expect(
             fx.server.verifyOpenPreBroadcast({ ...fx.payload, transaction: tx } as never, CHALLENGE_CTX as never),
         ).rejects.toThrow();
+    });
+});
+
+// ── Greptile #417 follow-up: a funded credit open must survive confirmation ──
+// `validateOpen` carries the derived hooks in `expected.creditHooks` while
+// `config.channelHooks` stays unset for credit sessions; the confirmation
+// check in `submitOpenTx` compared the on-chain hook policy against the
+// latter, so a landed credit open failed before the session was saved.
+
+describe('Greptile #417 follow-up: funded credit opens', () => {
+    test('submitOpenTx binds a confirmed V2 channel carrying the derived hooks', async () => {
+        const fx = await creditFixture();
+        const hooks = fx.open.channelHooks!;
+        const mint = address(fx.open.mint);
+        const channel = address(fx.open.channelId);
+        const tokenProgram = address(SPL_TOKEN_PROGRAM_ID);
+        const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: address(fx.open.payer), tokenProgram });
+        const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: channel, tokenProgram });
+        const [eventAuthority] = await findEventAuthorityPda({
+            programAddress: address(PAYMENT_CHANNELS_V2_PROGRAM_ID),
+        });
+        const base = getOpenInstruction(
+            {
+                associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
+                authorizedSigner: address(fx.authorizedSigner.address),
+                channel,
+                channelTokenAccount,
+                eventAuthority,
+                mint,
+                openArgs: {
+                    deposit: BigInt(fx.open.deposit),
+                    gracePeriod: fx.open.gracePeriod,
+                    openSlot: BigInt(fx.open.openSlot),
+                    recipients: [],
+                    salt: BigInt(fx.open.salt),
+                },
+                payee: address(fx.open.payee),
+                payer: fx.payer,
+                payerTokenAccount,
+                rent: address(RENT_SYSVAR),
+                rentPayer: fx.payer,
+                selfProgram: address(PAYMENT_CHANNELS_V2_PROGRAM_ID),
+                tokenProgram,
+            },
+            { programAddress: address(PAYMENT_CHANNELS_V2_PROGRAM_ID) },
+        );
+        const hooked = await buildOpenWithHooks(base, hooks, fx.open.channelId);
+        const tx = await signWire(fx.payer as never, [hooked]);
+
+        // The confirmed 1121-byte V2 account: the base layout with version
+        // 2, the hook commitment at offset 265 and the fixed descriptors
+        // at offset 297.
+        const accountBytes = new Uint8Array(1121);
+        accountBytes.set(
+            getChannelEncoder().encode({
+                authorizedSigner: address(fx.authorizedSigner.address),
+                bump: 255,
+                closureStartedAt: 0n,
+                deposit: BigInt(fx.open.deposit),
+                discriminator: 1,
+                distributionHash: new Array<number>(32).fill(0),
+                gracePeriod: fx.open.gracePeriod,
+                mint,
+                openSlot: BigInt(fx.open.openSlot),
+                payee: address(fx.open.payee),
+                payer: address(fx.open.payer),
+                payerWithdrawnAt: 0n,
+                rentPayer: address(fx.open.payer),
+                salt: BigInt(fx.open.salt),
+                settlement: { payoutWatermark: 0n, settled: 0n },
+                status: Number(ChannelStatus.Open),
+                version: 1,
+            }) as Uint8Array,
+            0,
+        );
+        accountBytes[1] = 2;
+        accountBytes.set(await hookConfigHash(hooks), 265);
+        accountBytes.set(encodeFixedHookDescriptors(hooks), 297);
+        const accountData = getBase64Codec().decode(accountBytes);
+
+        const sends: string[] = [];
+        const rpc = {
+            getAccountInfo: (_account: string) => ({
+                send: async () => ({
+                    context: { slot: 1n },
+                    value: {
+                        data: [accountData, 'base64'],
+                        executable: false,
+                        lamports: 1_000_000n,
+                        owner: PAYMENT_CHANNELS_V2_PROGRAM_ID,
+                        rentEpoch: 0n,
+                        space: 1121n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (_signatures: readonly string[]) => ({
+                send: async () => ({ value: [{ confirmationStatus: 'confirmed', err: null }] }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    return '1111111111111111111111111111111111111111111111111111111111111111';
+                },
+            }),
+        };
+        const result = await submitOpenTx({
+            confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+            expected: {
+                authorizedSigner: fx.payload.authorizedSigner,
+                channelProgram: PAYMENT_CHANNELS_V2_PROGRAM_ID,
+                channelVersion: 2,
+                creditDeployment: MUSEBOOK_DEVNET_DEPLOYMENT,
+                creditHooks: hooks,
+                currency: fx.open.mint,
+                feePayer: fx.open.payer,
+                maxComputeUnitLimit: MUSEBOOK_COMPUTE_UNIT_LIMIT,
+                minimumDeposit: 100n,
+                mint: fx.open.mint,
+                network: 'devnet',
+                openSlot: BigInt(fx.open.openSlot),
+                recentBlockhash: RECENT_BLOCKHASH,
+                recipient: fx.open.payee,
+                rentPayer: fx.open.payer,
+                splits: [],
+                tokenProgram: SPL_TOKEN_PROGRAM_ID,
+            },
+            openPayload: { ...fx.payload, transaction: tx } as never,
+            rpc: rpc as never,
+        });
+        expect(result.channelId).toBe(fx.open.channelId);
+        expect(sends).toEqual([tx]);
     });
 });
