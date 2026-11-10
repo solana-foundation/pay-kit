@@ -73,6 +73,19 @@ export function TopNav({ selectedEndpointId, onEndpointClick }: Props) {
         })}
         <button
           type="button"
+          className={`topnav-pill credits${location.pathname === '/credits' ? ' active' : ''}`}
+          onClick={() => navigate('/credits')}
+          title="GET /api/v1/credits/:customer/quote — a credit provider funds the session"
+        >
+          <span className="row">
+            <span className="method">GET</span>
+            <span className="title">Credit-funded session</span>
+          </span>
+          <span className="desc">A credit provider funds the channel through V2 lifecycle hooks.</span>
+          <span className="cost">0.01 USDC / request</span>
+        </button>
+        <button
+          type="button"
           className={`topnav-pill docs${location.pathname.startsWith('/docs') ? ' active' : ''}`}
           onClick={() => navigate('/docs')}
         >

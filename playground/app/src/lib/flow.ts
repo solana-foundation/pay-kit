@@ -18,7 +18,7 @@ import type { FlowProgress } from '../types'
 // globalThis.fetch by default, which would otherwise hijack the session client's
 // 402 retry and throw "No method found for challenges: solana.session" because
 // the charge/subscription Mppx instances don't register the session method.
-const nativeFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis)
+export const nativeFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis)
 
 interface ProgressEvent {
   type: string
