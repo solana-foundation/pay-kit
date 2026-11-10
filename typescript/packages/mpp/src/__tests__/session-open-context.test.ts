@@ -155,6 +155,25 @@ describe('server challenge open-transaction context', () => {
         expect(rpc.getLatestBlockhash).not.toHaveBeenCalled();
     });
 
+    test.each([undefined, 2] as const)('resume retains stored ABI %s and hooks after rollout', async version => {
+        const storedHooks = { postDistribute: { programId: TOKEN_PROGRAM, entrypoint: [1, 2, 3, 4, 5, 6, 7, 8] } };
+        const getChannel = vi.fn(async () => ({
+            channelVersion: version,
+            channelHooks: version === 2 ? storedHooks : undefined,
+        }));
+        const { method } = await methodFor({
+            rpc: blockhashRpc(),
+            store: { getChannel, listChannels: async () => [] },
+            channelVersion: 2,
+            channelHooks: {},
+        });
+        const channel = await generateKeyPairSigner();
+        const challenge = await requestHook(method)({ request: { methodDetails: { channelId: channel.address } } });
+        expect(getChannel).toHaveBeenCalledWith(channel.address);
+        expect(challenge.methodDetails.channelVersion).toBe(version);
+        expect(challenge.methodDetails.channelHooks).toEqual(version === 2 ? storedHooks : undefined);
+    });
+
     test('the verify-path recompute (credential present) skips the fetch', async () => {
         const rpc = blockhashRpc();
         const { method } = await methodFor({ rpc });

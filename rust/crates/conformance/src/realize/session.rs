@@ -136,6 +136,13 @@ pub struct Server {
     /// The versions it accepts (and advertises) for client-submitted `open`
     /// and `topUp` transactions; `None` is the default `[0]`.
     pub transaction_versions: Option<Vec<u8>>,
+    /// The channel ABI version it advertises (`channelVersion`); `None` is
+    /// V1. Version 2 selects the hooked instruction family
+    /// (payment-channels#102) on the same program.
+    pub channel_version: Option<u8>,
+    /// The immutable lifecycle-hook configuration it advertises
+    /// (`channelHooks`, the kit's `ChannelHooks` JSON); requires version 2.
+    pub channel_hooks: Option<Value>,
 }
 
 impl Default for Server {
@@ -153,8 +160,42 @@ impl Default for Server {
             idle_timeout_options: None,
             splits: vec![],
             transaction_versions: None,
+            channel_version: None,
+            channel_hooks: None,
         }
     }
+}
+
+/// The hook target program the V2 cases commit: a program that is neither
+/// the channel program nor the zero address (the program itself is never
+/// executed offline).
+pub fn hook_program() -> Pubkey {
+    key([41; 32])
+}
+
+/// A credit-provider hook policy for the harness client: the same descriptor
+/// on `preFund` and `postDistribute` (the pair payment-channels
+/// `examples/credit-provider` commits), with the four accounts its callback
+/// touches, derived for the harness client and the server's mint.
+pub fn provider_hooks(server: &Server) -> Value {
+    let provider = hook_program();
+    let mint = server.mint();
+    let ledger =
+        Pubkey::find_program_address(&[b"credit", client().as_ref(), mint.as_ref()], &provider).0;
+    let ata =
+        |owner: &Pubkey| pc::find_associated_token_address(owner, &mint, &server.token_program()).0;
+    let descriptor = json!({
+        "programId": provider.to_string(),
+        "entrypoint": b"credit!!".to_vec(),
+        "accounts": [
+            { "address": ledger.to_string(), "writable": true },
+            { "address": ata(&ledger).to_string(), "writable": true },
+            { "address": ata(&client()).to_string(), "writable": true },
+            { "address": server.token_program().to_string(), "writable": false },
+        ],
+        "staticData": [],
+    });
+    json!({ "preFund": descriptor, "postDistribute": descriptor })
 }
 
 impl Server {
@@ -194,6 +235,13 @@ impl Server {
         }
         if let Some(versions) = &self.transaction_versions {
             out["transactionVersions"] = json!(versions);
+        }
+        if let Some(version) = self.channel_version {
+            out["channelProgram"] = json!(pc::default_program_id().to_string());
+            out["channelVersion"] = json!(version);
+        }
+        if let Some(hooks) = &self.channel_hooks {
+            out["channelHooks"] = hooks.clone();
         }
         out
     }
@@ -331,6 +379,23 @@ pub fn kit_server<S: ChannelStore>(
             (Some(_), None) => return Err("server.feePayer without its secret key".into()),
         },
         operator_signing_key: operator_key.map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed)),
+        channel_program: match server.get("channelProgram").and_then(Value::as_str) {
+            None => None,
+            Some(program) => Some(
+                Pubkey::from_str(program).map_err(|e| format!("invalid channelProgram: {e}"))?,
+            ),
+        },
+        channel_version: match u64_field(server, "channelVersion")? {
+            None => None,
+            Some(version) => Some(u8::try_from(version).map_err(|_| "invalid channelVersion")?),
+        },
+        channel_hooks: match server.get("channelHooks") {
+            None | Some(Value::Null) => None,
+            Some(hooks) => Some(
+                serde_json::from_value(hooks.clone())
+                    .map_err(|e| format!("invalid channelHooks: {e}"))?,
+            ),
+        },
         ..SessionConfig::default()
     };
     let mut versions: Vec<TxVersion> = match server.get("transactionVersions") {
@@ -871,6 +936,12 @@ pub enum TxTamper {
     /// (channel and token account re-derived, the payload updated to
     /// match), so only the curve check can refuse it.
     OffCurveSigner,
+    /// The open instruction's account list truncated to its first `n`
+    /// accounts (a hooked open loses its callback bundle).
+    OpenTruncateAccounts(usize),
+    /// The byte `from_end` bytes before the end of the open instruction data
+    /// set to `value` (the hooked open's trailing hook configuration).
+    OpenDataByte(usize, u8),
     /// The transaction fee payer set to the key of `seed`, which signs.
     FeePayer([u8; 32]),
     /// The top-up instruction's channel account set to `key`.
@@ -903,6 +974,7 @@ impl TxTamper {
             | TxTamper::DuplicateOpen
             | TxTamper::DropOpen => UnexpectedInstruction,
             TxTamper::OffCurveSigner => OpenBindingMismatch,
+            TxTamper::OpenTruncateAccounts(_) | TxTamper::OpenDataByte(..) => OpenBindingMismatch,
             TxTamper::FeePayer(_) => FeePayerMismatch,
             TxTamper::TopUpChannel(_) => ChannelIdMismatch,
             TxTamper::TopUpAmount(_) => AmountMismatch,
@@ -929,6 +1001,12 @@ impl TxTamper {
             TxTamper::OffCurveSigner => format!(
                 "open rebuilt with authorizedSigner {} (not a curve point) and the payload re-derived",
                 off_curve()
+            ),
+            TxTamper::OpenTruncateAccounts(n) => {
+                format!("open account list truncated to its first {n} accounts")
+            }
+            TxTamper::OpenDataByte(from_end, value) => format!(
+                "open instruction data byte {from_end} from the end set to {value}"
             ),
             TxTamper::FeePayer(seed) => format!("transaction fee payer set to {}", key(*seed)),
             TxTamper::TopUpChannel(k) => format!("top-up channel account set to {k}"),
@@ -987,6 +1065,17 @@ impl TxTamper {
                         credential["authorizedSigner"] = json!(off_curve().to_string());
                         credential["channelId"] =
                             json!(pc::derive_channel_addresses(&params).channel.to_string());
+                    }
+                    TxTamper::OpenTruncateAccounts(n) => {
+                        d.instructions[open_at].accounts.truncate(*n);
+                    }
+                    TxTamper::OpenDataByte(from_end, value) => {
+                        let data = &mut d.instructions[open_at].data;
+                        let at = data
+                            .len()
+                            .checked_sub(from_end + 1)
+                            .ok_or("open data shorter than the byte offset")?;
+                        data[at] = *value;
                     }
                     TxTamper::FeePayer(seed) => {
                         d.fee_payer = key(*seed);
@@ -1746,6 +1835,21 @@ fn open_summary(open: &Value) -> Result<Map<String, Value>, String> {
             .map(|(k, slot)| json!({ "key": k, "slot": format!("{slot:?}") }))
             .collect::<Vec<_>>()),
     );
+    // The channel instruction's discriminator and account count: a hooked
+    // open is `openWithHooks` (10) with its callback bundle appended.
+    let keys_ = tx.message.static_account_keys();
+    let channel_ix =
+        tx.message.instructions().iter().find(|ix| {
+            keys_.get(usize::from(ix.program_id_index)) == Some(&pc::default_program_id())
+        });
+    out.insert(
+        "openDiscriminator".into(),
+        json!(channel_ix.and_then(|ix| ix.data.first().copied())),
+    );
+    out.insert(
+        "openAccountCount".into(),
+        json!(channel_ix.map(|ix| ix.accounts.len())),
+    );
     Ok(out)
 }
 
@@ -1832,6 +1936,9 @@ pub fn build_code_for(message: &str) -> Option<RejectCode> {
         || has("spl token")
         || has("graceperiod")
         || has("decimals")
+        || has("channelhooks")
+        || has("channel deployment")
+        || has("abi version")
         || has("invalid"))
     .then_some(RejectCode::InvalidChallenge)
 }

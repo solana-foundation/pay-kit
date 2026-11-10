@@ -11,34 +11,19 @@ import { address, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { TOKEN_PROGRAM } from '../constants.js';
+import type { ChannelHooks, HookDescriptor } from './channel-hooks.js';
 
 /** A recognized credit provider a merchant wants to accept alongside currency. */
 export type CreditProvider = 'coinflow' | 'musebook';
 
-/** One hook account, in the exact order the provider program expects. */
-export interface HookAccount {
-    readonly address: string;
-    readonly writable: boolean;
-}
-
 /**
- * One lifecycle callback descriptor. `entrypoint` and `staticData` are byte
- * arrays on the wire, exactly as the Rust `HookDescriptor` serializes them.
+ * The V2 lifecycle hook types are the canonical ones from
+ * `channel-hooks.js` (mpp-specs-v2 V2 Lifecycle Hooks), re-exported here
+ * for credit-provider consumers. Descriptors derived by this module
+ * always populate `accounts` and `staticData` (possibly empty), exactly
+ * as the Rust `HookDescriptor` serializes them.
  */
-export interface HookDescriptor {
-    readonly accounts: HookAccount[];
-    readonly entrypoint: number[];
-    readonly programId: string;
-    readonly staticData: number[];
-}
-
-/** The four V2 lifecycle hook slots; absent slots are unset. */
-export interface ChannelHooks {
-    readonly postDistribute?: HookDescriptor | undefined;
-    readonly postFund?: HookDescriptor | undefined;
-    readonly preDistribute?: HookDescriptor | undefined;
-    readonly preFund?: HookDescriptor | undefined;
-}
+export type { ChannelHooks, HookAccount, HookDescriptor } from './channel-hooks.js';
 
 /** Callback entrypoint discriminator checked by the provider program. */
 export const MUSEBOOK_ENTRYPOINT: number[] = [...getUtf8Encoder().encode('musebook')];
@@ -229,15 +214,19 @@ export async function hooksForDeployment(
 
 function descriptorEquals(a: HookDescriptor | undefined, b: HookDescriptor | undefined): boolean {
     if (a === undefined || b === undefined) return a === b;
+    const aStaticData = a.staticData ?? [];
+    const bStaticData = b.staticData ?? [];
+    const aAccounts = a.accounts ?? [];
+    const bAccounts = b.accounts ?? [];
     return (
         a.programId === b.programId &&
         a.entrypoint.length === b.entrypoint.length &&
         a.entrypoint.every((byte, i) => byte === b.entrypoint[i]) &&
-        a.staticData.length === b.staticData.length &&
-        a.staticData.every((byte, i) => byte === b.staticData[i]) &&
-        a.accounts.length === b.accounts.length &&
-        a.accounts.every(
-            (account, i) => account.address === b.accounts[i]?.address && account.writable === b.accounts[i]?.writable,
+        aStaticData.length === bStaticData.length &&
+        aStaticData.every((byte, i) => byte === bStaticData[i]) &&
+        aAccounts.length === bAccounts.length &&
+        aAccounts.every(
+            (account, i) => account.address === bAccounts[i]?.address && account.writable === bAccounts[i]?.writable,
         )
     );
 }

@@ -1,0 +1,1412 @@
+[
+  {
+    "bugType": "auth-bypass",
+    "description": "The V2 server advertises channelVersion 2 and the credit-provider hook pair (preFund and postDistribute, four committed accounts each); the kit client opens with openWithHooks (discriminator 10), the compact hook configuration after the V1 open payload and the preFund bundle (target program, callback authority, extras) after the 14 V1 accounts. Control for every reject in this file. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-v2-server-open-hooked-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA5WENcOWyQfwcT8kr1jC0zlF5ekQ3/WqoOE3e3TXj0Rb5i2509QyML/pF7sR5oV8KpiO0oqmnxDZ4VzF5MM0sDgAIADBNmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdNm8Yj/FgofhM0oYU9hnBCFmYMGoUxKXmfgEUqJBUhvFpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjP6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwgABQJADQMACAAJAwEAAAAAAAAAEBQBABELDwYEBQoHCQ4NEBIMAwIECoEDCgcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-6e96639589",
+      "MPPV2-2f5424f79b",
+      "MPPV2-7c7e5b0e73"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Clients and servers MUST bind the selected network, channel version, `channelProgram`, and supported state, instruction, voucher and hook ABIs as one configured tuple.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A V2 server whose four hook slots are all disabled (channelHooks {}): account version selects the instruction family, so the open is still openWithHooks (10) with four zero slot tags and no callback bundle, never the V1 open. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "accept"
+    },
+    "id": "session-v2-server-open-empty-hooks-accept",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADYsqv/RaW3znajJPyurLx0No8Jpq612K6xgQwl4IJI+kF2Fe2p/OOyXulPP2uaOmv6JavZpnSJUj8ytM46OC8AgAIACg9mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAQAOCQwEAgMIBQcLCg0lCgcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAAAAAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {},
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-7eb724a2ed",
+      "MPPV2-6e96639589"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "The V1 layouts and encodings in this document MUST NOT be reused for V2 without an explicit ABI definition.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The hooked open's discriminator rewritten to the V1 open tag (1): the server rebuilds openWithHooks (10) and does not recognise the instruction; it must not fall back to V1 verification. Pair: session-v2-server-open-hooked-accept. Mutation: open discriminator set to 1. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-v2-server-open-v1-discriminator-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADfqk1zZPQT+gJW7XlcWungmpNhO5Kg/eQ0xMctyrlwsk5oiK+qOmmRAnlclx9ill9sImKro0G3JN6HOMWncVMEgAIADBNmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdNm8Yj/FgofhM0oYU9hnBCFmYMGoUxKXmfgEUqJBUhvFpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjP6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwgABQJADQMACAAJAwEAAAAAAAAAEBQBABELDwYEBQoHCQ4NEBIMAwIECoEDAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-7eb724a2ed",
+      "MPPV2-beb9ad1cbe"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Implementations MUST reject malformed or unsupported versions and MUST NOT retry a rejected V2 credential as V1.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "A well-formed V1 open (discriminator 1, no hook configuration, 14 accounts) presented to the V2 server for the same channel: the credential's fields agree with the challenge, but the transaction funds an unhooked channel, which the server must refuse rather than accept without hooks. Pair: session-v2-server-open-hooked-accept. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-v2-server-open-plain-open-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+D8+jujxoIr0hnlHLC81qT8CrXOtSPJlAOrWvzUyLEYD2y6lAULd5QpbN0ejsvU/6/sttRT0lDIXZlLpnHgoKgAIACg9mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAQAOCQwEAgMIBQcLCg0hAQcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAA=="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-1cb0b76d43",
+      "MPPV2-7eb724a2ed"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Missing configuration or required accounts MUST fail, not disable hooks.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The hooked open's account list truncated to the 14 V1 accounts: the preFund bundle (target program, callback authority, four extras) is missing, so the instruction cannot run its mandatory callback. Pair: session-v2-server-open-hooked-accept. Mutation: open account list truncated to its first 14 accounts. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-v2-server-open-hook-bundle-dropped-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADD5ssFgn3lojhGbPsX7lYo+EJ49iOblzWVehsQUHVLEQREQy+sfV1nh8dj51BUDzEI++LkDoU9cA4H+0nYc8MCgAIACg9mvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+zuKDCIZcHy2Dl9wvS0reBdEyx4mOFOAzdNiizqEzKHRPPrhnTEN4jn34b3826qramvN3M/raTXynC5spQ1WkiYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKk7RCyzkSFX8TqTPQE0KC0DK1/+zQGi2/G3eQYI3wAup1pUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjPMSQ6SjNLjhzuzQ/yV2jMXnKYPTb9GwsNukSmdVdTmuQMGAAUCQA0DAAYACQMBAAAAAAAAAA0OAQAOCQwEAgMIBQcLCg2BAwoHAAAAAAAAAOgDAAAAAAAAhAMAAICy5g4AAAAAAAAAAAH6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZWNyZWRpdCEhBABfxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DgFaS8GmGO/KEHtBr/OKONlsfhn6W3a+VpU424fp2eVu3gFrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAH6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZWNyZWRpdCEhBABfxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DgFaS8GmGO/KEHtBr/OKONlsfhn6W3a+VpU424fp2eVu3gFrhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7AEG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAA"
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-1cb0b76d43",
+      "MPPV2-71270a9762"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Recipient accounts and each hook's accounts MUST have an unambiguous partition.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The first committed extra account of the preFund bundle (account 16, the provider's credit ledger) replaced by a stranger: the bundle no longer matches the configuration the server advertised. Pair: session-v2-server-open-hooked-accept. Mutation: open account #16 set to FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-v2-server-open-hook-account-substituted-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABU8FQvmKphx7IEPK/VwgtMRw+NHnM/n2SCPvhmvcjkNCz2RPwctswDjHbrSjHChTA4k2Wi+3XeqdmKqxcviqgNgAIADBNmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5rhP5UBZmQpuojCNxliFWtlYplHhRXJiP3+tOT27AT7NVCB9oZSXfc9Grb/sK8LnW1LVqKQhhP7f3AACTw4+ja7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdNm8Yj/FgofhM0oYU9hnBCFmYMGoUxKXmfgEUqJBUhvFpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjP6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwgABQJADQMACAAJAwEAAAAAAAAAEBQBABELDwYDBQoHCQ4NEBIMBAIDCoEDCgcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-71270a9762",
+      "MPPV2-2f5424f79b"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Recipient accounts and each hook's accounts MUST have an unambiguous partition.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The last byte of the compact hook configuration (the writable flag of the postDistribute descriptor's fourth account, the token program) flipped to writable: the committed policy differs from the one the merchant advertised. Pair: session-v2-server-open-hooked-accept. Mutation: open instruction data byte 0 from the end set to 1. The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "open-binding-mismatch"
+    },
+    "id": "session-v2-server-open-hook-config-altered-reject",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwDb+HKhbOcf0HRFm0C/FkcMr4A+M0c0QKvipjA93mQQwSplxDNe70OVScL7CI0aqkw/iFMX1hL8/FCUjlwZQLgAIADBNmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdNm8Yj/FgofhM0oYU9hnBCFmYMGoUxKXmfgEUqJBUhvFpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjP6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwgABQJADQMACAAJAwEAAAAAAAAAEBQBABELDwYEBQoHCQ4NEBIMAwIECoEDCgcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAQA="
+        },
+        "server": {
+          "amount": "25",
+          "channelHooks": {
+            "postDistribute": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            },
+            "preFund": {
+              "accounts": [
+                {
+                  "address": "7Squ4c2HpaTTVZSXyTZYte7Eei2UL8cceHqVL56fjo17",
+                  "writable": true
+                },
+                {
+                  "address": "75Uh9VNWNWtiSAsretbhWYNLiAdArGbZhUEQfzWaHJCD",
+                  "writable": true
+                },
+                {
+                  "address": "8EiF91LJfbatqHRY3k2jp8dwrFY3yDQeEovpMDZnpJiP",
+                  "writable": true
+                },
+                {
+                  "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                  "writable": false
+                }
+              ],
+              "entrypoint": [
+                99,
+                114,
+                101,
+                100,
+                105,
+                116,
+                33,
+                33
+              ],
+              "programId": "HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr",
+              "staticData": []
+            }
+          },
+          "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "channelVersion": 2,
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-7c7e5b0e73",
+      "MPPV2-6e96639589"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "Payer and sponsor MUST approve configuration at opening; merchants MUST accept its policy before providing service.",
+      "section": "V2 Lifecycle Hooks"
+    },
+    "tier": "offline"
+  },
+  {
+    "bugType": "auth-bypass",
+    "description": "The kit client's hooked open (built for the V2 server's challenge) presented to the V1 server for the same channel: the V1 server expects the V1 open (1) and must not accept openWithHooks (10). Pair: session-v2-server-open-hooked-accept (the V2 server accepting the same open). The open is the kit client's open action for the challenge the server issues; the server runs every check it makes before broadcasting.",
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unexpected-instruction"
+    },
+    "id": "session-v2-server-v1-rejects-hooked-open",
+    "input": {
+      "sessionServerFeePayerSecretKey": [
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        102,
+        190,
+        126,
+        51,
+        44,
+        122,
+        69,
+        51,
+        50,
+        189,
+        157,
+        10,
+        127,
+        125,
+        176,
+        85,
+        245,
+        197,
+        239,
+        26,
+        6,
+        173,
+        166,
+        109,
+        152,
+        179,
+        159,
+        182,
+        129,
+        12,
+        71,
+        58
+      ],
+      "sessionServerVerify": {
+        "challenge": {
+          "id": "c_session_conformance_0001",
+          "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+          "recentSlot": "250000000"
+        },
+        "credential": {
+          "action": "open",
+          "authorizedSigner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+          "channelId": "HRANUXxvAKrmrJYzmMr8pCj26eea1XV1odGamAQoptRd",
+          "depositAmount": "1000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "payer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+          "salt": "7",
+          "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA5WENcOWyQfwcT8kr1jC0zlF5ekQ3/WqoOE3e3TXj0Rb5i2509QyML/pF7sR5oV8KpiO0oqmnxDZ4VzF5MM0sDgAIADBNmvn4zLHpFMzK9nQp/fbBV9cXvGgatpm2Ys5+2gQxHOupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsWkvBphjvyhB7Qa/zijjZbH4Z+lt2vlaVONuH6dnlbt5fxO41e+Hf4293JFwhBTaUn4FqZZhAU631gLppDZo4DmuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPs7igwiGXB8tg5fcL0tK3gXRMseJjhTgM3TYos6hMyh0Tz64Z0xDeI59+G9/Nuqq2przdzP62k18pwubKUNVpImAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpO0Qss5EhV/E6kz0BNCgtAytf/s0Botvxt3kGCN8ALqdNm8Yj/FgofhM0oYU9hnBCFmYMGoUxKXmfgEUqJBUhvFpUDXtrHisrtRdSGcmj8GAQkkHKjE8XDMHKLUju6vnQjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FmRoooLdDgVk6TZRpV5IIkmr8itgsiDm3ZENZueuppLOqeh+6TrKwkJk/fS39YrieK4cgd6Y5/X10eo6Z9j1BWuq04rMx5LTzoVQrrg+VXdXTMDScdOoccKkgXsBlUJIjP6SDQUf25pDDaT7/YTNgRkA82K4qFPMbPEBzWFaSOVZcxJDpKM0uOHO7ND/JXaMxecpg9Nv0bCw26RKZ1V1Oa5AwgABQJADQMACAAJAwEAAAAAAAAAEBQBABELDwYEBQoHCQ4NEBIMAwIECoEDCgcAAAAAAAAA6AMAAAAAAACEAwAAgLLmDgAAAAAAAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAAAAfpINBR/bmkMNpPv9hM2BGQDzYrioU8xs8QHNYVpI5VlY3JlZGl0ISEEAF/E7jV74d/jb3ckXCEFNpSfgWplmEBTrfWAumkNmjgOAVpLwaYY78oQe0Gv84o42Wx+Gfpbdr5WlTjbh+nZ5W7eAWuE/lQFmZCm6iMI3GWIVa2VimUeFFcmI/f605PbsBPsAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpAAA="
+        },
+        "server": {
+          "amount": "25",
+          "currency": "USDC",
+          "decimals": 6,
+          "feePayer": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "minimumDeposit": "100",
+          "network": "devnet",
+          "operator": "7v54NWdBtkjuAFJrLGsS2SXnuk8nKam81mZJeeYxVFi9",
+          "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+          "suggestedDeposit": "1000",
+          "voucherSigner": "client"
+        }
+      }
+    },
+    "intent": "session",
+    "mode": "verify-transaction",
+    "provenance": "generated",
+    "requirements": [
+      "MPPV2-5f4438c84d",
+      "MPPV2-7eb724a2ed"
+    ],
+    "role": "server",
+    "spec": {
+      "doc": "mpp-specs-v2/specs/methods/solana/draft-solana-session-00.md",
+      "quote": "V1 challenges and credentials MUST NOT carry V2 hook configuration.",
+      "section": "Versioned Channel Profiles"
+    },
+    "tier": "offline"
+  }
+]

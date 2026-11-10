@@ -15,6 +15,7 @@ pub mod charge_tx_versions;
 pub mod session;
 pub mod session_server;
 pub mod session_tx_versions;
+pub mod session_v2;
 pub mod subscription;
 pub mod x402_batch;
 pub mod x402_exact;
@@ -82,6 +83,7 @@ pub fn all() -> Vec<crate::case::Case> {
     out.extend(charge_tx_versions::cases());
     out.extend(session_tx_versions::cases());
     out.extend(session_server::cases());
+    out.extend(session_v2::cases());
     out.extend(x402_tx_versions::cases());
     out
 }
@@ -126,7 +128,14 @@ mod tests {
     fn every_case_maps_a_known_requirement() {
         let root = crate::repo_root();
         let mut known = BTreeSet::new();
-        for name in ["mpp", "x402", "mpp-solana", "mpp-txv1", "x402-txv1"] {
+        for name in [
+            "mpp",
+            "x402",
+            "mpp-solana",
+            "mpp-txv1",
+            "x402-txv1",
+            "mpp-v2",
+        ] {
             let raw =
                 std::fs::read_to_string(root.join(format!("harness/requirements/{name}.toml")))
                     .unwrap();
