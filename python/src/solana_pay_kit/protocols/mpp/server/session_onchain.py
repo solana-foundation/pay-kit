@@ -26,6 +26,7 @@ from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.credit_provider import (
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
     CreditDeployment,
     hooks_for_deployment,
 )
@@ -324,7 +325,14 @@ async def verify_open_tx(
     # Envelope: an accepted version, static accounts, the version's size
     # limit, then the compute budget (version-1 header or version-0
     # ComputeBudget prefix) against the charge caps.
-    check_session_transaction_policy(raw, expected.accepted_versions, sponsored=expected.fee_payer != payload.payer)
+    check_session_transaction_policy(
+        raw,
+        expected.accepted_versions,
+        sponsored=expected.fee_payer != payload.payer,
+        max_compute_unit_limit=(
+            MUSEBOOK_COMPUTE_UNIT_LIMIT if expected.credit_deployment is not None else SESSION_MAX_COMPUTE_UNIT_LIMIT
+        ),
+    )
 
     # The compiled message must use the challenged ``recentBlockhash``: it
     # proves the transaction was built for this challenge, not replayed from
@@ -519,7 +527,13 @@ SESSION_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
 SESSION_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000
 
 
-def check_session_transaction_policy(raw: bytes, accepted_versions: tuple[int, ...], *, sponsored: bool) -> None:
+def check_session_transaction_policy(
+    raw: bytes,
+    accepted_versions: tuple[int, ...],
+    *,
+    sponsored: bool,
+    max_compute_unit_limit: int = SESSION_MAX_COMPUTE_UNIT_LIMIT,
+) -> None:
     """Admit a session open or top-up transaction's envelope and budget.
 
     The version must be accepted (a legacy message never is), the message
@@ -527,6 +541,10 @@ def check_session_transaction_policy(raw: bytes, accepted_versions: tuple[int, .
     budget (version-1 header config, or the version-0 ComputeBudget prefix)
     must stay within the caps, the price cap lower when the server sponsors
     fees. Mirrors the envelope half of the Rust ``prepare_open_transaction``.
+
+    ``max_compute_unit_limit`` is the caller's ceiling: credit sessions
+    pass the provider's pinned limit (the Rust ``max_compute_unit_limit``
+    on the session config), everyone else gets the charge-policy cap.
     """
     try:
         tx = decode_any_transaction(raw)
@@ -539,8 +557,8 @@ def check_session_transaction_policy(raw: bytes, accepted_versions: tuple[int, .
     )
     try:
         check_envelope(tx, accepted_versions, allow_legacy=False)
-        check_v1_budget_caps(tx.message, SESSION_MAX_COMPUTE_UNIT_LIMIT, price_cap)
-        declared = check_v0_budget_caps(tx.message, SESSION_MAX_COMPUTE_UNIT_LIMIT, price_cap)
+        check_v1_budget_caps(tx.message, max_compute_unit_limit, price_cap)
+        declared = check_v0_budget_caps(tx.message, max_compute_unit_limit, price_cap)
         if declared is not None:
             require_budget_prefix(tx.message, declared)
     except TransactionVersionError as exc:
@@ -769,7 +787,16 @@ async def prepare_topup_transaction(
     expected_fee_payer = signer.pubkey if signer is not None else payer
     versions = getattr(config, "transaction_versions", None)
     accepted = tuple(sorted(set(versions))) if versions is not None else DEFAULT_ACCEPTED_VERSIONS
-    check_session_transaction_policy(raw, accepted, sponsored=signer is not None)
+    check_session_transaction_policy(
+        raw,
+        accepted,
+        sponsored=signer is not None,
+        max_compute_unit_limit=(
+            MUSEBOOK_COMPUTE_UNIT_LIMIT
+            if getattr(config, "credit_provider", None) is not None
+            else SESSION_MAX_COMPUTE_UNIT_LIMIT
+        ),
+    )
     keys = list(message.account_keys)
     if not keys or keys[0] != expected_fee_payer:
         raise PaymentError("top-up transaction fee payer does not match the challenge policy", code="invalid-payload")

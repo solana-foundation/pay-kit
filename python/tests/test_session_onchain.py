@@ -746,17 +746,24 @@ async def test_top_up_verifier_refuses_a_third_party_fee_payer_on_a_client_paid_
 # accept exactly that form and refuse the plain open and foreign hooks —
 # the Python mirror of the TS server fix (9c3b9c7).
 
+from solders.instruction import Instruction as SoldersInstruction  # noqa: E402
+
 from solana_pay_kit._paycore.credit_provider import (  # noqa: E402
+    MUSEBOOK_COMPUTE_UNIT_LIMIT,
     MUSEBOOK_DEVNET_DEPLOYMENT,
     PAYMENT_CHANNELS_V2_PROGRAM_ID,
     hooks_for_deployment,
 )
 from solana_pay_kit._paycore.paymentchannels_v2 import build_open_with_hooks  # noqa: E402
+from solana_pay_kit._paycore.txv1 import COMPUTE_BUDGET_PROGRAM  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.session_onchain import check_session_transaction_policy  # noqa: E402
 
 _V2_PROGRAM = Pubkey.from_string(PAYMENT_CHANNELS_V2_PROGRAM_ID)
 
 
-def _credit_fixture(*, hook_mint: Pubkey | None = None, hooked: bool = True) -> _Fixture:
+def _credit_fixture(
+    *, hook_mint: Pubkey | None = None, hooked: bool = True, unit_limit: int | None = None
+) -> _Fixture:
     payer = Keypair.from_seed(bytes([1] * 32))
     payee = Keypair.from_seed(bytes([2] * 32)).pubkey()
     authorized = Keypair.from_seed(bytes([3] * 32)).pubkey()
@@ -781,7 +788,13 @@ def _credit_fixture(*, hook_mint: Pubkey | None = None, hooked: bool = True) -> 
     if hooked:
         hooks = hooks_for_deployment(MUSEBOOK_DEVNET_DEPLOYMENT, payer.pubkey(), hook_mint or mint)
         instruction = build_open_with_hooks(instruction, hooks, channel, _V2_PROGRAM)
-    message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
+    instructions = [instruction]
+    if unit_limit is not None:
+        # SetComputeUnitLimit (tag 2) as the budget prefix, as a credit
+        # client using the provider's compute-unit setting builds it.
+        budget = SoldersInstruction(COMPUTE_BUDGET_PROGRAM, bytes([2]) + unit_limit.to_bytes(4, "little"), [])
+        instructions = [budget, instruction]
+    message = MessageV0.try_compile(payer.pubkey(), instructions, [], Hash.default())
     transaction = VersionedTransaction(message, [payer])
     payload = OpenPayload(
         channel_id=str(channel),
@@ -831,3 +844,22 @@ async def test_verify_open_tx_refuses_hooks_derived_for_another_mint() -> None:
     fixture = _credit_fixture(hook_mint=other_mint)
     with pytest.raises(PaymentError, match="does not exactly match"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_accepts_the_credit_compute_unit_limit() -> None:
+    # Credit opens declare the provider's 400,000-unit budget; the fixed
+    # 200,000 charge-policy cap used to reject them before the hooked-open
+    # checks ran.
+    fixture = _credit_fixture(unit_limit=MUSEBOOK_COMPUTE_UNIT_LIMIT)
+    result = await verify_open_tx(fixture.expected, fixture.payload, None)
+    assert result.channel_id == fixture.payload.channel_id
+
+
+def test_session_policy_default_cap_still_rejects_the_credit_budget() -> None:
+    fixture = _credit_fixture(unit_limit=MUSEBOOK_COMPUTE_UNIT_LIMIT)
+    raw = base64.b64decode(fixture.payload.transaction)
+    with pytest.raises(PaymentError, match="exceeds maximum"):
+        check_session_transaction_policy(raw, (0,), sponsored=False)
+    check_session_transaction_policy(
+        raw, (0,), sponsored=False, max_compute_unit_limit=MUSEBOOK_COMPUTE_UNIT_LIMIT
+    )

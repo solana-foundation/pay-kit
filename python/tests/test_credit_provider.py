@@ -43,6 +43,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import find_channel_pda
 from solana_pay_kit.protocols.mpp.client.payment_channels import (
     PaymentChannelOpenOptions,
     build_open_payment_channel_transaction,
+    create_payment_channel_session_opener,
     credit_authorization_instructions,
     derive_payment_channel_open,
 )
@@ -256,6 +257,19 @@ async def test_build_open_refuses_credit_challenges() -> None:
             request,
             MemorySigner(_kp(3)),
             _kp(4).pubkey(),
+        )
+
+
+async def test_session_opener_refuses_credit_challenges() -> None:
+    # The session opener must apply the same fail-closed refusal: it used
+    # to derive the credit open and then sign a plain V1 open without the
+    # derived hooks, which the credit server rejects.
+    request = _credit_request()
+    with pytest.raises(ValueError, match="V2 hooked channel program"):
+        await create_payment_channel_session_opener(
+            request,
+            MemorySigner(_kp(3)),
+            MemorySigner(_kp(4)),
         )
 
 

@@ -534,6 +534,24 @@ def _resolve_open_blockhash(override: Hash | str | None, request: SessionRequest
         raise ValueError(f"invalid challenged recentBlockhash: {exc}") from exc
 
 
+def _refuse_credit_open(request: SessionRequest) -> None:
+    """Refuse to build an open for a credit challenge.
+
+    Credit opens are V2 hooked opens. The generated Python
+    payment-channels client targets the V1 program and has no hooked
+    open instruction, so a credit open cannot be built here yet —
+    refuse rather than silently build an unhooked channel the provider
+    would never credit. ``derive_payment_channel_open`` still derives
+    the channel and the exact per-payer hooks for integrators on a V2
+    client. Mirrors the Rust client's fail-closed credit checks.
+    """
+    if request.method_details.credit_provider is not None:
+        raise ValueError(
+            "credit provider opens require the V2 hooked channel program, but the Python "
+            "payment-channels client is generated for the V1 program; refusing to build an unhooked open"
+        )
+
+
 async def build_open_payment_channel_transaction(
     request: SessionRequest,
     signer: TransactionSigner,
@@ -553,18 +571,7 @@ async def build_open_payment_channel_transaction(
     ``feePayerKey`` and leaves that signature slot empty for the server.
     Otherwise the payer is also the fee payer.
     """
-    # Credit opens are V2 hooked opens. The generated Python
-    # payment-channels client targets the V1 program and has no hooked
-    # open instruction, so a credit open cannot be built here yet —
-    # refuse rather than silently build an unhooked channel the provider
-    # would never credit. ``derive_payment_channel_open`` still derives
-    # the channel and the exact per-payer hooks for integrators on a V2
-    # client. Mirrors the Rust client's fail-closed credit checks.
-    if request.method_details.credit_provider is not None:
-        raise ValueError(
-            "credit provider opens require the V2 hooked channel program, but the Python "
-            "payment-channels client is generated for the V1 program; refusing to build an unhooked open"
-        )
+    _refuse_credit_open(request)
     version = _negotiate_open_version(request, options)
     payer = _signer_pubkey(signer)
     details = request.method_details
@@ -603,6 +610,11 @@ async def create_payment_channel_session_opener(
     :class:`PaymentChannelOpenOptions`).
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
+    # The same fail-closed credit refusal as
+    # ``build_open_payment_channel_transaction``: without it this path
+    # derived a credit open and then signed a plain V1 open instruction
+    # without the derived hooks, which the credit server rejects.
+    _refuse_credit_open(request)
     version = _negotiate_open_version(request, options.open)
     if request.method_details.voucher_signer == "operator":
         _require_string(request.method_details.operator, "operator")
