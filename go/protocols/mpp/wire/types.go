@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"unicode/utf16"
 )
 
 // MethodName identifies a payment method.
@@ -86,6 +87,29 @@ func canonicalJSON(value any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// utf16Less reports whether a sorts before b under RFC 8785 §3.2.3 — a
+// pairwise comparison of the strings interpreted as sequences of UTF-16
+// code units. Encoded supplementary-plane characters (U+10000..U+10FFFF)
+// are split into surrogate pairs; lone surrogates are forbidden by the
+// spec but tolerated here by treating them as their own code unit
+// (matching the order they would sort as half-pairs under any sane
+// comparison), since the JCS encoder is the boundary that already
+// rejects lone surrogates in strings.
+func utf16Less(a, b string) bool {
+	ar := utf16.Encode([]rune(a))
+	br := utf16.Encode([]rune(b))
+	n := len(ar)
+	if len(br) < n {
+		n = len(br)
+	}
+	for i := 0; i < n; i++ {
+		if ar[i] != br[i] {
+			return ar[i] < br[i]
+		}
+	}
+	return len(ar) < len(br)
+}
+
 func writeCanonical(buf *bytes.Buffer, value any) error {
 	switch v := value.(type) {
 	case map[string]any:
@@ -93,7 +117,19 @@ func writeCanonical(buf *bytes.Buffer, value any) error {
 		for k := range v {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
+		// RFC 8785 §3.2.3: object members are sorted into lexicographic
+		// order by their member names, and "comparisons of member names
+		// are performed as sequences of UTF-16 code units." Go's default
+		// string comparison is byte-wise (which agrees with UTF-16 for
+		// ASCII) but diverges for non-ASCII BMP characters (it sorts by
+		// Unicode code point) and for supplementary-plane characters
+		// (which Go encodes as multi-byte UTF-8 rather than as the UTF-16
+		// surrogate pairs the spec mandates). For example, 😂 (U+1F602)
+		// must sort BEFORE Hebrew-letter combining sequences (BMP) under
+		// UTF-16 because the high surrogate 0xD83D is below any BMP
+		// code point; Go's default would put the BMP key first. Walking
+		// the strings as UTF-16 code units recovers the spec ordering.
+		sort.Slice(keys, func(i, j int) bool { return utf16Less(keys[i], keys[j]) })
 		buf.WriteByte('{')
 		for i, k := range keys {
 			if i > 0 {
