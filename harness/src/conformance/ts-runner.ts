@@ -206,6 +206,10 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
   }
   const signer = await createKeyPairSignerFromBytes(new Uint8Array(input.signerSecretKey));
   let captured: string | undefined;
+  // The challenge names the resource the client is told to fetch, never a
+  // value read from the request (Host or path): nothing request-supplied is
+  // reflected into the response.
+  let resourceUrl = "";
   const server = createServer((req, res) => {
     const paid = req.headers["payment-signature"] ?? req.headers["x-payment"];
     if (typeof paid === "string") {
@@ -214,13 +218,14 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       res.end(JSON.stringify({ ok: true }));
       return;
     }
-    const challenge = challengeResponse(input, `http://${req.headers.host}${req.url ?? "/"}`);
-    res.writeHead(402, challenge.headers);
+    const challenge = challengeResponse(input, resourceUrl);
+    res.writeHead(402, { ...challenge.headers, "x-content-type-options": "nosniff" });
     res.end(challenge.body);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address() as AddressInfo;
+    resourceUrl = `http://127.0.0.1:${port}/resource`;
     // Permissions are the client's spending policy, not wire behaviour; the
     // vector judges the payment the SDK builds, so allow every payment.
     const client = await createPayKitClient({
@@ -231,7 +236,7 @@ async function buildX402Vector(vector: ConformanceVector): Promise<RunnerResult>
       signer,
     });
     const response = await client
-      .fetch(`http://127.0.0.1:${port}/resource`, undefined, {
+      .fetch(resourceUrl, undefined, {
         paymentIdentifier: input.x402PaymentIdentifierId,
       })
       .catch((error: unknown) => {
