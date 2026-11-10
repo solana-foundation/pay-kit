@@ -459,6 +459,17 @@ impl Chain {
     /// Sign with every signer in order (fee payer first) and land the
     /// transaction at `confirmed`.
     async fn send(&self, signers: &[&MemorySigner], ixs: &[Instruction]) -> String {
+        self.try_send(signers, ixs)
+            .await
+            .unwrap_or_else(|error| panic!("transaction failed: {error}"))
+    }
+
+    /// [`Self::send`], reporting a failed transaction instead of panicking.
+    async fn try_send(
+        &self,
+        signers: &[&MemorySigner],
+        ixs: &[Instruction],
+    ) -> Result<String, String> {
         let fee_payer = signers[0].pubkey();
         let blockhash = self.rpc.get_latest_blockhash().await.expect("blockhash");
         let mut tx = solana_pay_kit::core::tx::build_unsigned(
@@ -474,12 +485,11 @@ impl Chain {
                 .await
                 .expect("sign");
         }
-        let signature = self
-            .rpc
+        self.rpc
             .send_and_confirm_transaction(&tx)
             .await
-            .unwrap_or_else(|error| panic!("transaction failed: {error}"));
-        signature.to_string()
+            .map(|signature| signature.to_string())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -578,6 +588,11 @@ async fn quote(State(merchant): State<Merchant>, headers: HeaderMap) -> Response
             }
             Err(error) => bad_request(format!("voucher: {error}")),
         },
+        SessionAction::TopUp(payload) => match merchant.session.process_topup(&payload).await {
+            Ok(state) => Json(json!({ "toppedUp": state.channel_id, "deposit": state.deposit }))
+                .into_response(),
+            Err(error) => bad_request(format!("topUp: {error}")),
+        },
         SessionAction::Close(payload) => match close(&merchant, &payload).await {
             Ok(body) => Json(body).into_response(),
             Err(error) => bad_request(format!("close: {error}")),
@@ -594,6 +609,15 @@ async fn close(merchant: &Merchant, payload: &ClosePayload) -> Result<Value, Str
         .process_close(payload)
         .await
         .map_err(|error| error.to_string())?;
+    settle(merchant, params).await
+}
+
+/// Land a closed channel's settlement: the merchant's lifecycle path, also
+/// used to retry after a failed attempt (`SessionServer::seal_params`).
+async fn settle(
+    merchant: &Merchant,
+    params: solana_pay_kit::mpp::server::session::SealParams,
+) -> Result<Value, String> {
     let operator = merchant.operator.pubkey();
     let mut instructions = params
         .settle_instructions(&operator)
@@ -708,8 +732,11 @@ struct Prepared {
     treasury_owner: Pubkey,
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn credit_provider_funds_an_mpp_session_end_to_end() {
+/// An offline Surfnet with the hooked channel program at its canonical
+/// address (the `stable` channel built with `--features hooks`) and the
+/// provider; the customer's credits and the vault are planted with
+/// cheatcodes. `None` (after `skip_or_fail`) without both artifacts.
+async fn surfnet() -> Option<Prepared> {
     let (Some(channel_elf), Some(provider_elf)) = (
         artifact("PAYMENT_CHANNELS_V2_SO"),
         artifact("CREDIT_PROVIDER_SO"),
@@ -718,10 +745,8 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
             "set PAYMENT_CHANNELS_V2_SO and CREDIT_PROVIDER_SO to the SBPF v3 artifacts \
              (payment-channels: `just build-v2-localnet` and the credit-provider build)",
         );
-        return;
+        return None;
     };
-
-    // ── Chain ──────────────────────────────────────────────────────────────
     let surfnet = Surfnet::builder()
         .offline(true)
         .start()
@@ -738,9 +763,6 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-
-    // The hooked channel program at its canonical address (built from the
-    // `stable` channel with `--features hooks`), plus the provider program.
     let channel_program = v1::default_program_id();
     let provider = Pubkey::new_unique();
     chain.write_program(&channel_program, &channel_elf).await;
@@ -748,7 +770,6 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     let loader = chain.rpc.get_account(&provider).await.unwrap().owner;
     assert_eq!(loader.to_string(), UPGRADEABLE_LOADER);
 
-    // ── Parties ────────────────────────────────────────────────────────────
     let (customer, _) = signer();
     let (issuer, _) = signer();
     let (operator, _) = signer();
@@ -756,11 +777,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     for key in [&customer.pubkey(), &issuer.pubkey(), &operator.pubkey()] {
         testkit::fund_sol(&chain.url, key, 5_000_000_000).await;
     }
-
-    // ── Money: a mint, the customer's credits, the provider's backing ───────
-    // Planted with cheatcodes: the customer already holds credits.
     let customer_pk = customer.pubkey();
-    let operator_pk = operator.pubkey();
     let mint = Pubkey::new_unique();
     chain
         .set_account(&mint, TOKEN_PROGRAM, &mint_bytes(6), 10_000_000)
@@ -774,7 +791,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
     let ledger = ledger_address(&provider, &customer_pk, &mint);
     let mint_str = mint.to_string();
     testkit::fund_token(&chain.url, &ledger, &mint_str, CREDITS, TOKEN_PROGRAM).await;
-    for owner in [&customer_pk, &operator_pk, &treasury_owner] {
+    for owner in [&customer_pk, &operator.pubkey(), &treasury_owner] {
         testkit::fund_token(&chain.url, owner, &mint_str, 0, TOKEN_PROGRAM).await;
     }
     chain
@@ -785,8 +802,7 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
             10_000_000,
         )
         .await;
-
-    run_flow(Prepared {
+    Some(Prepared {
         chain,
         _surfnet: Some(surfnet),
         network: "localnet",
@@ -798,35 +814,22 @@ async fn credit_provider_funds_an_mpp_session_end_to_end() {
         mint,
         treasury_owner,
     })
-    .await;
 }
 
-/// The same flow live on devnet, against the deployed canary channel program.
-///
-/// Every step is a real transaction: the provider program is deployed with a
-/// fresh issuer as its upgrade authority, a fresh SPL mint is created, the
-/// customer deposits real backing into the provider and receives credits,
-/// then the MPP session runs exactly as on Surfnet.
-///
-/// ```sh
-/// CREDIT_E2E_DEVNET_RPC=<https devnet RPC> \
-/// CREDIT_E2E_FUNDER=<keypair file with ~2 devnet SOL> \
-/// CREDIT_PROVIDER_SO=$PC/target/deploy/credit_provider.so \
-/// cargo test -p paykit-integration-tests --features testkit \
-///   --test credit_provider_session_surfnet devnet -- --nocapture
-/// ```
-///
-/// `CREDIT_PROVIDER_SO` must be the deployment-aware provider
-/// (payment-channels#112). Skips unless all three are set.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn credit_provider_funds_an_mpp_session_on_devnet() {
+/// Devnet with the deployed canary channel program. Every step is a real
+/// transaction: the provider program is deployed with a fresh issuer as its
+/// upgrade authority, a fresh SPL mint is created, the customer deposits real
+/// backing into the provider and receives credits. `None` (after
+/// `skip_or_fail`) without `CREDIT_E2E_DEVNET_RPC`, `CREDIT_E2E_FUNDER` and
+/// `CREDIT_PROVIDER_SO` (the deployment-aware provider, payment-channels#112).
+async fn devnet() -> Option<Prepared> {
     let (Ok(url), Ok(funder_path), Some(_)) = (
         std::env::var("CREDIT_E2E_DEVNET_RPC"),
         std::env::var("CREDIT_E2E_FUNDER"),
         artifact("CREDIT_PROVIDER_SO"),
     ) else {
         skip_or_fail("set CREDIT_E2E_DEVNET_RPC, CREDIT_E2E_FUNDER and CREDIT_PROVIDER_SO");
-        return;
+        return None;
     };
     assert!(url.starts_with("https://"), "devnet RPC must be https");
     let chain = Chain {
@@ -848,7 +851,6 @@ async fn credit_provider_funds_an_mpp_session_on_devnet() {
         "the canary channel program is not executable"
     );
 
-    // ── Parties, funded from the funder ────────────────────────────────────
     let (customer, _) = signer();
     let (issuer, issuer_bytes) = signer();
     let (operator, _) = signer();
@@ -866,7 +868,6 @@ async fn credit_provider_funds_an_mpp_session_on_devnet() {
         )
         .await;
 
-    // ── The provider program, deployed with the issuer as upgrade authority ──
     let dir = std::env::temp_dir().join(format!("credit-e2e-devnet-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let issuer_path = dir.join("issuer.json");
@@ -916,7 +917,6 @@ async fn credit_provider_funds_an_mpp_session_on_devnet() {
     );
     println!("provider program {provider} deployed");
 
-    // ── Money: a fresh mint, real backing deposited into the provider ──────
     let customer_pk = customer.pubkey();
     let operator_pk = operator.pubkey();
     let (mint_signer, _) = signer();
@@ -959,8 +959,7 @@ async fn credit_provider_funds_an_mpp_session_on_devnet() {
         )
         .await;
     println!("customer deposited {CREDITS} and holds {CREDITS} credits");
-
-    run_flow(Prepared {
+    Some(Prepared {
         chain,
         _surfnet: None,
         network: "devnet",
@@ -972,245 +971,414 @@ async fn credit_provider_funds_an_mpp_session_on_devnet() {
         mint,
         treasury_owner,
     })
-    .await;
 }
 
-/// 402 → provider approval → hooked open → voucher-paid requests → close,
-/// with on-chain assertions at each step.
-async fn run_flow(prepared: Prepared) {
-    let Prepared {
-        chain,
-        _surfnet,
-        network,
-        channel_program,
-        provider,
-        customer,
-        issuer,
-        operator,
-        mint,
-        treasury_owner,
-    } = prepared;
-    let customer_pk = customer.pubkey();
-    let operator_pk = operator.pubkey();
-    let (_, session_key) = signer();
-    let session_signer = MemorySigner::from_bytes(&session_key).unwrap();
-    let session_pubkey = session_signer.pubkey();
-    let mint_str = mint.to_string();
-    let ledger = ledger_address(&provider, &customer_pk, &mint);
-    let vault = ata(&ledger, &mint);
-    let customer_ata = ata(&customer_pk, &mint);
-    let merchant_ata = ata(&operator_pk, &mint);
-    let treasury_ata = ata(&treasury_owner, &mint);
-    assert_eq!(chain.token_balance(&vault).await, Some(CREDITS));
-    assert_eq!(chain.token_balance(&customer_ata).await, Some(0));
-    let ledger_before = decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data);
-    assert_eq!(ledger_before.credits, CREDITS);
-    assert!(!ledger_before.active);
+/// SPL `Revoke`: the customer withdraws the provider's refund approval.
+fn revoke_ix(source: &Pubkey, owner: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: token_program(),
+        accounts: vec![
+            AccountMeta::new(*source, false),
+            AccountMeta::new_readonly(*owner, true),
+        ],
+        data: vec![5],
+    }
+}
 
-    // ── Merchant API ───────────────────────────────────────────────────────
-    let hooks = provider_hooks(&provider, &customer_pk, &mint);
-    let config = SessionConfig {
-        operator: operator_pk.to_string(),
-        recipient: operator_pk.to_string(),
-        splits: vec![],
-        amount: PRICE,
-        suggested_deposit: Some(DEPOSIT),
-        minimum_deposit: Some(DEPOSIT / 2),
-        currency: mint_str.clone(),
-        decimals: 6,
-        network: network.to_string(),
-        channel_program: Some(channel_program),
-        channel_version: Some(2),
-        channel_hooks: Some(hooks.clone()),
-        token_program: Some(token_program()),
-        voucher_signer: VoucherSigner::Client,
-        fee_payer_signer: Some(operator.clone() as Arc<dyn TransactionSigner>),
-        rpc_url: Some(chain.url.clone()),
-        ..SessionConfig::default()
-    };
-    let merchant = Merchant {
-        session: Arc::new(SessionServer::new(config, MemoryChannelStore::new())),
-        operator: operator.clone(),
-        rpc_url: chain.url.clone(),
-        treasury: treasury_owner,
-        served: Arc::new(AtomicU64::new(0)),
-    };
-    let api = serve(merchant.clone()).await;
+/// One merchant and one customer, driven step by step through HTTP: the
+/// 402 challenge, the provider's approval, the hooked open, voucher-paid
+/// requests, top-ups and the close, with on-chain reads in between.
+struct Flow {
+    chain: Chain,
+    _surfnet: Option<Surfnet>,
+    channel_program: Pubkey,
+    provider: Pubkey,
+    customer: MemorySigner,
+    issuer: MemorySigner,
+    operator: Arc<MemorySigner>,
+    mint: Pubkey,
+    merchant: Merchant,
+    api: String,
+    http: reqwest::Client,
+    challenge: PaymentChallenge,
+    request: SessionRequest,
+    hooks: v2::ChannelHooks,
+    ledger: Pubkey,
+    vault: Pubkey,
+    customer_ata: Pubkey,
+    merchant_ata: Pubkey,
+    treasury_ata: Pubkey,
+}
 
-    // ── Client: 402 → provider approval → hooked open ──────────────────────
-    let http = reqwest::Client::new();
-    let response = http.get(&api).send().await.unwrap();
-    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
-    let header = response
-        .headers()
-        .get("www-authenticate")
-        .expect("challenge header")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let challenge = PaymentChallenge::from_header(&header).expect("parse challenge");
-    assert!(challenge.verify(SECRET));
-    let request: SessionRequest = challenge.request.decode().expect("session request");
-    let details = &request.method_details;
-    assert_eq!(details.channel_version, Some(2));
-    assert_eq!(details.channel_hooks.as_ref(), Some(&hooks));
-    assert_eq!(details.fee_payer, Some(true));
-    let open_slot = details.recent_slot.expect("recentSlot");
-    println!(
-        "402 challenge: channel {} v{} hooks={} recentSlot={open_slot}",
-        details.channel_program,
-        details.channel_version.unwrap(),
-        details.channel_hooks.is_some()
-    );
+/// An opened session: the kit client's state for one channel.
+struct Opened {
+    open: solana_pay_kit::mpp::client::session::PaymentChannelOpen,
+    session: solana_pay_kit::mpp::client::session::ActiveSession,
+    last_voucher: Option<solana_pay_kit::mpp::protocol::intents::session::SignedVoucher>,
+}
 
-    // The customer asks the provider to back this exact channel. The issuer
-    // co-signs: this is the provider approving a bounded amount.
-    let payee = Pubkey::from_str(&request.recipient).unwrap();
-    let authorization = Authorization {
-        payee,
-        authorized_signer: session_pubkey,
-        distribution_hash: v1::distribution_hash(&[]),
-        salt: SALT,
-        open_slot,
-        cap: CAP,
-        nonce: 1,
-        expires_at_slot: open_slot + 100_000,
-    };
-    let approval = chain
-        .send(
-            &[&customer, &issuer],
-            &[
-                approve_ix(&customer_ata, &ledger, &customer_pk, CAP),
-                authorize_ix(
-                    &provider,
-                    &customer_pk,
-                    &mint,
-                    &issuer.pubkey(),
-                    &authorization,
-                    &channel_program,
-                ),
-            ],
-        )
-        .await;
-    println!("provider authorization: {approval}");
-    assert!(decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data).active);
+impl Flow {
+    /// Start the merchant (minimum deposit `minimum`, suggested `DEPOSIT`) and
+    /// fetch its 402 challenge.
+    async fn start(prepared: Prepared, minimum: u64) -> Self {
+        let Prepared {
+            chain,
+            _surfnet,
+            network,
+            channel_program,
+            provider,
+            customer,
+            issuer,
+            operator,
+            mint,
+            treasury_owner,
+        } = prepared;
+        let customer_pk = customer.pubkey();
+        let operator_pk = operator.pubkey();
+        let hooks = provider_hooks(&provider, &customer_pk, &mint);
+        let config = SessionConfig {
+            operator: operator_pk.to_string(),
+            recipient: operator_pk.to_string(),
+            splits: vec![],
+            amount: PRICE,
+            suggested_deposit: Some(DEPOSIT),
+            minimum_deposit: Some(minimum),
+            currency: mint.to_string(),
+            decimals: 6,
+            network: network.to_string(),
+            channel_program: Some(channel_program),
+            channel_version: Some(2),
+            channel_hooks: Some(hooks.clone()),
+            token_program: Some(token_program()),
+            voucher_signer: VoucherSigner::Client,
+            fee_payer_signer: Some(operator.clone() as Arc<dyn TransactionSigner>),
+            rpc_url: Some(chain.url.clone()),
+            ..SessionConfig::default()
+        };
+        let merchant = Merchant {
+            session: Arc::new(SessionServer::new(config, MemoryChannelStore::new())),
+            operator: operator.clone(),
+            rpc_url: chain.url.clone(),
+            treasury: treasury_owner,
+            served: Arc::new(AtomicU64::new(0)),
+        };
+        let api = serve(merchant.clone()).await;
+        let http = reqwest::Client::new();
+        let response = http.get(&api).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let header = response
+            .headers()
+            .get("www-authenticate")
+            .expect("challenge header")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let challenge = PaymentChallenge::from_header(&header).expect("parse challenge");
+        assert!(challenge.verify(SECRET));
+        let request: SessionRequest = challenge.request.decode().expect("session request");
+        let details = &request.method_details;
+        assert_eq!(details.channel_version, Some(2));
+        assert_eq!(details.channel_hooks.as_ref(), Some(&hooks));
+        assert_eq!(details.fee_payer, Some(true));
+        assert_eq!(details.channel_program, channel_program.to_string());
+        let ledger = ledger_address(&provider, &customer_pk, &mint);
+        let flow = Self {
+            ledger,
+            vault: ata(&ledger, &mint),
+            customer_ata: ata(&customer_pk, &mint),
+            merchant_ata: ata(&operator_pk, &mint),
+            treasury_ata: ata(&treasury_owner, &mint),
+            chain,
+            _surfnet,
+            channel_program,
+            provider,
+            customer,
+            issuer,
+            operator,
+            mint,
+            merchant,
+            api,
+            http,
+            challenge,
+            request,
+            hooks,
+        };
+        assert_eq!(flow.balance(&flow.vault).await, Some(CREDITS));
+        assert_eq!(flow.balance(&flow.customer_ata).await, Some(0));
+        let ledger = flow.ledger().await;
+        assert_eq!(ledger.credits, CREDITS);
+        assert!(!ledger.active);
+        flow
+    }
 
-    let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
-        chain.url.clone(),
-        solana_commitment_config::CommitmentConfig::confirmed(),
-    );
-    let blockhash = OpenBlockhash::verify(&blocking_rpc, &request)
-        .await
-        .expect("challenged blockhash is live");
-    let mut opened = create_payment_channel_session_opener(
-        &request,
-        &customer,
-        Box::new(session_signer),
-        blockhash,
-        &SessionOpenAuthorization::client_signed(DEPOSIT),
-        PaymentChannelSessionOpenOptions {
-            open: PaymentChannelOpenOptions {
-                salt: Some(SALT),
+    async fn balance(&self, account: &Pubkey) -> Option<u64> {
+        self.chain.token_balance(account).await
+    }
+
+    async fn ledger(&self) -> LedgerView {
+        decode_ledger(&self.chain.rpc.get_account(&self.ledger).await.unwrap().data)
+    }
+
+    fn open_slot(&self) -> u64 {
+        self.request.method_details.recent_slot.expect("recentSlot")
+    }
+
+    /// The customer asks the provider to back the channel the challenge
+    /// describes (salt `SALT`, the session key), up to `cap`; the issuer
+    /// co-signs. The refund approval is exactly the cap.
+    async fn authorize(&self, cap: u64, session_key: &Pubkey) -> Result<String, String> {
+        let open_slot = self.open_slot();
+        let authorization = Authorization {
+            payee: Pubkey::from_str(&self.request.recipient).unwrap(),
+            authorized_signer: *session_key,
+            distribution_hash: v1::distribution_hash(&[]),
+            salt: SALT,
+            open_slot,
+            cap,
+            // Every scenario authorizes once, on a fresh ledger.
+            nonce: 1,
+            expires_at_slot: open_slot + 100_000,
+        };
+        let customer = self.customer.pubkey();
+        self.chain
+            .try_send(
+                &[&self.customer, &self.issuer],
+                &[
+                    approve_ix(&self.customer_ata, &self.ledger, &customer, cap),
+                    authorize_ix(
+                        &self.provider,
+                        &customer,
+                        &self.mint,
+                        &self.issuer.pubkey(),
+                        &authorization,
+                        &self.channel_program,
+                    ),
+                ],
+            )
+            .await
+    }
+
+    /// Re-approve the provider to recover refunds, up to `amount`.
+    async fn approve_refunds(&self, amount: u64) {
+        let customer = self.customer.pubkey();
+        self.chain
+            .send(
+                &[&self.customer],
+                &[approve_ix(
+                    &self.customer_ata,
+                    &self.ledger,
+                    &customer,
+                    amount,
+                )],
+            )
+            .await;
+    }
+
+    /// Withdraw the provider's refund approval.
+    async fn revoke_refunds(&self) {
+        let customer = self.customer.pubkey();
+        self.chain
+            .send(
+                &[&self.customer],
+                &[revoke_ix(&self.customer_ata, &customer)],
+            )
+            .await;
+    }
+
+    fn credential(&self, action: &SessionAction) -> String {
+        let credential = PaymentCredential::new(self.challenge.to_echo(), action);
+        format_authorization(&credential).expect("credential header")
+    }
+
+    async fn pay(&self, action: &SessionAction) -> (StatusCode, Value) {
+        let response = self
+            .http
+            .get(&self.api)
+            .header("authorization", self.credential(action))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Build the hooked open for `deposit` with the kit client and send it.
+    async fn open(&self, session_key: [u8; 64], deposit: u64) -> (StatusCode, Value, Opened) {
+        let blocking_rpc = solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
+            self.chain.url.clone(),
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        );
+        let blockhash = OpenBlockhash::verify(&blocking_rpc, &self.request)
+            .await
+            .expect("challenged blockhash is live");
+        let opened = create_payment_channel_session_opener(
+            &self.request,
+            &self.customer,
+            Box::new(MemorySigner::from_bytes(&session_key).unwrap()),
+            blockhash,
+            &SessionOpenAuthorization::client_signed(deposit),
+            PaymentChannelSessionOpenOptions {
+                open: PaymentChannelOpenOptions {
+                    salt: Some(SALT),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("build hooked open");
-    assert_eq!(opened.open.channel_version, Some(2));
-    let channel_id = opened.open.channel_id;
-
-    let pay = |action: &SessionAction| {
-        let credential = PaymentCredential::new(challenge.to_echo(), action);
-        format_authorization(&credential).expect("credential header")
-    };
-    let response = http
-        .get(&api)
-        .header("authorization", pay(&opened.action))
-        .send()
+        )
         .await
-        .unwrap();
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
-    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
-    assert_eq!(body["opened"], channel_id.to_string());
-    println!("opened hooked channel {channel_id}: {body}");
+        .expect("build hooked open");
+        assert_eq!(opened.open.channel_version, Some(2));
+        let (status, body) = self.pay(&opened.action).await;
+        (
+            status,
+            body,
+            Opened {
+                open: opened.open,
+                session: opened.session,
+                last_voucher: None,
+            },
+        )
+    }
 
-    // preFund ran: credits debited, backing moved vault → customer → escrow.
-    let ledger_open = decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data);
-    assert_eq!(ledger_open.credits, CREDITS - DEPOSIT);
-    assert_eq!(ledger_open.funded, DEPOSIT);
-    assert_eq!(ledger_open.last_sequence, 1);
-    assert_eq!(chain.token_balance(&vault).await, Some(CREDITS - DEPOSIT));
-    assert_eq!(chain.token_balance(&customer_ata).await, Some(0));
-    let escrow = ata(&channel_id, &mint);
-    assert_eq!(chain.token_balance(&escrow).await, Some(DEPOSIT));
-    let onchain = v2::decode_channel(&chain.rpc.get_account(&channel_id).await.unwrap().data)
-        .expect("V2 channel");
-    assert_eq!(onchain.hooks, hooks);
-    assert_eq!(onchain.channel.deposit, DEPOSIT);
-
-    // ── Metered requests paid by vouchers ──────────────────────────────────
-    let mut final_voucher = None;
-    for n in 1..=REQUESTS {
+    /// Pay one request with a voucher for `PRICE`; record it when accepted.
+    async fn request(&self, opened: &mut Opened) -> (StatusCode, Value) {
         let action = opened
             .session
             .prepare_voucher_action(PRICE)
             .await
             .expect("voucher");
-        let response = http
-            .get(&api)
-            .header("authorization", pay(&action))
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert_eq!(status, StatusCode::OK, "request {n} rejected: {body}");
-        let SessionAction::Voucher(payload) = action else {
-            unreachable!()
-        };
-        opened.session.record_voucher(&payload.voucher).unwrap();
-        println!(
-            "request {n} served for voucher {}: {body}",
-            payload.voucher.data.cumulative_amount
-        );
-        final_voucher = Some(payload.voucher);
+        let (status, body) = self.pay(&action).await;
+        if status == StatusCode::OK {
+            let SessionAction::Voucher(payload) = action else {
+                unreachable!()
+            };
+            opened.session.record_voucher(&payload.voucher).unwrap();
+            opened.last_voucher = Some(payload.voucher);
+        }
+        (status, body)
     }
-    assert_eq!(merchant.served.load(Ordering::SeqCst), REQUESTS);
 
-    // ── Close: settle, seal, distribute with postDistribute ────────────────
-    // A client-signed close carries the final voucher; nothing more is owed,
-    // so it is the highest voucher the merchant already accepted.
-    let close_action = SessionAction::Close(ClosePayload {
-        channel_id: channel_id.to_string(),
-        authentication: None,
-        voucher: final_voucher,
-    });
-    let response = http
-        .get(&api)
-        .header("authorization", pay(&close_action))
-        .send()
-        .await
-        .unwrap();
-    let status = response.status();
-    let body: Value = response.json().await.unwrap();
+    /// Add `amount` with the hooked top-up (`topUpWithHooks`), signed by the
+    /// customer, the fee-payer slot left for the merchant's co-signature.
+    async fn top_up(&self, opened: &Opened, amount: u64) -> (StatusCode, Value) {
+        let ix = opened.open.top_up_instruction(amount).expect("top-up ix");
+        assert_eq!(ix.data[0], v2::TOP_UP_WITH_HOOKS_DISCRIMINATOR);
+        let blockhash = self.chain.rpc.get_latest_blockhash().await.unwrap();
+        let mut tx = solana_pay_kit::core::tx::build_unsigned(
+            TxVersion::V0,
+            &self.operator.pubkey(),
+            &[ix],
+            blockhash,
+            None,
+        )
+        .expect("build top-up");
+        solana_pay_kit::core::signing::sign_versioned_transaction_slot(&self.customer, &mut tx)
+            .await
+            .expect("sign top-up");
+        let wire = solana_pay_kit::core::tx::encode(&tx).expect("encode top-up");
+        self.pay(&opened.session.topup_action(amount, &wire)).await
+    }
+
+    /// Close with the highest accepted voucher.
+    async fn close(&self, opened: &Opened) -> (StatusCode, Value) {
+        let action = SessionAction::Close(ClosePayload {
+            channel_id: opened.open.channel_id.to_string(),
+            authentication: None,
+            voucher: opened.last_voucher.clone(),
+        });
+        self.pay(&action).await
+    }
+
+    /// The merchant's retry of a close whose settlement failed.
+    async fn retry_settlement(&self, opened: &Opened) -> Result<Value, String> {
+        let params = self
+            .merchant
+            .session
+            .seal_params(&opened.open.channel_id.to_string())
+            .await
+            .map_err(|error| error.to_string())?;
+        settle(&self.merchant, params).await
+    }
+
+    async fn channel_deposit(&self, opened: &Opened) -> Option<u64> {
+        let account = self
+            .chain
+            .rpc
+            .get_account(&opened.open.channel_id)
+            .await
+            .ok()?;
+        Some(
+            v2::decode_channel(&account.data)
+                .expect("V2 channel")
+                .channel
+                .deposit,
+        )
+    }
+}
+
+/// The rejection came from the chain: the funding or close callback (or
+/// the channel program around it) refused the instruction, not a server
+/// pre-check.
+fn assert_refused_on_chain(body: &Value) {
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("InvalidAccountData") || error.contains("invalid account data"),
+        "expected an on-chain refusal, got: {error}"
+    );
+}
+
+fn session_key() -> ([u8; 64], Pubkey) {
+    let (signer, bytes) = signer();
+    (bytes, signer.pubkey())
+}
+
+/// The full happy path, asserted on chain at every step: authorize, open
+/// (preFund debits credits and backs the deposit), three voucher-paid
+/// requests, close (postDistribute returns the unused principal and
+/// restores credits).
+async fn happy_path(flow: Flow) {
+    let (key, key_pk) = session_key();
+    let approval = flow.authorize(CAP, &key_pk).await.expect("authorize");
+    println!("provider authorization: {approval}");
+    assert!(flow.ledger().await.active);
+
+    let (status, body, mut opened) = flow.open(key, DEPOSIT).await;
+    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
+    let channel_id = opened.open.channel_id;
+    assert_eq!(body["opened"], channel_id.to_string());
+    println!("opened hooked channel {channel_id}: {body}");
+    let ledger = flow.ledger().await;
+    assert_eq!(ledger.credits, CREDITS - DEPOSIT);
+    assert_eq!(ledger.funded, DEPOSIT);
+    assert_eq!(ledger.last_sequence, 1);
+    assert_eq!(flow.balance(&flow.vault).await, Some(CREDITS - DEPOSIT));
+    assert_eq!(flow.balance(&flow.customer_ata).await, Some(0));
+    let escrow = ata(&channel_id, &flow.mint);
+    assert_eq!(flow.balance(&escrow).await, Some(DEPOSIT));
+    let onchain = v2::decode_channel(&flow.chain.rpc.get_account(&channel_id).await.unwrap().data)
+        .expect("V2 channel");
+    assert_eq!(onchain.hooks, flow.hooks);
+    assert_eq!(onchain.channel.deposit, DEPOSIT);
+
+    for n in 1..=REQUESTS {
+        let (status, body) = flow.request(&mut opened).await;
+        assert_eq!(status, StatusCode::OK, "request {n} rejected: {body}");
+        println!("request {n} served: {body}");
+    }
+    assert_eq!(flow.merchant.served.load(Ordering::SeqCst), REQUESTS);
+
+    let (status, body) = flow.close(&opened).await;
     assert_eq!(status, StatusCode::OK, "close rejected: {body}");
     let spent = PRICE * REQUESTS;
     assert_eq!(body["settled"], spent);
     println!("closed: {body}");
-
-    // The merchant was paid, the unused principal went back into provider
-    // custody, and the customer's credits were restored for exactly that.
-    assert_eq!(chain.token_balance(&merchant_ata).await, Some(spent));
-    assert_eq!(chain.token_balance(&vault).await, Some(CREDITS - spent));
-    assert_eq!(chain.token_balance(&customer_ata).await, Some(0));
-    assert_eq!(chain.token_balance(&treasury_ata).await, Some(0));
-    assert_eq!(chain.token_balance(&escrow).await, None, "escrow closed");
-    let ledger_after = decode_ledger(&chain.rpc.get_account(&ledger).await.unwrap().data);
+    assert_eq!(flow.balance(&flow.merchant_ata).await, Some(spent));
+    assert_eq!(flow.balance(&flow.vault).await, Some(CREDITS - spent));
+    assert_eq!(flow.balance(&flow.customer_ata).await, Some(0));
+    assert_eq!(flow.balance(&flow.treasury_ata).await, Some(0));
+    assert_eq!(flow.balance(&escrow).await, None, "escrow closed");
     assert_eq!(
-        ledger_after,
+        flow.ledger().await,
         LedgerView {
             active: false,
             credits: CREDITS - spent,
@@ -1220,8 +1388,237 @@ async fn run_flow(prepared: Prepared) {
         }
     );
     println!(
-        "credits {CREDITS} → {} (spent {spent}), merchant +{spent}, vault {}",
-        ledger_after.credits,
+        "credits {CREDITS} -> {} (spent {spent}), merchant +{spent}",
         CREDITS - spent
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credit_provider_funds_an_mpp_session_end_to_end() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    happy_path(Flow::start(prepared, DEPOSIT / 2).await).await;
+}
+
+/// The same flow live on devnet, against the deployed canary channel program.
+///
+/// ```sh
+/// CREDIT_E2E_DEVNET_RPC=<https devnet RPC> \
+/// CREDIT_E2E_FUNDER=<keypair file with ~2 devnet SOL> \
+/// CREDIT_PROVIDER_SO=$PC/target/deploy/credit_provider.so \
+/// cargo test -p paykit-integration-tests --features testkit \
+///   --test credit_provider_session_surfnet devnet -- --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credit_provider_funds_an_mpp_session_on_devnet() {
+    let Some(prepared) = devnet().await else {
+        return;
+    };
+    happy_path(Flow::start(prepared, DEPOSIT / 2).await).await;
+}
+
+/// A top-up runs the same funding callback: the provider debits more
+/// credits and backs the extra deposit; the close refunds the whole unused
+/// deposit and restores those credits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn top_up_debits_more_credits_through_the_funding_hook() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, 100_000).await;
+    let (key, key_pk) = session_key();
+    flow.authorize(CAP, &key_pk).await.expect("authorize");
+    let (status, body, mut opened) = flow.open(key, 600_000).await;
+    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
+    let (status, body) = flow.top_up(&opened, 300_000).await;
+    assert_eq!(status, StatusCode::OK, "top-up rejected: {body}");
+    assert_eq!(body["deposit"], 900_000);
+    assert_eq!(flow.channel_deposit(&opened).await, Some(900_000));
+    let ledger = flow.ledger().await;
+    assert_eq!(ledger.credits, CREDITS - 900_000);
+    assert_eq!(ledger.funded, 900_000);
+    assert_eq!(ledger.last_sequence, 2);
+    for _ in 0..2 {
+        let (status, body) = flow.request(&mut opened).await;
+        assert_eq!(status, StatusCode::OK, "request rejected: {body}");
+    }
+    let (status, body) = flow.close(&opened).await;
+    assert_eq!(status, StatusCode::OK, "close rejected: {body}");
+    let spent = 2 * PRICE;
+    assert_eq!(flow.balance(&flow.merchant_ata).await, Some(spent));
+    assert_eq!(
+        flow.ledger().await,
+        LedgerView {
+            active: false,
+            credits: CREDITS - spent,
+            funded: 900_000,
+            refunded: 900_000 - spent,
+            last_sequence: 3,
+        }
+    );
+}
+
+/// Expected failure: without the provider's approval the funding callback
+/// refuses, so the open transaction fails on chain and the server rejects
+/// the credential. No channel exists afterwards and no credit moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_without_provider_approval_is_rejected() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, DEPOSIT / 2).await;
+    let (key, _) = session_key();
+    let (status, body, opened) = flow.open(key, DEPOSIT).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "open accepted: {body}");
+    println!("rejected as expected: {body}");
+    assert_refused_on_chain(&body);
+    assert!(
+        flow.chain
+            .rpc
+            .get_account(&opened.open.channel_id)
+            .await
+            .is_err(),
+        "no channel account"
+    );
+    assert_eq!(flow.ledger().await.credits, CREDITS);
+    assert_eq!(flow.balance(&flow.vault).await, Some(CREDITS));
+    assert_eq!(flow.balance(&flow.customer_ata).await, Some(0));
+}
+
+/// Expected failure: a deposit above the approved cap is refused by the
+/// funding callback; the approval stays active and unused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_above_the_approved_cap_is_rejected() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, DEPOSIT / 2).await;
+    let (key, key_pk) = session_key();
+    flow.authorize(DEPOSIT - 1, &key_pk)
+        .await
+        .expect("authorize");
+    let (status, body, opened) = flow.open(key, DEPOSIT).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "open accepted: {body}");
+    println!("rejected as expected: {body}");
+    assert_refused_on_chain(&body);
+    assert!(flow
+        .chain
+        .rpc
+        .get_account(&opened.open.channel_id)
+        .await
+        .is_err());
+    let ledger = flow.ledger().await;
+    assert!(ledger.active);
+    assert_eq!(ledger.credits, CREDITS);
+    assert_eq!(ledger.funded, 0);
+    assert_eq!(flow.balance(&flow.vault).await, Some(CREDITS));
+}
+
+/// Expected failure: a top-up past the cap fails on chain; the channel keeps
+/// its deposit and the provider keeps its credits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn top_up_beyond_the_approved_cap_is_rejected() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, DEPOSIT / 2).await;
+    let (key, key_pk) = session_key();
+    flow.authorize(CAP, &key_pk).await.expect("authorize");
+    let (status, body, opened) = flow.open(key, CAP).await;
+    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
+    let (status, body) = flow.top_up(&opened, 1).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "top-up accepted: {body}");
+    println!("rejected as expected: {body}");
+    assert_refused_on_chain(&body);
+    assert_eq!(flow.channel_deposit(&opened).await, Some(CAP));
+    let ledger = flow.ledger().await;
+    assert_eq!(ledger.credits, CREDITS - CAP);
+    assert_eq!(ledger.funded, CAP);
+    assert_eq!(ledger.last_sequence, 1);
+}
+
+/// Expected failure: a request past the deposit is refused and not served.
+/// The fully spent channel then closes with a zero refund: postDistribute
+/// still runs (the sequence advances) but restores no credits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spending_past_the_deposit_is_refused_and_zero_refund_restores_nothing() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, PRICE).await;
+    let (key, key_pk) = session_key();
+    let deposit = 2 * PRICE;
+    flow.authorize(deposit, &key_pk).await.expect("authorize");
+    let (status, body, mut opened) = flow.open(key, deposit).await;
+    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
+    for n in 1..=2 {
+        let (status, body) = flow.request(&mut opened).await;
+        assert_eq!(status, StatusCode::OK, "request {n} rejected: {body}");
+    }
+    let (status, body) = flow.request(&mut opened).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "overspend served: {body}");
+    println!("rejected as expected: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exceeds deposit"),
+        "expected the server's deposit check: {body}"
+    );
+    assert_eq!(flow.merchant.served.load(Ordering::SeqCst), 2);
+    let (status, body) = flow.close(&opened).await;
+    assert_eq!(status, StatusCode::OK, "close rejected: {body}");
+    assert_eq!(flow.balance(&flow.merchant_ata).await, Some(deposit));
+    assert_eq!(
+        flow.ledger().await,
+        LedgerView {
+            active: false,
+            credits: CREDITS - deposit,
+            funded: deposit,
+            refunded: 0,
+            last_sequence: 2,
+        }
+    );
+}
+
+/// Expected failure: with the refund approval revoked, the close callback
+/// cannot recover the unused principal, so the whole settlement reverts: the
+/// merchant is not paid, the channel stays open and funded, no credits are
+/// issued. Once the customer re-approves, the merchant's retry lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoked_refund_approval_blocks_settlement_until_restored() {
+    let Some(prepared) = surfnet().await else {
+        return;
+    };
+    let flow = Flow::start(prepared, DEPOSIT / 2).await;
+    let (key, key_pk) = session_key();
+    flow.authorize(CAP, &key_pk).await.expect("authorize");
+    let (status, body, mut opened) = flow.open(key, DEPOSIT).await;
+    assert_eq!(status, StatusCode::OK, "open rejected: {body}");
+    let (status, body) = flow.request(&mut opened).await;
+    assert_eq!(status, StatusCode::OK, "request rejected: {body}");
+    flow.revoke_refunds().await;
+
+    let (status, body) = flow.close(&opened).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "settlement landed: {body}");
+    println!("rejected as expected: {body}");
+    assert_refused_on_chain(&body);
+    let escrow = ata(&opened.open.channel_id, &flow.mint);
+    assert_eq!(flow.balance(&escrow).await, Some(DEPOSIT));
+    assert_eq!(flow.balance(&flow.merchant_ata).await, Some(0));
+    let ledger = flow.ledger().await;
+    assert!(ledger.active);
+    assert_eq!(ledger.credits, CREDITS - DEPOSIT);
+    assert_eq!(ledger.refunded, 0);
+
+    flow.approve_refunds(DEPOSIT).await;
+    let body = flow.retry_settlement(&opened).await.expect("retry");
+    println!("retried: {body}");
+    assert_eq!(flow.balance(&flow.merchant_ata).await, Some(PRICE));
+    assert_eq!(flow.balance(&escrow).await, None, "escrow closed");
+    let ledger = flow.ledger().await;
+    assert!(!ledger.active);
+    assert_eq!(ledger.credits, CREDITS - PRICE);
+    assert_eq!(ledger.refunded, DEPOSIT - PRICE);
 }
