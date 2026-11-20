@@ -235,8 +235,9 @@ public enum Charge {
         let actualFeePayer = feePayerPubkey ?? signerPubkey
 
         var instructions: [SolanaInstruction] = []
-        instructions.append(Instructions.computeBudgetSetUnitPrice(microLamports: options.computeUnitPrice))
+        // Limit then price: the x402 exact SVM layout (limit at ix 0, price at ix 1).
         instructions.append(Instructions.computeBudgetSetUnitLimit(units: options.computeUnitLimit))
+        instructions.append(Instructions.computeBudgetSetUnitPrice(microLamports: options.computeUnitPrice))
 
         if let mintStr = mint {
             let mintPk = try Pubkey(base58: mintStr)

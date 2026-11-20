@@ -2322,6 +2322,47 @@ mod tests {
         assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
 
+    /// A sponsored SPL charge is laid out as SetComputeUnitLimit, then
+    /// SetComputeUnitPrice, then TransferChecked: the x402 exact SVM layout,
+    /// so an x402 exact facilitator can verify and settle it too.
+    #[tokio::test]
+    async fn build_charge_spl_sponsored_orders_limit_price_transfer() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "USDC", RECIPIENT, &md)
+                .await
+                .unwrap();
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected transaction payload");
+        };
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
+            .unwrap();
+        let tx = crate::core::tx::decode_bytes(&bytes).unwrap();
+        let keys = tx.message.static_account_keys();
+        let ixs = tx.message.instructions();
+        let compute_budget =
+            Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
+        let token = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+
+        assert_eq!(keys[0], fee_payer);
+        assert_eq!(keys[ixs[0].program_id_index as usize], compute_budget);
+        assert_eq!(ixs[0].data[0], 2, "ix[0] must be SetComputeUnitLimit");
+        assert_eq!(keys[ixs[1].program_id_index as usize], compute_budget);
+        assert_eq!(ixs[1].data[0], 3, "ix[1] must be SetComputeUnitPrice");
+        assert_eq!(keys[ixs[2].program_id_index as usize], token);
+        assert_eq!(ixs[2].data[0], 12, "ix[2] must be TransferChecked");
+    }
+
     #[tokio::test]
     async fn build_charge_spl_with_splits() {
         let signer = make_signer();

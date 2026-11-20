@@ -194,10 +194,11 @@ async def build_charge_transaction(
     instructions = []
     memo_program = Pubkey.from_string(MEMO_PROGRAM)
 
-    # ComputeBudget prelude, matching rust charge.rs:108-110: SetComputeUnitPrice(1)
-    # (program ComputeBudget111..., disc 3, u64 LE) THEN SetComputeUnitLimit(200_000)
-    # (disc 2, u32 LE), both with zero accounts. Restores byte-level instruction
-    # order parity with the rust/cross-impl clients for an identical challenge.
+    # ComputeBudget prelude, matching the Rust client: SetComputeUnitLimit(200_000)
+    # (program ComputeBudget111..., disc 2, u32 LE) THEN SetComputeUnitPrice(1)
+    # (disc 3, u64 LE), both with zero accounts. Limit at ix 0 and price at ix 1
+    # is the x402 exact SVM layout, so a sponsored charge also passes an x402
+    # exact facilitator.
     # The price / limit are overridable so a caller can build a transaction
     # carrying values the server cap rejects (parity with the Go BuildOptions
     # and the TS compute overrides).
@@ -208,8 +209,8 @@ async def build_charge_transaction(
     limit = compute_unit_limit if compute_unit_limit is not None else 200_000
     if version == 0:
         compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
-        instructions.append(Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), []))
         instructions.append(Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), []))
+        instructions.append(Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), []))
 
     def append_memo(memo: str) -> None:
         if not memo:

@@ -73,10 +73,11 @@ func BuildChargeTransaction(
 	}
 
 	instructions := make([]solana.Instruction, 0, 2+2+len(methodDetails.Splits)*3)
-	if ix, err := solanatx.BuildComputeUnitPrice(options.ComputeUnitPrice); err == nil {
+	// Limit then price: the x402 exact SVM layout (limit at ix 0, price at ix 1).
+	if ix, err := solanatx.BuildComputeUnitLimit(options.ComputeUnitLimit); err == nil {
 		instructions = append(instructions, ix)
 	}
-	if ix, err := solanatx.BuildComputeUnitLimit(options.ComputeUnitLimit); err == nil {
+	if ix, err := solanatx.BuildComputeUnitPrice(options.ComputeUnitPrice); err == nil {
 		instructions = append(instructions, ix)
 	}
 

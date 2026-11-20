@@ -106,8 +106,8 @@ object Charge {
      * 1. Parse amounts, derive primary = total minus splits.
      * 2. Reject more than 8 splits or splits exceeding the total.
      * 3. Resolve mint from currency + network; SOL is native.
-     * 4. Insert compute-budget prefix (price 1, limit 200_000) in that
-     *    order so the wire bytes match Rust's instruction ordering.
+     * 4. Insert compute-budget prefix (limit 200_000, price 1) in that
+     *    order: Rust's instruction ordering and the x402 exact SVM layout.
      * 5. Build SPL or SOL instruction sequence.
      * 6. Compile to a v0 versioned Solana message with the recent blockhash
      *    (servers reject legacy messages).
@@ -291,9 +291,10 @@ object Charge {
 
         val instructions = mutableListOf<Instruction>()
 
-        // Compute budget. Order matches Rust spine: price first, then limit.
-        instructions.add(Instructions.setComputeUnitPrice(computeUnitPrice))
+        // Compute budget, limit then price: matches Rust and the x402 exact
+        // SVM layout (limit at ix 0, price at ix 1).
         instructions.add(Instructions.setComputeUnitLimit(computeUnitLimit))
+        instructions.add(Instructions.setComputeUnitPrice(computeUnitPrice))
 
         val mint = resolveStablecoinMint(request.currency, md.network)
         val hasAtaCreationSplits = splits.any { it.ataCreationRequired == true }

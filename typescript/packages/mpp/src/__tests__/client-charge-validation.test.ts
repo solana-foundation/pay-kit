@@ -24,7 +24,7 @@ import {
 } from '@solana/kit';
 
 import { buildChargeTransaction, charge } from '../client/Charge.js';
-import { ASSOCIATED_TOKEN_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import { ASSOCIATED_TOKEN_PROGRAM, COMPUTE_BUDGET_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
@@ -605,4 +605,46 @@ test('buildChargeTransaction refuses a split amount above u64', async () => {
             signer,
         }),
     ).rejects.toThrow(/Invalid amount: split amount .* does not fit in a u64/);
+});
+
+// Compute budget order: SetComputeUnitLimit at ix 0, SetComputeUnitPrice at
+// ix 1, then the transfer. This is the x402 exact SVM layout, so a sponsored
+// charge can also be verified and settled by an x402 exact facilitator.
+test('buildChargeTransaction orders a sponsored SPL charge as limit, price, transferChecked', async () => {
+    const signer = await newSigner();
+    const sponsor = (await newSigner()).address;
+    const tx = await buildChargeTransaction({
+        signer,
+        request: {
+            amount: '1000000',
+            currency: USDC_MINT,
+            recipient: RECIPIENT,
+            methodDetails: {
+                decimals: 6,
+                feePayer: true,
+                feePayerKey: sponsor,
+                network: 'devnet',
+                recentBlockhash: BLOCKHASH,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+        },
+    });
+
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(tx));
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        instructions: readonly { data?: Uint8Array; programAddressIndex: number }[];
+        staticAccounts: readonly string[];
+    };
+    const ixs = message.instructions.map(ix => ({
+        data: ix.data ?? new Uint8Array(),
+        program: String(message.staticAccounts[ix.programAddressIndex]),
+    }));
+
+    expect(String(message.staticAccounts[0])).toBe(sponsor);
+    expect(ixs[0].program).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(ixs[0].data[0]).toBe(2); // SetComputeUnitLimit
+    expect(ixs[1].program).toBe(COMPUTE_BUDGET_PROGRAM);
+    expect(ixs[1].data[0]).toBe(3); // SetComputeUnitPrice
+    expect(ixs[2].program).toBe(TOKEN_PROGRAM);
+    expect(ixs[2].data[0]).toBe(12); // TransferChecked
 });
