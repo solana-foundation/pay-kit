@@ -15,6 +15,9 @@ interop = ["x402:exact:client", "x402:exact:server", "x402:upto:client", "x402:u
 # Cross-checked against the testee `capabilities` op.
 honours_clock = true
 
+[partial_server]
+"vector/subscription" = "FINDINGS.md#python-subscription-server-partial"
+
 # V2 channel profile with lifecycle hooks (payment-channels#102; mpp-specs-v2,
 # rust/crates/conformance/src/cases/session_v2.rs). Only Rust implements the
 # hooked instruction family; see FINDINGS.md#session-v2-hooked-channels.

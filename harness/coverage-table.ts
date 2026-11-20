@@ -49,13 +49,18 @@ export function renderCoverageTable(): string {
       const parts = [`${counts.pass}`];
       if (counts.unsupported) parts.push(`${counts.unsupported}u`);
       if (counts.known_failing) parts.push(`${counts.known_failing}k`);
+      const tracking = exp.partialServer.get(row.replace(":", "/"));
+      if (tracking) {
+        const href = tracking.startsWith("FINDINGS.md#") ? `expectations/${tracking}` : tracking;
+        parts.push(`[partial server](${href})`);
+      }
       return parts.join(" · ");
     });
     lines.push(`| ${label} | ${inRow.length} | ${cells.join(" | ")} |`);
   }
   lines.push("");
   lines.push(
-    "Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.",
+    "Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. A linked `partial server` marker describes server coverage gaps outside the counted cases. Source: `harness/expectations/<language>.toml`.",
   );
   return lines.join("\n");
 }

@@ -262,12 +262,12 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
 | vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 117 | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 117 |
 | vector session | 215 | 8 · 207u | 3 · 212u | — | — | 201 · 14k | — | 215 | 3 · 212u | 215 |
-| vector subscription | 123 | — | — | — | — | 123 | — | 123 | — | 123 |
+| vector subscription | 123 | — | — | — | — | 123 · [partial server](expectations/FINDINGS.md#python-subscription-server-partial) | — | 123 | — | 123 |
 | vector x402-batch-settlement | 175 | — | — | — | — | 175 | — | 175 | — | 175 |
 | vector x402-exact | 78 | 49 · 29k | — | 34 · 21u · 23k | 34 · 23u · 21k | 78 | 30 · 21u · 27k | 78 | 14 · 55u · 9k | 78 |
 | vector x402-upto | 128 | — | — | — | — | 128 | — | 128 | — | 128 |
 
-Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. Source: `harness/expectations/<language>.toml`.
+Each cell counts the cases that must pass, then `u` unsupported (declared, executed, must report unsupported) and `k` known failing (declared with tracking, executed, must fail). `—` means the SDK does not claim the suite. A linked `partial server` marker describes server coverage gaps outside the counted cases. Source: `harness/expectations/<language>.toml`.
 <!-- coverage:end -->
 
 ### Offline cross-verification (generated)
