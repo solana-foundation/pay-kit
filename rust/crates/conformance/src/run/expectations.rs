@@ -278,7 +278,14 @@ impl Expectations {
             .parse()
             .map_err(|e| format!("{source}: invalid TOML: {e}"))?;
         for key in raw.keys() {
-            if !["language", "capabilities", "unsupported", "known_failing"].contains(&key.as_str())
+            if ![
+                "language",
+                "capabilities",
+                "unsupported",
+                "known_failing",
+                "partial_server",
+            ]
+            .contains(&key.as_str())
             {
                 return fail(source, format!("unknown top-level key \"{key}\""));
             }
@@ -359,6 +366,38 @@ impl Expectations {
                 source,
                 "claims vector intents, so capabilities.honours_clock must say whether the testee honours the clock a vector pins",
             );
+        }
+
+        // Coverage notes are shared with the TypeScript renderer. Validate
+        // them here without changing case decisions or reconciliation.
+        if let Some(partial_server) = raw.get("partial_server") {
+            let Some(notes) = partial_server.as_table() else {
+                return fail(source, "partial_server must be a table");
+            };
+            for (key, tracking) in notes {
+                let suite = suite_of(key, source)?;
+                let capability = &key[suite.as_str().len() + 1..];
+                if !matches!(suite, Suite::Vector | Suite::Protocol | Suite::Flow) {
+                    return fail(
+                        source,
+                        format!("partial_server \"{key}\" must name a suite in the coverage table"),
+                    );
+                }
+                if !capabilities[&suite].contains(capability) {
+                    return fail(
+                        source,
+                        format!("partial_server \"{key}\" must name a claimed capability"),
+                    );
+                }
+                if !tracking.as_str().is_some_and(valid_tracking) {
+                    return fail(
+                        source,
+                        format!(
+                            "partial_server \"{key}\" needs a GitHub issue URL or \"FINDINGS.md#<anchor>\""
+                        ),
+                    );
+                }
+            }
         }
 
         let mut unsupported = Vec::new();
@@ -722,6 +761,20 @@ tracking = "FINDINGS.md#fake-decimals"
             err("language=\"x\"\n[[unsupported]]\nids=[\"protocol/a\"]\nreason=\"r\"")
                 .contains("does not claim the protocol suite")
         );
+    }
+
+    #[test]
+    fn rejects_invalid_partial_server_notes() {
+        for (note, message) in [
+            (
+                r#""vector/subscription" = "FINDINGS.md#gap""#,
+                "claimed capability",
+            ),
+            (r#""vector/charge" = "TODO""#, "GitHub issue URL"),
+        ] {
+            let error = err(&format!("{TOML}\n[partial_server]\n{note}"));
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]

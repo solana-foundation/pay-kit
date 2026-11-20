@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderCoverageTable } from "../coverage-table";
 import {
   type CaseRef,
   danglingEntries,
@@ -65,6 +66,13 @@ describe("expectations parsing", () => {
     ).toThrow(/does not claim the protocol suite/);
   });
 
+  it.each([
+    ['"vector/subscription" = "FINDINGS.md#gap"', /claimed capability/],
+    ['"vector/charge" = "TODO"', /GitHub issue URL/],
+  ])("rejects an invalid partial-server note (%s)", (note, error) => {
+    expect(() => parseExpectations(`${toml}\n[partial_server]\n${note}`, "fake.toml")).toThrow(error);
+  });
+
   it("rejects ids without a suite prefix", () => {
     expect(() =>
       parseExpectations(`language="x"\n[[unsupported]]\nids=["charge-a"]\nreason="r"`, "x.toml"),
@@ -75,6 +83,20 @@ describe("expectations parsing", () => {
     expect(() =>
       parseExpectations(`language="x"\n[[unsupported]]\npattern="vector/*"\nreason=""`, "x.toml"),
     ).toThrow(/reason/);
+  });
+});
+
+describe("generated coverage table", () => {
+  it("marks Python subscription coverage as partial while preserving the passing count", () => {
+    const [header, , ...rows] = renderCoverageTable().split("\n");
+    const columns = header.split("|").map((cell) => cell.trim());
+    const row = rows.find((line) => line.startsWith("| vector subscription |"))!;
+    const cells = row.split("|").map((cell) => cell.trim());
+    const count = cells[columns.indexOf("Cases")];
+    expect(cells[columns.indexOf("python")]).toBe(
+      `${count} · [partial server](expectations/FINDINGS.md#python-subscription-server-partial)`,
+    );
+    expect(cells[columns.indexOf("rust")]).toBe(count);
   });
 });
 

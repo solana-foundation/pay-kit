@@ -84,6 +84,8 @@ export type Expectations = {
   // Each entry lists exact case keys (`ids`) or one glob (`pattern`).
   unsupported: { label: string; suite: Suite; reason: string; matches: (key: string) => boolean }[];
   knownFailing: Map<string, { reason: string; tracking: string }>;
+  // Coverage notes keyed by suite/capability; they do not change case expectations.
+  partialServer: Map<string, string>;
   source: string;
 };
 
@@ -122,7 +124,7 @@ function asStringArray(value: unknown, source: string, field: string): string[] 
 
 export function parseExpectations(text: string, source: string): Expectations {
   const raw = parseToml(text) as Record<string, unknown>;
-  const allowedTop = new Set(["language", "capabilities", "unsupported", "known_failing"]);
+  const allowedTop = new Set(["language", "capabilities", "unsupported", "known_failing", "partial_server"]);
   for (const key of Object.keys(raw)) {
     if (!allowedTop.has(key)) fail(source, `unknown top-level key "${key}"`);
   }
@@ -168,6 +170,27 @@ export function parseExpectations(text: string, source: string): Expectations {
   // No default: an SDK claiming vectors states whether it honours pinned clocks.
   if (capabilities.vector.size > 0 && honoursClock === undefined) {
     fail(source, "claims vector intents, so capabilities.honours_clock must say whether the testee honours the clock a vector pins");
+  }
+
+  const partialServer = new Map<string, string>();
+  if (raw.partial_server !== undefined) {
+    if (Object.prototype.toString.call(raw.partial_server) !== "[object Object]") {
+      fail(source, "partial_server must be a table");
+    }
+    for (const [key, tracking] of Object.entries(raw.partial_server as Record<string, unknown>)) {
+      const suite = suiteOf(key, source);
+      const capability = key.slice(suite.length + 1);
+      if (suite !== "vector" && suite !== "protocol" && suite !== "flow") {
+        fail(source, `partial_server "${key}" must name a suite in the coverage table`);
+      }
+      if (!capabilities[suite].has(capability)) {
+        fail(source, `partial_server "${key}" must name a claimed capability`);
+      }
+      if (typeof tracking !== "string" || !TRACKING.test(tracking)) {
+        fail(source, `partial_server "${key}" needs a GitHub issue URL or "FINDINGS.md#<anchor>"`);
+      }
+      partialServer.set(key, tracking);
+    }
   }
 
   const unsupported: Expectations["unsupported"] = [];
@@ -260,6 +283,7 @@ export function parseExpectations(text: string, source: string): Expectations {
     honoursClock,
     unsupported,
     knownFailing,
+    partialServer,
     source,
   };
 }
