@@ -623,3 +623,43 @@ func TestSessionOpenerErrorPaths(t *testing.T) {
 		t.Fatalf("error = %v, want invalid operator", err)
 	}
 }
+
+func TestCreateServerOpenedSessionOpenerHonoursPayerAndSignature(t *testing.T) {
+	operator := testutil.NewPrivateKey().PublicKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	request := testSessionRequest(operator, recipient)
+	payer := testutil.NewPrivateKey().PublicKey()
+	signature := "server-broadcast-signature"
+
+	opened, err := CreateServerOpenedPaymentChannelSessionOpener(
+		request, testutil.NewPrivateKey(),
+		ServerOpenedPaymentChannelSessionOpenOptions{
+			Open:      PaymentChannelOpenOptions{Salt: u64ptr(21)},
+			Payer:     &payer,
+			Signature: &signature,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateServerOpenedPaymentChannelSessionOpener: %v", err)
+	}
+	if !opened.Open.Payer.Equals(payer) {
+		t.Fatalf("payer = %s, want the explicit payer", opened.Open.Payer)
+	}
+	if opened.Action.Open == nil || opened.Action.Open.Signature != signature {
+		t.Fatalf("open action signature = %v, want %q", opened.Action.Open, signature)
+	}
+}
+
+func TestCreatePaymentChannelSessionOpenerSigningErrorPropagates(t *testing.T) {
+	operator := testutil.NewPrivateKey().PublicKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	request := testSessionRequest(operator, recipient)
+	blockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
+
+	_, err := CreatePaymentChannelSessionOpener(
+		request, failingSigner{pub: testutil.NewPrivateKey().PublicKey()}, testutil.NewPrivateKey(), blockhash.String(),
+		PaymentChannelSessionOpenOptions{Open: PaymentChannelOpenOptions{Salt: u64ptr(22)}})
+	if err == nil || !strings.Contains(err.Error(), "signing failed") {
+		t.Fatalf("error = %v, want the payer signing error", err)
+	}
+}

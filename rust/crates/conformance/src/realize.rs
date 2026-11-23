@@ -1150,6 +1150,7 @@ pub fn project(pin: &Pin, output: &Output, input: &Value) -> Result<Value, Strin
             memo,
             max_compute_unit_limit,
             forbidden_programs,
+            instruction_order,
         } => {
             let tx = output
                 .transaction
@@ -1186,9 +1187,24 @@ pub fn project(pin: &Pin, output: &Output, input: &Value) -> Result<Value, Strin
             if *transfers {
                 out.insert("transfers".into(), shape["transfers"].clone());
             }
+            if *instruction_order {
+                out.insert("instructionOrder".into(), json!(instruction_titles(tx)?));
+            }
             Ok(json!({ "transactionShape": out }))
         }
     }
+}
+
+/// Every top-level instruction of a transaction, in order, by its decoded
+/// title (`ComputeBudget SetComputeUnitLimit`, `SPL Token TransferChecked`).
+pub fn instruction_titles(transaction: &str) -> Result<Vec<String>, String> {
+    let tx = decode_b64(transaction)?;
+    Ok(crate::annotate::transaction_tree(&tx)["instructions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|ix| ix["instruction"].as_str().unwrap_or_default().to_string())
+        .collect())
 }
 
 /// Decoded charge transaction: fee payer, programs, transfers (SPL

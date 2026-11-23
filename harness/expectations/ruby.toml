@@ -27,6 +27,8 @@ ids = [
   "vector/charge-token-program-unexpected-owner-reject",
   "vector/charge-token2022-program-from-mint-owner",
   "vector/charge-build-amount-overflow-reject",
+  "vector/charge-build-compute-budget-order",
+  "vector/charge-build-compute-budget-order-sol",
   "vector/charge-build-fee-payer-without-key-reject",
   "vector/charge-build-sol-ata-creation-required-reject",
   "vector/charge-build-sol-token-program-reject",

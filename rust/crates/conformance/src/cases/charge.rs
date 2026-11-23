@@ -123,6 +123,19 @@ pub(super) fn shape(transfers: bool, memo: bool, limit: bool, forbidden: &[&'sta
         memo,
         max_compute_unit_limit: limit,
         forbidden_programs: forbidden.to_vec(),
+        instruction_order: false,
+    }
+}
+
+/// [`shape`] (transfers only) plus the kit's instruction order.
+pub(super) fn ordered_shape() -> Pin {
+    Pin::TransactionShape {
+        fee_payer: true,
+        transfers: true,
+        memo: false,
+        max_compute_unit_limit: false,
+        forbidden_programs: Vec::new(),
+        instruction_order: true,
     }
 }
 
