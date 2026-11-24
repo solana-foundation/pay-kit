@@ -172,8 +172,9 @@ def _instructions(transaction_b64: str) -> tuple[VersionedTransaction, list]:
 
 
 async def test_build_charge_transaction_prepends_compute_budget_prelude():
-    # Rust charge.rs:108-110 prepends SetComputeUnitPrice(1) (disc 3, u64 LE)
-    # then SetComputeUnitLimit(200_000) (disc 2, u32 LE), both zero-account.
+    # Like the Rust client: SetComputeUnitLimit(200_000) (disc 2, u32 LE) then
+    # SetComputeUnitPrice(1) (disc 3, u64 LE), both zero-account. Limit at ix 0
+    # and price at ix 1 is the x402 exact SVM layout.
     signer = MemorySigner(Keypair())
     recipient = str(Keypair().pubkey())
     payload = await build_charge_transaction(
@@ -188,11 +189,11 @@ async def test_build_charge_transaction_prepends_compute_budget_prelude():
     keys = tx.message.account_keys
     assert str(keys[ixs[0].program_id_index]) == COMPUTE_BUDGET_PROGRAM
     assert str(keys[ixs[1].program_id_index]) == COMPUTE_BUDGET_PROGRAM
-    price_data = bytes(ixs[0].data)
+    limit_data = bytes(ixs[0].data)
+    assert limit_data[0] == 2
+    price_data = bytes(ixs[1].data)
     assert price_data[0] == 3
     assert int.from_bytes(price_data[1:9], "little") == 1
-    limit_data = bytes(ixs[1].data)
-    assert limit_data[0] == 2
     assert int.from_bytes(limit_data[1:5], "little") == 200_000
     assert len(ixs[0].accounts) == 0
     assert len(ixs[1].accounts) == 0

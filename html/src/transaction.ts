@@ -56,13 +56,13 @@ export const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 export const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 export const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
-/** SetComputeUnitPrice(1) + SetComputeUnitLimit(200_000) */
+/** SetComputeUnitLimit(200_000) + SetComputeUnitPrice(1): the x402 exact SVM layout. */
 export function computeBudgetInstructions(): Instruction[] {
   const price = new Uint8Array(9); price[0] = 3; price[1] = 1;
   const limit = new Uint8Array(5); limit[0] = 2; new DataView(limit.buffer).setUint32(1, 200_000, true);
   return [
-    { programId: COMPUTE_BUDGET_PROGRAM, accounts: [], data: price },
     { programId: COMPUTE_BUDGET_PROGRAM, accounts: [], data: limit },
+    { programId: COMPUTE_BUDGET_PROGRAM, accounts: [], data: price },
   ];
 }
 

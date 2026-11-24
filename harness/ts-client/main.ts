@@ -270,16 +270,17 @@ async function main() {
 
   // ── Compute budget ──
   const COMPUTE_BUDGET = address('ComputeBudget111111111111111111111111111111');
-  // SetComputeUnitPrice: discriminator 3, value 1 micro-lamport
-  const priceData = new Uint8Array(9);
-  priceData[0] = 3;
-  priceData[1] = 1;
-  instructions.push({ programAddress: COMPUTE_BUDGET, data: priceData, accounts: [] });
+  // Limit then price: the x402 exact SVM layout.
   // SetComputeUnitLimit: discriminator 2, value 200_000
   const limitData = new Uint8Array(5);
   limitData[0] = 2;
   new DataView(limitData.buffer).setUint32(1, 200_000, true);
   instructions.push({ programAddress: COMPUTE_BUDGET, data: limitData, accounts: [] });
+  // SetComputeUnitPrice: discriminator 3, value 1 micro-lamport
+  const priceData = new Uint8Array(9);
+  priceData[0] = 3;
+  priceData[1] = 1;
+  instructions.push({ programAddress: COMPUTE_BUDGET, data: priceData, accounts: [] });
 
   // ── ATA helper ──
   const ATA_PROGRAM = address('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');

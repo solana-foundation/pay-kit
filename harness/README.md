@@ -260,7 +260,7 @@ regenerated with `pnpm coverage` and CI fails when it is stale.
 | --- | ---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | flow | 34 | — | — | — | — | — | — | — | — | 30 · 4u |
 | protocol | 91 | 91 | — | 91 | 91 | 91 | 91 | 91 | — | 91 |
-| vector charge | 117 | 71 · 46k | — | 57 · 29u · 31k | 59 · 29u · 29k | 117 | 60 · 29u · 28k | 117 | 29 · 72u · 16k | 117 |
+| vector charge | 119 | 73 · 46k | — | 57 · 31u · 31k | 59 · 31u · 29k | 119 | 60 · 31u · 28k | 119 | 31 · 72u · 16k | 119 |
 | vector session | 215 | 8 · 207u | 3 · 212u | — | — | 201 · 14k | — | 215 | 3 · 212u | 215 |
 | vector subscription | 123 | — | — | — | — | 123 | — | 123 | — | 123 |
 | vector x402-batch-settlement | 175 | — | — | — | — | 175 | — | 175 | — | 175 |
@@ -394,7 +394,7 @@ come from the same extraction as `pkc req-lint`.
 | `MPP-b333c50e7e`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 1 | 1 | — | 1 | 1 | 1 | 1 | 1 | 0 · 1u | 1 |
 | `MPP-baa94f08cb`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 0 · 2k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
 | `MPP-d63913e921`* | draft-solana-charge-00.md § Split Recipient ATA Creation | 2 | 1 · 1k | — | 2 | 2 | 2 | 2 | 2 | 0 · 2u | 2 |
-| `MPP-048617f9d7`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 5 | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
+| `MPP-048617f9d7`* | draft-solana-charge-00.md § Transaction Payload Security | 7 | 7 | — | 4 · 2u · 1k | 5 · 2u | 7 | 5 · 2u | 7 | 2 · 5u | 7 |
 | `MPP-1a2e7c737e`* | draft-solana-charge-00.md § Transaction Payload Security | 5 | 4 · 1k | — | 4 · 1k | 5 | 5 | 5 | 5 | 0 · 5u | 5 |
 | `MPP-d5e5d796c6`* | draft-solana-charge-00.md § Transaction Payload — Pull Mode | 7 | 7 | — | 7 | 7 | 7 | 7 | 7 | 0 · 7u | 7 |
 | `MPP-146a845b55`* | draft-solana-session-00.md § Action: "close" | 2 | 0 · 2u | 0 · 2u | — | — | 2 | — | 2 | 0 · 2u | 2 |

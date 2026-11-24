@@ -463,11 +463,14 @@ export async function buildChargeTransaction(
                       ) as typeof msg,
                   msg => setTransactionMessageLoadedAccountsDataSizeLimit(MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES, msg),
               )
-            : // Prepend compute budget instructions per best practice.
+            : // Prepend compute budget instructions, SetComputeUnitLimit then
+              // SetComputeUnitPrice: the x402 exact SVM layout (limit at ix 0,
+              // price at ix 1), so a sponsored charge also passes an x402
+              // exact facilitator.
               prependTransactionMessageInstructions(
                   [
-                      getSetComputeUnitPriceInstruction({ microLamports: computeUnitPrice }),
                       getSetComputeUnitLimitInstruction({ units: computeUnitLimit }),
+                      getSetComputeUnitPriceInstruction({ microLamports: computeUnitPrice }),
                   ],
                   baseMessage,
               );

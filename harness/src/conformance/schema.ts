@@ -160,6 +160,10 @@ export type TransactionShape = {
   maxComputeUnitLimit?: number;
   maxComputeUnitPrice?: string;
   memo?: string[];
+  // Every top-level instruction of the build, in order, by decoded title
+  // ("ComputeBudget SetComputeUnitLimit"). The Rust judge checks it against
+  // the built transaction; runners do not emit it.
+  instructionOrder?: string[];
 };
 
 // The operator-signed voucher a session server persisted for an accepted

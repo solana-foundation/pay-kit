@@ -207,6 +207,8 @@ pub fn run_case(testee: &mut Testee, vector: &Vector, rt: &tokio::runtime::Runti
                             // another advertised version stays an accept.
                             let must_accept = verdict.is_ok()
                                 || rt.block_on(judge::alternative_version_accepted(vector, &built));
+                            let verdict =
+                                verdict.and_then(|()| judge::instruction_order(vector, &built));
                             artifact = Some((built, must_accept));
                             verdict.map(|()| Verdict::Pass)
                         }

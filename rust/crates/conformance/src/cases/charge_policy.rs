@@ -13,7 +13,7 @@
 use serde_json::{json, Value};
 
 use super::charge::{
-    build_case, input, reject, shape, sol_request, spl_request, verify_case, CHARGE,
+    build_case, input, ordered_shape, reject, shape, sol_request, spl_request, verify_case, CHARGE,
     ONLY_EXPECTED_INSTRUCTIONS, SPL_LEG_MISSING, UNEXPECTED_REJECTED,
 };
 use crate::case::{
@@ -605,6 +605,26 @@ crate::registry! {
         "Fee-sponsored SPL charge: the client must set the server's feePayerKey as fee payer and sign only as transfer authority, leaving the fee payer's slot empty (the pinned shape includes the fee payer; the judge checks the signatures).",
         sponsored_spl(json!({})),
         Expect::Accept(shape(true, false, false, &[])),
+    );
+    charge_build_compute_budget_order => build_case(
+        "charge-build-compute-budget-order",
+        BUILD,
+        BugType::Settlement,
+        spec(CHARGE, "Fee Payer Configuration", "Clients SHOULD set a compute unit limit and priority fee appropriate for current network conditions."),
+        &[ONLY_EXPECTED_INSTRUCTIONS],
+        "Fee-sponsored SPL charge: the client lays the transaction out as ComputeBudget SetComputeUnitLimit (ix 0), SetComputeUnitPrice (ix 1), then the TransferChecked (ix 2), the x402 exact SVM static layout, so an x402 exact facilitator can verify and settle the same sponsored charge (RULINGS C6). The judge checks the instruction order, not only the instruction set.",
+        sponsored_spl(json!({})),
+        Expect::Accept(ordered_shape()),
+    );
+    charge_build_compute_budget_order_sol => build_case(
+        "charge-build-compute-budget-order-sol",
+        BUILD,
+        BugType::Settlement,
+        spec(CHARGE, "Fee Payer Configuration", "Clients SHOULD set a compute unit limit and priority fee appropriate for current network conditions."),
+        &[ONLY_EXPECTED_INSTRUCTIONS],
+        "Fee-sponsored native SOL charge: ComputeBudget SetComputeUnitLimit (ix 0), SetComputeUnitPrice (ix 1), then the System transfer (ix 2) (RULINGS C6). Pair of charge-build-compute-budget-order for the SOL branch of the client builders.",
+        input(sol_request("1000000", json!({ "feePayer": true, "feePayerKey": SERVER_FEE_PAYER }))),
+        Expect::Accept(ordered_shape()),
     );
     charge_build_sponsor_is_signer_reject => build_case(
         "charge-build-sponsor-is-signer-reject",

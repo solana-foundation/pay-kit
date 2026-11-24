@@ -381,3 +381,45 @@ func TestConsumerDuplicateDeliveryReplayMonotonic(t *testing.T) {
 			transport.commits[0].Voucher.Data.Cumulative, transport.commits[1].Voucher.Data.Cumulative)
 	}
 }
+
+func TestConsumerCommitDirectiveRejectsWrongSession(t *testing.T) {
+	consumer, transport := newConsumer(t, false)
+
+	if _, err := consumer.CommitDirective(context.Background(), directive("other-session", "100")); err == nil || !strings.Contains(err.Error(), "does not match active session") {
+		t.Fatalf("expected session mismatch, got %v", err)
+	}
+	if transport.count() != 0 {
+		t.Fatalf("no commit expected: %d", transport.count())
+	}
+}
+
+func TestConsumerRejectsCumulativeOverflow(t *testing.T) {
+	consumer, transport := newConsumer(t, false)
+	sid := consumer.Session().ChannelIDString()
+
+	if _, err := consumer.CommitDirective(context.Background(), directive(sid, "100")); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	next := directive(sid, "18446744073709551615")
+	next.DeliveryID = "d2"
+	if _, err := consumer.CommitDirective(context.Background(), next); err == nil {
+		t.Fatal("expected cumulative overflow rejection")
+	}
+	if transport.count() != 1 || consumer.Session().Cumulative() != 100 {
+		t.Fatalf("overflow must not commit or advance: commits=%d cumulative=%d", transport.count(), consumer.Session().Cumulative())
+	}
+}
+
+func TestConsumerRejectsMalformedReplayedCumulative(t *testing.T) {
+	session, _ := newSession(t)
+	consumer := NewSessionConsumer(session, replayTransport{settled: "not-a-number"})
+	sid := consumer.Session().ChannelIDString()
+
+	_, err := consumer.CommitDirective(context.Background(), directive(sid, "100"))
+	if err == nil || !strings.Contains(err.Error(), "invalid replayed receipt cumulative") {
+		t.Fatalf("expected malformed replay rejection, got %v", err)
+	}
+	if consumer.Session().Cumulative() != 0 {
+		t.Fatalf("watermark advanced on malformed replay: %d", consumer.Session().Cumulative())
+	}
+}

@@ -604,6 +604,11 @@ pub enum Pin {
         memo: bool,
         max_compute_unit_limit: bool,
         forbidden_programs: Vec<&'static str>,
+        /// Pin the kit's instructions in order, by decoded title
+        /// (`instructionOrder`). The judge checks it against the testee's
+        /// built transaction, so a build with the same instructions in
+        /// another order fails the case.
+        instruction_order: bool,
     },
     /// Decoded x402 envelope fields, by `X402EnvelopeShape` key.
     Envelope(Vec<&'static str>),

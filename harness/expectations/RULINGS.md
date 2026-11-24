@@ -51,6 +51,22 @@ instruction. Rust's builders decline unless the caller opts in
 cap; the conformance testee opts in so the vectors can pin the client-paid
 shape.
 
+**C6. Clients order the compute budget as limit, then price, then the
+transfer.** The charge method allows compute budget instructions (“and
+optionally compute budget instructions”) and asks clients to set them
+(“Clients SHOULD set a compute unit limit and priority fee appropriate for
+current network conditions.”) but fixes no order. The x402 exact scheme does:
+a legacy or version-0 single-payee transaction “MUST contain 3 to 7
+instructions in this order”, Set Compute Unit Limit first, Set Compute Unit
+Price second, the `TransferChecked` third. Every pay-kit client builds a
+legacy or version-0 MPP charge in that order, so a fee-sponsored charge also
+verifies on an x402 exact facilitator's static layout path. An MPP server
+MUST NOT refuse a charge for its compute budget order: the cross matrix keeps
+treating an otherwise valid build in another order as one every server
+accepts. Vectors: `charge-build-compute-budget-order`,
+`charge-build-compute-budget-order-sol`. Upstream: the charge spec could
+state the order.
+
 ## MPP core
 
 **P1. An unterminated quoted-string is a grammar error.** The challenge uses

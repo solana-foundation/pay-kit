@@ -852,6 +852,37 @@ pub async fn judge_build(vector: &Vector, artifact: &str) -> Result<(), Failure>
     compare_transactions(&expected_tx, &actual_tx, nonce_memo)
 }
 
+/// A build vector that pins `transactionShape.instructionOrder`: the
+/// testee's transaction must carry the kit's instructions in the kit's order.
+/// Kept apart from [`judge_build`], which decides whether servers must accept
+/// the build: an order the specs leave open fails the client's case without
+/// making the transaction one a server may refuse.
+pub fn instruction_order(vector: &Vector, artifact: &str) -> Result<(), Failure> {
+    let Some(want) = vector
+        .expect()
+        .pointer("/transactionShape/instructionOrder")
+        .filter(|v| v.is_array())
+    else {
+        return Ok(());
+    };
+    let transaction = match vector.intent.as_str() {
+        "charge" => artifact.to_string(),
+        _ => header_transaction(artifact).map_err(Failure::new)?,
+    };
+    let got = realize::instruction_titles(&transaction)
+        .map_err(|e| Failure::new(format!("the SDK's transaction does not decode: {e}")))?;
+    let got = json!(got);
+    if &got == want {
+        return Ok(());
+    }
+    Err(Failure::at(
+        "transactionShape.instructionOrder",
+        Some(want),
+        Some(&got),
+        format!("instructions are not in the pinned order: expected {want}, got {got}"),
+    ))
+}
+
 /// For a build the judge refused: whether it is nevertheless a transaction
 /// every conforming server must accept, because the Rust verifier accepts it
 /// and it differs from the kit's build only in its message version (the same
@@ -1070,6 +1101,43 @@ mod tests {
         assert!(failure.path.is_some());
         // Control: the honest build compares equal to itself.
         compare_transactions(&built, &built, false).unwrap();
+    }
+
+    // An instruction order pinned by the vector (charge-build-compute-budget-order):
+    // the same instructions with price before limit pass the multiset
+    // comparison and the verifier, so only the order check catches them.
+    #[test]
+    fn a_swapped_compute_budget_fails_the_pinned_instruction_order() {
+        let rt = runtime();
+        let v = vector("charge-build-compute-budget-order");
+        let built = match rt.block_on(realize::run(
+            Intent::Charge,
+            Mode::BuildTransaction,
+            v.input(),
+        )) {
+            Observed::Accept(o) => o.transaction.unwrap(),
+            other => panic!("{}", other.summary()),
+        };
+        instruction_order(&v, &built).unwrap();
+        let tx = decode_b64(&built).unwrap();
+        let mut decompiled = decompile(&tx.message).unwrap();
+        decompiled.instructions.swap(0, 1);
+        let mut swapped = crate::tx::recompile(&tx.message, &decompiled).unwrap();
+        crate::tx::sign_slots(&mut swapped, &[keys::CLIENT_SEED]);
+        let swapped = crate::tx::encode_b64(&swapped).unwrap();
+        compare_transactions(&built, &swapped, false).unwrap();
+        let failure = instruction_order(&v, &swapped).unwrap_err();
+        assert_eq!(
+            failure.path.as_deref(),
+            Some("transactionShape.instructionOrder")
+        );
+        assert!(
+            failure.message.contains("SetComputeUnitPrice"),
+            "{}",
+            failure.message
+        );
+        // A vector without a pinned order is not judged on it.
+        instruction_order(&vector("charge-build-sponsored-fee-payer"), &swapped).unwrap();
     }
 
     // A read-only recipient keeps keys and data identical but cannot be
